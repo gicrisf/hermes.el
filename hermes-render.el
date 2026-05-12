@@ -21,6 +21,7 @@
 (require 'cl-lib)
 (require 'org-id)
 (require 'hermes-state)
+(require 'hermes-md)
 
 ;;;; Buffer-local markers for the in-flight region
 
@@ -148,7 +149,21 @@ current buffer this is identical to `(= (window-point window) (point-max))'."
   (set-marker-insertion-type hermes--stream-end       t))
 
 (defun hermes--stream-commit ()
-  "Stream finished: stamp Org :ID:s on the trail, drop markers."
+  "Stream finished: convert tail, stamp Org :ID:s, drop markers."
+  ;; Final pass: the unstable region [stable-end..stream-end) still holds raw
+  ;; markdown.  Convert it in place before sealing the message.
+  (when (and (markerp hermes--stream-stable-end)
+             (markerp hermes--stream-end)
+             (< (marker-position hermes--stream-stable-end)
+                (marker-position hermes--stream-end)))
+    (let* ((beg (marker-position hermes--stream-stable-end))
+           (end (marker-position hermes--stream-end))
+           (raw (buffer-substring-no-properties beg end))
+           (cooked (hermes-md-to-org raw)))
+      (unless (equal raw cooked)
+        (delete-region beg end)
+        (goto-char beg)
+        (insert cooked))))
   ;; Walk every in-flight tool subtree and stamp it with an :ID:.
   (dolist (cell hermes--stream-tool-markers)
     (let ((m (cdr cell)))
@@ -192,8 +207,8 @@ current buffer this is identical to `(= (window-point window) (point-max))'."
 (defun hermes--rewrite-stream (text)
   "Place TEXT into the in-flight region using a stable/unstable split.
 Stable prefix is appended at `hermes--stream-stable-end' (which then
-advances).  Unstable suffix replaces the region between the stable
-marker and `hermes--stream-end'."
+advances past it).  Unstable suffix replaces the region between the
+stable marker and `hermes--stream-end'."
   (let* ((boundary (hermes--stable-boundary text))
          (already  (- (marker-position hermes--stream-stable-end)
                       (save-excursion
@@ -203,16 +218,19 @@ marker and `hermes--stream-end'."
          (stable   (substring text 0 boundary))
          (unstable (substring text boundary))
          (new-stable-substring (substring stable already)))
-    ;; Append the newly-stable chunk at the stable marker, advancing it.
+    ;; Append the newly-stable chunk, converted to Org syntax.  `stable-end'
+    ;; has insertion-type nil so plain `insert' would leave it pointing at
+    ;; the START of the new text, and the delete-region below would then
+    ;; nuke the stable chunk along with the unstable suffix.  Use
+    ;; `insert-before-markers' to advance both `stable-end' and `stream-end'
+    ;; past the new content.
     (when (> (length new-stable-substring) 0)
       (goto-char hermes--stream-stable-end)
-      (insert new-stable-substring))
-    ;; Replace the unstable region.
+      (insert-before-markers (hermes-md-to-org new-stable-substring)))
+    ;; Replace the (now isolated) unstable region.
     (delete-region hermes--stream-stable-end hermes--stream-end)
     (goto-char hermes--stream-stable-end)
-    (insert unstable)
-    ;; `hermes--stream-end' has insertion-type t, so it tracked our inserts.
-    ))
+    (insert unstable)))
 
 (defun hermes--stable-boundary (text)
   "Return the index of the last `\\n\\n' in TEXT outside a fenced code block.

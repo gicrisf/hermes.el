@@ -1,0 +1,85 @@
+;;; hermes-md-test.el --- ERT tests for markdown→Org conversion -*- lexical-binding: t; -*-
+
+(require 'ert)
+(require 'hermes-md)
+
+(defmacro hermes-md-test--should= (input expected)
+  `(should (equal ,expected (hermes-md-to-org ,input))))
+
+;;;; Inline
+
+(ert-deftest hermes-md-test/bold ()
+  (hermes-md-test--should= "this is **bold** text" "this is *bold* text"))
+
+(ert-deftest hermes-md-test/inline-code ()
+  (hermes-md-test--should= "run `ls -la` now" "run ~ls -la~ now"))
+
+(ert-deftest hermes-md-test/link ()
+  (hermes-md-test--should=
+   "see [docs](https://example.com) here"
+   "see [[https://example.com][docs]] here"))
+
+(ert-deftest hermes-md-test/italic-star ()
+  (hermes-md-test--should= "this is *em* text" "this is /em/ text"))
+
+(ert-deftest hermes-md-test/italic-underscore ()
+  (hermes-md-test--should= "this is _em_ text" "this is /em/ text"))
+
+(ert-deftest hermes-md-test/underscores-in-snake-case-untouched ()
+  (hermes-md-test--should= "call foo_bar_baz now" "call foo_bar_baz now"))
+
+(ert-deftest hermes-md-test/bold-runs-before-italic ()
+  ;; **x** must not be converted to /*x*/ by an aggressive italic pass.
+  (hermes-md-test--should= "**bold** and *em*" "*bold* and /em/"))
+
+;;;; Headings
+
+(ert-deftest hermes-md-test/heading-demoted-by-one-level ()
+  (hermes-md-test--should= "# Title\nbody" "** Title\nbody")
+  (hermes-md-test--should= "## Sub\nbody" "*** Sub\nbody"))
+
+;;;; Fences
+
+(ert-deftest hermes-md-test/fenced-src-with-language ()
+  (hermes-md-test--should=
+   "```python\nprint(1)\n```\n"
+   "#+begin_src python\nprint(1)\n#+end_src\n"))
+
+(ert-deftest hermes-md-test/fenced-example-without-language ()
+  (hermes-md-test--should=
+   "```\nplain text\n```\n"
+   "#+begin_example\nplain text\n#+end_example\n"))
+
+(ert-deftest hermes-md-test/fence-body-untouched-by-inline ()
+  ;; Inside a fence: **bold**, `code`, [l](u) must all stay raw.
+  (hermes-md-test--should=
+   "```python\n# **bold** and `code` and [l](u)\n```\n"
+   "#+begin_src python\n# **bold** and `code` and [l](u)\n#+end_src\n"))
+
+(ert-deftest hermes-md-test/fence-then-inline-after ()
+  (hermes-md-test--should=
+   "```sh\necho hi\n```\n\nThen **after**.\n"
+   "#+begin_src sh\necho hi\n#+end_src\n\nThen *after*.\n"))
+
+;;;; Tables
+
+(ert-deftest hermes-md-test/table-separator-rewritten ()
+  (hermes-md-test--should=
+   "| a | b |\n|---|---|\n| 1 | 2 |\n"
+   "| a | b |\n|---+---|\n| 1 | 2 |\n"))
+
+;;;; Empty / passthrough
+
+(ert-deftest hermes-md-test/empty-string ()
+  (hermes-md-test--should= "" ""))
+
+(ert-deftest hermes-md-test/nil-is-empty ()
+  (should (equal "" (hermes-md-to-org nil))))
+
+(ert-deftest hermes-md-test/plain-text-untouched ()
+  (hermes-md-test--should=
+   "Just plain prose with no markdown.\n"
+   "Just plain prose with no markdown.\n"))
+
+(provide 'hermes-md-test)
+;;; hermes-md-test.el ends here

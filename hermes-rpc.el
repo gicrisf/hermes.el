@@ -84,6 +84,15 @@ TYPE is a string from `hermes-events-incoming'.  PAYLOAD is a hash table.")
 ;;;; Process lifecycle
 
 ;;;###autoload
+(defun hermes-rpc--find-python ()
+  "Return a python executable, preferring a project-local venv."
+  (let* ((default-dir (or hermes-rpc-cwd default-directory))
+         (venv-py (expand-file-name ".venv/bin/python" default-dir)))
+    (if (file-executable-p venv-py)
+        venv-py
+      hermes-rpc-python)))
+
+;;;###autoload
 (defun hermes-rpc-start ()
   "Spawn the gateway subprocess.  No-op if one is already running."
   (interactive)
@@ -95,11 +104,12 @@ TYPE is a string from `hermes-events-incoming'.  PAYLOAD is a hash table.")
         hermes-rpc--next-id 0)
   (clrhash hermes-rpc--pending)
   (let* ((default-directory (or hermes-rpc-cwd default-directory))
+         (python (hermes-rpc--find-python))
          (process-environment (append hermes-rpc-env process-environment))
          (stderr-buf (generate-new-buffer " *hermes-rpc-stderr*"))
          (proc (make-process
                 :name "hermes-rpc"
-                :command (list hermes-rpc-python "-m" hermes-rpc-gateway-module)
+                :command (list python "-m" hermes-rpc-gateway-module)
                 :buffer nil
                 :stderr stderr-buf
                 :connection-type 'pipe

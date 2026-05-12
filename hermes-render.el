@@ -70,8 +70,13 @@ tool subtrees accumulate AFTER this marker.")
         (hermes--render-header new))
       ;; 4. Queue length changed → refresh header-line :eval forms.
       (unless (eq (and old (hermes-state-queue old))
-                  (hermes-state-queue new))
-        (force-mode-line-update)))))
+                   (hermes-state-queue new))
+        (force-mode-line-update))))
+  ;; `with-silent-modifications' suppresses change hooks that Org's element
+  ;; cache depends on.  Reset it so `org-id-get-create' and other Org
+  ;; operations don't trip over stale data.
+  (when (derived-mode-p 'org-mode)
+    (org-element-cache-reset)))
 
 (defun hermes--render-ui (_old new)
   "Re-render the header line from the ephemeral state NEW."

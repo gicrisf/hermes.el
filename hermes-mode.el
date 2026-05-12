@@ -23,6 +23,7 @@
 (require 'hermes-render)
 (require 'hermes-prompts)
 (require 'hermes-input)
+(require 'hermes-sessions)
 
 ;;;; Routing: filter event → buffer
 
@@ -69,7 +70,9 @@
 (defun hermes--install-hooks ()
   "Wire RPC hooks once.  Idempotent."
   (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
-  (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection))
+  (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
+  (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection)
+  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open))
 
 ;;;; Major mode
 

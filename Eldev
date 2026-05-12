@@ -9,6 +9,7 @@
         "hermes-render.el"
         "hermes-prompts.el"
         "hermes-input.el"
+        "hermes-sessions.el"
         "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"))

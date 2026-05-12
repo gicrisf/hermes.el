@@ -67,7 +67,11 @@ tool subtrees accumulate AFTER this marker.")
                        (hermes-state-session-info new))
                    (eq (hermes-state-connection old)
                        (hermes-state-connection new)))
-        (hermes--render-header new)))))
+        (hermes--render-header new))
+      ;; 4. Queue length changed → refresh header-line :eval forms.
+      (unless (eq (and old (hermes-state-queue old))
+                  (hermes-state-queue new))
+        (force-mode-line-update)))))
 
 (defun hermes--render-ui (_old new)
   "Re-render the header line from the ephemeral state NEW."
@@ -303,6 +307,11 @@ Returns 0 if no such boundary exists yet."
                              (hermes-state-session-info hermes--state)))
                   (model (and (hash-table-p info) (gethash "model" info))))
              (if model (format " · %s" model) "")))
+         '(:eval
+           (let ((q (and hermes--state (hermes-state-queue hermes--state))))
+             (if (and q (> (length q) 0))
+                 (format " · queue: %d" (length q))
+               "")))
          '(:eval (or hermes--ui-line ""))))
   (force-mode-line-update))
 

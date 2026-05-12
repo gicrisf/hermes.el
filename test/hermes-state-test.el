@@ -353,5 +353,62 @@
                                                      "name" "bash")))))
     (should (equal "Running bash…" (hermes-ui-state-status-text s)))))
 
+;;;; M4 — queue, history, slash catalog
+
+(ert-deftest hermes-state-test/enqueue-appends-in-order ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons :enqueue '(:text "a"))
+             (cons :enqueue '(:text "b"))
+             (cons :enqueue '(:text "c")))))
+    (should (equal '("a" "b" "c") (hermes-state-queue s)))))
+
+(ert-deftest hermes-state-test/dequeue-pops-head ()
+  (let* ((s0 (hermes-test--reduce*
+              nil
+              (cons :enqueue '(:text "a"))
+              (cons :enqueue '(:text "b"))))
+         (s1 (hermes--reduce s0 '(:dequeue))))
+    (should (equal '("b") (hermes-state-queue s1)))))
+
+(ert-deftest hermes-state-test/dequeue-on-empty-is-noop ()
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 '(:dequeue))))
+    (should (eq s0 s1))))
+
+(ert-deftest hermes-state-test/user-submit-pushes-history ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons :user-submit '(:text "one"))
+             (cons :user-submit '(:text "two")))))
+    ;; Most-recent-first.
+    (should (equal '("two" "one") (hermes-state-history s)))))
+
+(ert-deftest hermes-state-test/history-capped ()
+  (let ((hermes-history-max 3)
+        (s nil))
+    (dolist (t* '("a" "b" "c" "d" "e"))
+      (setq s (hermes--reduce s (cons :user-submit (list :text t*)))))
+    (should (equal '("e" "d" "c") (hermes-state-history s)))))
+
+(ert-deftest hermes-state-test/user-submit-commits-regardless-of-queue ()
+  ;; Optimistic commit happens even while a turn is live and items queued.
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons :user-submit '(:text "first"))
+             (cons "message.start" nil)
+             (cons :user-submit '(:text "second"))
+             (cons :enqueue     '(:text "second")))))
+    (should (= 2 (length (hermes-state-messages s))))
+    (should (equal "second"
+                   (hermes-message-text
+                    (aref (hermes-state-messages s) 1))))
+    (should (equal '("second") (hermes-state-queue s)))))
+
+(ert-deftest hermes-state-test/slash-catalog-stores-payload ()
+  (let* ((cat (hermes-test--ht "pairs" [["help" "show help"]]))
+         (s   (hermes--reduce nil (cons :slash-catalog (list :catalog cat)))))
+    (should (eq cat (hermes-state-slash-catalog s)))))
+
 (provide 'hermes-state-test)
 ;;; hermes-state-test.el ends here

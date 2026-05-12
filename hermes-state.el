@@ -16,6 +16,10 @@
 
 (require 'cl-lib)
 
+(defcustom hermes-history-max 200
+  "Maximum number of past inputs retained in `hermes-state-history'."
+  :type 'integer :group 'hermes)
+
 ;;;; Persistent state — mirrored in the Org buffer
 
 (cl-defstruct (hermes-tool (:copier hermes-tool-copy))
@@ -138,14 +142,35 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-connection s) 'disconnected)))
       (:user-submit
-       ;; Optimistic commit (mirrors useSubmission.ts:87-149).
+       ;; Optimistic commit (mirrors useSubmission.ts:87-149).  Also push
+       ;; the input onto the history ring, capped at `hermes-history-max'.
+       (let ((text (plist-get p :text)))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-messages s)
+                 (hermes--vector-append
+                  (hermes-state-messages state)
+                  (make-hermes-message :kind 'user
+                                       :text text
+                                       :timestamp (current-time)))
+                 (hermes-state-history s)
+                 (let ((h (cons text (hermes-state-history state))))
+                   (if (> (length h) hermes-history-max)
+                       (cl-subseq h 0 hermes-history-max)
+                     h))))))
+      (:enqueue
        (hermes--with-copy state hermes-state-copy s
-         (setf (hermes-state-messages s)
-               (hermes--vector-append
-                (hermes-state-messages state)
-                (make-hermes-message :kind 'user
-                                     :text (plist-get p :text)
-                                     :timestamp (current-time))))))
+         (setf (hermes-state-queue s)
+               (append (hermes-state-queue state)
+                       (list (plist-get p :text))))))
+      (:dequeue
+       (let ((q (hermes-state-queue state)))
+         (if (null q)
+             state
+           (hermes--with-copy state hermes-state-copy s
+             (setf (hermes-state-queue s) (cdr q))))))
+      (:slash-catalog
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-slash-catalog s) (plist-get p :catalog))))
       ;;; --- Gateway lifecycle ---------------------------------------------
       ("gateway.ready"
        (hermes--with-copy state hermes-state-copy s

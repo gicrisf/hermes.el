@@ -22,6 +22,7 @@
 (require 'hermes-state)
 (require 'hermes-render)
 (require 'hermes-prompts)
+(require 'hermes-input)
 
 ;;;; Routing: filter event → buffer
 
@@ -86,6 +87,7 @@
   (hermes-state-init)
   (add-hook 'hermes-state-change-hook    #'hermes--render        nil t)
   (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  nil t)
+  (add-hook 'hermes-state-change-hook    #'hermes-input--drain   nil t)
   (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     nil t)
   ;; Initial header line.
   (with-silent-modifications
@@ -111,27 +113,12 @@
          (puthash sid buf hermes--session-buffers)
          (with-current-buffer buf
            (hermes-mode)
-           (setf (hermes-state-session-id hermes--state) sid))
+           (setf (hermes-state-session-id hermes--state) sid)
+           (hermes-input-fetch-catalog))
          (pop-to-buffer buf)))))))
 
-(defun hermes-send (text)
-  "Submit TEXT to the current session as a `prompt.submit'."
-  (interactive
-   (list (read-string "Hermes> "
-                      nil
-                      (when (and hermes--state
-                                 (hermes-state-history hermes--state))
-                        '(hermes--history-ring . 0)))))
-  (unless (derived-mode-p 'hermes-mode)
-    (user-error "Not in a Hermes buffer"))
-  (let ((sid (hermes-state-session-id hermes--state)))
-    (unless sid (user-error "No session id in this buffer"))
-    ;; Optimistic local commit, then fire the RPC.
-    (hermes-dispatch (cons :user-submit (list :text text)))
-    (hermes-rpc-request "prompt.submit"
-                        (list :session_id sid :text text)
-                        (lambda (_r e)
-                          (when e (message "hermes: prompt.submit error: %S" e))))))
+(defalias 'hermes-send #'hermes-input-send
+  "Queue-aware submission entry; see `hermes-input-send'.")
 
 (defun hermes-interrupt ()
   "Send `session.interrupt' for the current session."

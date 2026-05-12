@@ -1,0 +1,10 @@
+;; -*- mode: emacs-lisp; lexical-binding: t -*-
+
+(eldev-use-package-archive 'gnu)
+
+(setf eldev-main-fileset
+      '("hermes-events.el"
+        "hermes-rpc.el"
+        "hermes-state.el"
+        "hermes-render.el"
+        "hermes-mode.el"))

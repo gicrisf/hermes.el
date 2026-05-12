@@ -1,0 +1,26 @@
+=== E2E Test ===
+[conn] connecting
+[state] conn=connecting msgs=0 stream=nil
+[state] conn=connected msgs=0 stream=nil
+--- connected, sending session.create ---
+session: ac3eb995
+[state] conn=connected msgs=1 stream=nil
+  msg[0]: user "say hi in five words"
+prompt.submit -> r=#s(hash-table test equal data ("status" "streaming")) e=nil
+[state] conn=connected msgs=1 stream=nil
+  msg[0]: user "say hi in five words"
+[state] conn=connected msgs=1 stream=live
+[state] conn=connected msgs=1 stream=live
+[state] conn=connected msgs=1 stream=live
+[state] conn=connected msgs=1 stream=live
+[state] conn=connected msgs=1 stream=live
+  text: "Hi, how's your day going?"
+[state] conn=connected msgs=1 stream=live
+  text: "Hi, how's your day going?"
+[state] conn=connected msgs=2 stream=nil
+  msg[1]: assistant "Hi, how's your day going?"
+=== E2E PASSED ===
+[conn] disconnected
+[state] conn=disconnected msgs=2 stream=nil
+  msg[1]: assistant "Hi, how's your day going?"
+[done] passed=t

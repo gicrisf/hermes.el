@@ -21,6 +21,7 @@
 (require 'hermes-events)
 (require 'hermes-state)
 (require 'hermes-render)
+(require 'hermes-prompts)
 
 ;;;; Routing: filter event → buffer
 
@@ -74,6 +75,7 @@
 (defvar hermes-mode-map
   (let ((m (make-sparse-keymap)))
     (define-key m (kbd "C-c C-i") #'hermes-send)
+    (define-key m (kbd "C-c C-k") #'hermes-interrupt)
     m)
   "Keymap for `hermes-mode'.")
 
@@ -82,8 +84,9 @@
   (setq-local org-startup-folded nil)
   (setq buffer-read-only t)
   (hermes-state-init)
-  (add-hook 'hermes-state-change-hook    #'hermes--render    nil t)
-  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui nil t)
+  (add-hook 'hermes-state-change-hook    #'hermes--render        nil t)
+  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  nil t)
+  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     nil t)
   ;; Initial header line.
   (with-silent-modifications
     (hermes--render-header hermes--state)))
@@ -129,6 +132,18 @@
                         (list :session_id sid :text text)
                         (lambda (_r e)
                           (when e (message "hermes: prompt.submit error: %S" e))))))
+
+(defun hermes-interrupt ()
+  "Send `session.interrupt' for the current session."
+  (interactive)
+  (unless (derived-mode-p 'hermes-mode)
+    (user-error "Not in a Hermes buffer"))
+  (let ((sid (hermes-state-session-id hermes--state)))
+    (unless sid (user-error "No session id in this buffer"))
+    (hermes-rpc-request "session.interrupt"
+                        (list :session_id sid)
+                        (lambda (_r e)
+                          (when e (message "hermes: interrupt error: %S" e))))))
 
 (provide 'hermes-mode)
 ;;; hermes-mode.el ends here

@@ -7,4 +7,5 @@
         "hermes-rpc.el"
         "hermes-state.el"
         "hermes-render.el"
+        "hermes-prompts.el"
         "hermes-mode.el"))

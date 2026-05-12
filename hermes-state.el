@@ -215,6 +215,88 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                (setf (hermes-state-messages s)
                      (hermes--vector-append (hermes-state-messages state) msg)
                      (hermes-state-stream s) nil))))))
+      ;;; --- Tools ---------------------------------------------------------
+      ("tool.generating"
+       ;; tool.generating means a tool has been selected and is about to run.
+       ;; Add it to stream.tools if not already present.  Drop if no stream
+       ;; (edge case #2: turnController.ts:620-645).
+       (let ((str (hermes-state-stream state))
+             (tid (hermes--get p "tool_id"))
+             (tname (hermes--get p "name")))
+         (if (or (null str) (null tid))
+             state
+           (let* ((tools (hermes-stream-tools str))
+                  (already (cl-some (lambda (tl)
+                                      (equal tid (hermes-tool-id tl)))
+                                    (append tools nil))))
+             (if already
+                 state
+               (let ((tool (make-hermes-tool :id tid :name tname
+                                             :status 'generating)))
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-tools ns)
+                                 (hermes--vector-append tools tool)))))))))))
+      ("tool.complete"
+       (let ((str (hermes-state-stream state))
+             (tid (hermes--get p "tool_id"))
+             (output (hermes--get p "output"))
+             (err    (hermes--get p "error"))
+             (dur    (hermes--get p "duration_s")))
+         (if (or (null str) (null tid))
+             state
+           (let* ((tools (hermes-stream-tools str))
+                  (idx (cl-position-if
+                        (lambda (tl) (equal tid (hermes-tool-id tl)))
+                        tools)))
+             (if (null idx)
+                 state
+               (let* ((old-tool (aref tools idx))
+                      (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                                  (setf (hermes-tool-status nt)
+                                        (if err 'error 'complete)
+                                        (hermes-tool-output nt) output
+                                        (hermes-tool-error nt) err
+                                        (hermes-tool-duration nt) dur)))
+                      (new-tools (copy-sequence tools)))
+                 (aset new-tools idx new-tool)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-tools ns) new-tools))))))))))
+      ;;; --- Blocking prompts ----------------------------------------------
+      ;; All four: replace wholesale; only one pending slot
+      ;; (createGatewayEventHandler.ts:519-547).
+      ("approval.request"
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-pending s)
+               (make-hermes-pending :kind 'approval
+                                    :request-id (hermes--get p "request_id")
+                                    :payload p))))
+      ("clarify.request"
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-pending s)
+               (make-hermes-pending :kind 'clarify
+                                    :request-id (hermes--get p "request_id")
+                                    :payload p))))
+      ("sudo.request"
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-pending s)
+               (make-hermes-pending :kind 'sudo
+                                    :request-id (hermes--get p "request_id")
+                                    :payload p))))
+      ("secret.request"
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-pending s)
+               (make-hermes-pending :kind 'secret
+                                    :request-id (hermes--get p "request_id")
+                                    :payload p))))
+      (:pending-clear
+       (if (hermes-state-pending state)
+           (hermes--with-copy state hermes-state-copy s
+             (setf (hermes-state-pending s) nil))
+         state))
       ;;; --- Errors --------------------------------------------------------
       ("error"
        (let ((text (or (hermes--get p "message") "(unknown error)")))
@@ -244,7 +326,31 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
          (setf (hermes-ui-state-status-text s) "Responding…")))
       ("message.complete"
        (hermes--with-copy state hermes-ui-state-copy s
-         (setf (hermes-ui-state-status-text s) nil)))
+         (setf (hermes-ui-state-status-text s) nil
+               (hermes-ui-state-tool-previews s) nil)))
+      ("tool.generating"
+       (let ((name (hermes--get p "name")))
+         (hermes--with-copy state hermes-ui-state-copy s
+           (setf (hermes-ui-state-status-text s)
+                 (format "Running %s…" (or name "tool"))))))
+      ("tool.progress"
+       (let ((tid (hermes--get p "tool_id"))
+             (preview (hermes--get p "preview")))
+         (if (null tid)
+             state
+           (hermes--with-copy state hermes-ui-state-copy s
+             (setf (hermes-ui-state-tool-previews s)
+                   (cons (cons tid preview)
+                         (assoc-delete-all
+                          tid (hermes-ui-state-tool-previews state))))))))
+      ("tool.complete"
+       (let ((tid (hermes--get p "tool_id")))
+         (if (null tid)
+             state
+           (hermes--with-copy state hermes-ui-state-copy s
+             (setf (hermes-ui-state-tool-previews s)
+                   (assoc-delete-all
+                    tid (hermes-ui-state-tool-previews state)))))))
       (_ state))))
 
 (provide 'hermes-state)

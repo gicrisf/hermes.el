@@ -19,6 +19,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'org-id)
 (require 'hermes-state)
 
 ;;;; Buffer-local markers for the in-flight region

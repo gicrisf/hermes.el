@@ -26,8 +26,26 @@
 (require 'hermes-rpc)
 (require 'hermes-state)
 
+(declare-function hermes-reconnect "hermes-mode" ())
+
 (defvar-local hermes-input--history nil
   "Buffer-local mirror of `hermes-state-history' for `read-string' HISTORY.")
+
+;;;; Post-reconnect drain
+
+(defun hermes-input--drain-after-reconnect ()
+  "After a reconnect, send the head of the queue (if any) on the new session.
+Subsequent items keep draining via the normal `message.complete' hook."
+  (let ((q (hermes-state-queue hermes--state))
+        (sid (hermes-state-session-id hermes--state)))
+    (when (and q sid)
+      (let ((head (car q)))
+        (hermes-dispatch '(:dequeue))
+        (hermes-rpc-request
+         "prompt.submit"
+         (list :session_id sid :text head)
+         (lambda (_r e)
+           (when e (message "hermes: post-reconnect submit error: %S" e))))))))
 
 ;;;; Drain hook — fires when an in-flight stream transitions to nil.
 
@@ -131,11 +149,26 @@ optimistically committed and queued behind any in-flight turn."
        (list (read-string "Hermes> " nil sym)))))
   (unless (derived-mode-p 'hermes-mode)
     (user-error "Not in a Hermes buffer"))
+  ;; If the gateway died, offer to reconnect.  The text is committed and
+  ;; queued; `hermes-reconnect' creates a fresh session and drains the head
+  ;; once it lands.
+  (when (and text (not (string-empty-p text))
+             (not (hermes-rpc-live-p)))
+    (if (yes-or-no-p "Hermes gateway is down. Restart and create a new session? ")
+        (progn
+          (hermes-dispatch (cons :user-submit (list :text text)))
+          (hermes-dispatch (cons :enqueue     (list :text text)))
+          (hermes-reconnect)
+          (setq text nil))               ; consumed
+      (user-error "Hermes gateway is not running")))
   (let ((sid (hermes-state-session-id hermes--state)))
-    (unless sid (user-error "No session id in this buffer"))
     (cond
-     ;; Empty input → no-op.
+     ;; Empty input or consumed by reconnect branch → no-op.
      ((or (null text) (string-empty-p text)) nil)
+     ;; No session yet (e.g. reconnect in flight) — queue without dispatch.
+     ((null sid)
+      (hermes-dispatch (cons :user-submit (list :text text)))
+      (hermes-dispatch (cons :enqueue     (list :text text))))
      ;; Slash command — fire immediately, no transcript, no history.
      ((eq (aref text 0) ?/)
       (hermes-rpc-request

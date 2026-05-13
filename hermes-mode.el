@@ -123,6 +123,39 @@
 (defalias 'hermes-send #'hermes-input-send
   "Queue-aware submission entry; see `hermes-input-send'.")
 
+(defun hermes-reconnect ()
+  "Restart the gateway (if needed) and bind the current buffer to a fresh session.
+Used after the gateway subprocess has died.  The old session id is removed
+from `hermes--session-buffers' once the new one is bound; the buffer is
+renamed accordingly; the slash-command catalog is re-fetched; and any
+queued input is drained."
+  (interactive)
+  (unless (derived-mode-p 'hermes-mode)
+    (user-error "Not in a Hermes buffer"))
+  (hermes--install-hooks)
+  (unless (hermes-rpc-live-p)
+    (hermes-rpc-start))
+  (let ((buf (current-buffer)))
+    (hermes-rpc-request
+     "session.create" '(:cols 100)
+     (lambda (result error)
+       (cond
+        (error (message "hermes: reconnect session.create failed: %S" error))
+        (result
+         (let ((sid (gethash "session_id" result)))
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (let ((old-sid (hermes-state-session-id hermes--state)))
+                 (when (and old-sid (not (equal old-sid sid)))
+                   (remhash old-sid hermes--session-buffers)))
+               (puthash sid buf hermes--session-buffers)
+               (setf (hermes-state-session-id hermes--state) sid)
+               (rename-buffer (generate-new-buffer-name
+                               (format "*hermes:%s*" sid)))
+               (hermes-input-fetch-catalog)
+               (hermes-input--drain-after-reconnect)
+               (message "hermes: reconnected as %s" sid))))))))))
+
 (defun hermes-interrupt ()
   "Send `session.interrupt' for the current session."
   (interactive)

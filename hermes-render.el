@@ -21,7 +21,6 @@
 (require 'cl-lib)
 (require 'org-id)
 (require 'hermes-state)
-(require 'hermes-md)
 
 ;;;; Buffer-local markers for the in-flight region
 
@@ -46,62 +45,38 @@ tool subtrees accumulate AFTER this marker.")
 
 (defun hermes--render (old new)
   "Diff OLD vs NEW (both `hermes-state') and update the buffer."
-  ;; Tail-follow snapshot: for each window showing the buffer, record
-  ;; whether its point is at `point-max' BEFORE the edits.  `save-excursion'
-  ;; in the body restores window-point to its prior numeric location, which
-  ;; is no longer the tail after we insert — hence the post-edit fixup.
-  (let* ((buf (current-buffer))
-         (tails (mapcar (lambda (w)
-                          (cons w (hermes--at-tail-p w)))
-                        (get-buffer-window-list buf nil t)))
-         (buffer-tail-p (= (point) (point-max))))
-    (with-silent-modifications
-      (save-excursion
-        ;; 1. Messages grew → append new tail messages (skip assistant ones
-        ;;    that were already streamed).
-        (let* ((old-n (length (and old (hermes-state-messages old))))
-               (new-n (length (hermes-state-messages new))))
-          (when (> new-n old-n)
-            (cl-loop for i from old-n below new-n
-                     for msg = (aref (hermes-state-messages new) i)
-                     do (hermes--render-committed-message msg))))
-        ;; 2. Stream lifecycle.
-        (let ((os (and old (hermes-state-stream old)))
-              (ns (hermes-state-stream new)))
-          (cond ((and (null os) ns) (hermes--stream-begin))
-                ((and os (null ns)) (hermes--stream-commit))
-                ((not (eq os ns))   (hermes--stream-update os ns))))
-        ;; 3. Header line — session-info / connection.
-        (unless (and old
-                     (eq (hermes-state-session-info old)
-                         (hermes-state-session-info new))
-                     (eq (hermes-state-connection old)
-                         (hermes-state-connection new)))
-          (hermes--render-header new))
-        ;; 4. Queue length changed → refresh header-line :eval forms.
-        (unless (eq (and old (hermes-state-queue old))
-                     (hermes-state-queue new))
-          (force-mode-line-update))))
-    ;; `with-silent-modifications' suppresses change hooks that Org's element
-    ;; cache depends on.  Reset it so `org-id-get-create' and other Org
-    ;; operations don't trip over stale data.
-    (when (derived-mode-p 'org-mode)
-      (org-element-cache-reset))
-    ;; Tail follow: snap any window that was at tail to the new point-max.
-    (when buffer-tail-p
-      (goto-char (point-max)))
-    (dolist (cell tails)
-      (let ((w (car cell)))
-        (when (and (cdr cell) (window-live-p w)
-                   (eq (window-buffer w) buf))
-          (set-window-point w (point-max)))))))
-
-(defun hermes--at-tail-p (window)
-  "Non-nil if WINDOW's point is at `point-max' in its buffer.
-The check uses the buffer to which WINDOW is showing; for the
-current buffer this is identical to `(= (window-point window) (point-max))'."
-  (with-current-buffer (window-buffer window)
-    (= (window-point window) (point-max))))
+  (with-silent-modifications
+    (save-excursion
+      ;; 1. Messages grew → append new tail messages (skip assistant ones
+      ;;    that were already streamed).
+      (let* ((old-n (length (and old (hermes-state-messages old))))
+             (new-n (length (hermes-state-messages new))))
+        (when (> new-n old-n)
+          (cl-loop for i from old-n below new-n
+                   for msg = (aref (hermes-state-messages new) i)
+                   do (hermes--render-committed-message msg))))
+      ;; 2. Stream lifecycle.
+      (let ((os (and old (hermes-state-stream old)))
+            (ns (hermes-state-stream new)))
+        (cond ((and (null os) ns) (hermes--stream-begin))
+              ((and os (null ns)) (hermes--stream-commit))
+              ((not (eq os ns))   (hermes--stream-update os ns))))
+      ;; 3. Header line — session-info / connection.
+      (unless (and old
+                   (eq (hermes-state-session-info old)
+                       (hermes-state-session-info new))
+                   (eq (hermes-state-connection old)
+                       (hermes-state-connection new)))
+        (hermes--render-header new))
+      ;; 4. Queue length changed → refresh header-line :eval forms.
+      (unless (eq (and old (hermes-state-queue old))
+                   (hermes-state-queue new))
+        (force-mode-line-update))))
+  ;; `with-silent-modifications' suppresses change hooks that Org's element
+  ;; cache depends on.  Reset it so `org-id-get-create' and other Org
+  ;; operations don't trip over stale data.
+  (when (derived-mode-p 'org-mode)
+    (org-element-cache-reset)))
 
 (defun hermes--render-ui (_old new)
   "Re-render the header line from the ephemeral state NEW."
@@ -149,21 +124,7 @@ current buffer this is identical to `(= (window-point window) (point-max))'."
   (set-marker-insertion-type hermes--stream-end       t))
 
 (defun hermes--stream-commit ()
-  "Stream finished: convert tail, stamp Org :ID:s, drop markers."
-  ;; Final pass: the unstable region [stable-end..stream-end) still holds raw
-  ;; markdown.  Convert it in place before sealing the message.
-  (when (and (markerp hermes--stream-stable-end)
-             (markerp hermes--stream-end)
-             (< (marker-position hermes--stream-stable-end)
-                (marker-position hermes--stream-end)))
-    (let* ((beg (marker-position hermes--stream-stable-end))
-           (end (marker-position hermes--stream-end))
-           (raw (buffer-substring-no-properties beg end))
-           (cooked (hermes-md-to-org raw)))
-      (unless (equal raw cooked)
-        (delete-region beg end)
-        (goto-char beg)
-        (insert cooked))))
+  "Stream finished: stamp Org :ID:s on the trail, drop markers."
   ;; Walk every in-flight tool subtree and stamp it with an :ID:.
   (dolist (cell hermes--stream-tool-markers)
     (let ((m (cdr cell)))
@@ -207,8 +168,8 @@ current buffer this is identical to `(= (window-point window) (point-max))'."
 (defun hermes--rewrite-stream (text)
   "Place TEXT into the in-flight region using a stable/unstable split.
 Stable prefix is appended at `hermes--stream-stable-end' (which then
-advances past it).  Unstable suffix replaces the region between the
-stable marker and `hermes--stream-end'."
+advances).  Unstable suffix replaces the region between the stable
+marker and `hermes--stream-end'."
   (let* ((boundary (hermes--stable-boundary text))
          (already  (- (marker-position hermes--stream-stable-end)
                       (save-excursion
@@ -218,19 +179,16 @@ stable marker and `hermes--stream-end'."
          (stable   (substring text 0 boundary))
          (unstable (substring text boundary))
          (new-stable-substring (substring stable already)))
-    ;; Append the newly-stable chunk, converted to Org syntax.  `stable-end'
-    ;; has insertion-type nil so plain `insert' would leave it pointing at
-    ;; the START of the new text, and the delete-region below would then
-    ;; nuke the stable chunk along with the unstable suffix.  Use
-    ;; `insert-before-markers' to advance both `stable-end' and `stream-end'
-    ;; past the new content.
+    ;; Append the newly-stable chunk at the stable marker, advancing it.
     (when (> (length new-stable-substring) 0)
       (goto-char hermes--stream-stable-end)
-      (insert-before-markers (hermes-md-to-org new-stable-substring)))
-    ;; Replace the (now isolated) unstable region.
+      (insert new-stable-substring))
+    ;; Replace the unstable region.
     (delete-region hermes--stream-stable-end hermes--stream-end)
     (goto-char hermes--stream-stable-end)
-    (insert unstable)))
+    (insert unstable)
+    ;; `hermes--stream-end' has insertion-type t, so it tracked our inserts.
+    ))
 
 (defun hermes--stable-boundary (text)
   "Return the index of the last `\\n\\n' in TEXT outside a fenced code block.

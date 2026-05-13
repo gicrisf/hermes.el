@@ -24,6 +24,7 @@
 (declare-function hermes-input-send "hermes-input" (text))
 (declare-function hermes-sessions "hermes-sessions" ())
 (declare-function hermes "hermes-mode" ())
+(declare-function hermes-new-session "hermes-mode" (&optional callback))
 (declare-function hermes-interrupt "hermes-mode" ())
 
 (defcustom hermes-dashboard-logo nil
@@ -43,10 +44,19 @@ Overrides any banner the gateway may provide via `gateway.ready'."
 ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   "Fallback NOUS HERMES banner.")
 
-;;;; State
+;;;; Primary-session lookup
+;;
+;; Picked lazily on every render: the most-recently-modified live buffer
+;; in `hermes--session-buffers'.  No persistent state to keep in sync.
 
-(defvar hermes-dashboard--primary-sid nil
-  "Session id treated as the dashboard's `current' for the composer.")
+(defun hermes-dashboard--live-buffers ()
+  "Return live session buffers, most-recently-touched first."
+  (let (acc)
+    (when (boundp 'hermes--session-buffers)
+      (maphash (lambda (_sid b) (when (buffer-live-p b) (push b acc)))
+               hermes--session-buffers))
+    (sort acc (lambda (a b) (> (buffer-modified-tick a)
+                               (buffer-modified-tick b))))))
 
 ;;;; Faces
 
@@ -109,9 +119,12 @@ Returns LOGO unchanged when STATUS is empty."
 
 (defun hermes-dashboard--connection-line ()
   (let* ((live (hermes-rpc-live-p))
-         (sid hermes-dashboard--primary-sid)
+         (buf (car (hermes-dashboard--live-buffers)))
+         (sid (and buf (buffer-local-value 'hermes--state buf)
+                   (hermes-state-session-id
+                    (buffer-local-value 'hermes--state buf))))
          (label (cond ((not live) "gateway down")
-                      ((null sid) "starting session…")
+                      ((null sid) "no session yet")
                       (t (format "session %s ready"
                                  (hermes-dashboard--short-sid sid))))))
     (propertize (format "  ● %s" label) 'face
@@ -119,9 +132,7 @@ Returns LOGO unchanged when STATUS is empty."
 
 (defun hermes-dashboard--primary-state ()
   "Return the `hermes-state' of the primary session buffer, or nil."
-  (let* ((sid hermes-dashboard--primary-sid)
-         (buf (and sid (boundp 'hermes--session-buffers)
-                   (gethash sid hermes--session-buffers))))
+  (let ((buf (car (hermes-dashboard--live-buffers))))
     (and (buffer-live-p buf)
          (buffer-local-value 'hermes--state buf))))
 
@@ -250,7 +261,9 @@ nil and we always refresh."
     (let ((buf (get-buffer hermes-dashboard-buffer-name)))
       (when (buffer-live-p buf)
         (with-current-buffer buf
-          (hermes-dashboard--refresh))))))
+          (when (derived-mode-p 'hermes-dashboard-mode)
+            (hermes-dashboard--refresh)))))))
+ 
 
 ;;;; Mode
 
@@ -269,16 +282,15 @@ nil and we always refresh."
 (define-derived-mode hermes-dashboard-mode special-mode "Hermes-Dash"
   "Landing dashboard for the Hermes agent."
   (setq truncate-lines t)
-  (buffer-disable-undo))
+  (buffer-disable-undo)
+  (hermes-dashboard--install-hooks)
+  (add-hook 'kill-buffer-hook #'hermes-dashboard--uninstall-hooks nil t))
 
 ;;;; Commands
 
 (defun hermes-dashboard--primary-buffer ()
-  "Return the buffer for the primary session, or nil."
-  (let ((sid hermes-dashboard--primary-sid))
-    (and sid (boundp 'hermes--session-buffers)
-         (let ((b (gethash sid hermes--session-buffers)))
-           (and (buffer-live-p b) b)))))
+  "Return the most-recently-active live session buffer, or nil."
+  (car (hermes-dashboard--live-buffers)))
 
 (defun hermes-dashboard-dwim ()
   "RET: switch to session at point, else send prompt to primary session."
@@ -319,16 +331,27 @@ nil and we always refresh."
       (call-interactively #'hermes-interrupt))))
 
 (defun hermes-dashboard-new-session ()
-  "Create another Hermes session and make it the primary."
+  "Create another Hermes session in the background (no buffer pop).
+The dashboard refreshes once `session.info' arrives for the new id."
   (interactive)
-  (call-interactively #'hermes))
+  (hermes-new-session
+   (lambda (_buf) (hermes-dashboard--refresh-if-open))))
 
 ;;;; Entry / hook installation
 
-(defun hermes-dashboard--note-session (sid)
-  "Mark SID as the dashboard's primary session and refresh."
-  (setq hermes-dashboard--primary-sid sid)
-  (hermes-dashboard--refresh-if-open))
+(defun hermes-dashboard--install-hooks ()
+  "Install RPC hooks the dashboard needs.  Idempotent."
+  (add-hook 'hermes-rpc-event-functions      #'hermes-dashboard--refresh-if-open)
+  (add-hook 'hermes-rpc-connection-functions #'hermes-dashboard--refresh-if-open))
+
+(defun hermes-dashboard--uninstall-hooks ()
+  "Remove the dashboard's RPC hooks."
+  (remove-hook 'hermes-rpc-event-functions      #'hermes-dashboard--refresh-if-open)
+  (remove-hook 'hermes-rpc-connection-functions #'hermes-dashboard--refresh-if-open))
+
+;;;###autoload
+(defalias 'hermes-dashboard #'hermes-dashboard-show
+  "Open the vanilla Hermes landing dashboard.")
 
 (defun hermes-dashboard-show ()
   "Pop up the dashboard buffer in the current window."

@@ -8,7 +8,7 @@
 ;;  Dashboard mode
 ;; ─────────────────────────────────────────────────────────────────────────────
 
-(defvar +hermes-dashboard-buffer-name "*Hermes*")
+(defvar +hermes-dashboard-buffer-name "*doom-hermes*")
 
 (defface +hermes-dashboard-banner
   '((t (:inherit +dashboard-banner))) "Hermes dashboard banner." :group 'hermes)
@@ -106,8 +106,9 @@ Centers relative to (window-width)."
                           'face '+hermes-dashboard-label
                           'follow-link t)
                          (buffer-string))
-(propertize (or key "") 'face '+hermes-dashboard-desc))
-               "\n")))))
+(propertize (or key "") 'face '+hermes-dashboard-desc)))
+               (window-width))
+         "\n")))
 
 ;; ── Mode ──────────────────────────────────────────────────────────────────────
 
@@ -257,7 +258,10 @@ Called from `window-size-change-functions' on resize."
     (kbd "C-c C-i") #'hermes-send
     (kbd "C-c C-k") #'hermes-interrupt
     (kbd "C-c C-l") #'hermes-compose)
-  )
+  ;; Redirect M-x hermes to the Doom-styled dashboard
+  (advice-add 'hermes-dashboard-show :around
+              (lambda (fn &rest args)
+                (+hermes-dashboard-open))))
 
 ;; ─────────────────────────────────────────────────────────────────────────────
 ;;  Leader prefix: SPC h

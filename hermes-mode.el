@@ -26,7 +26,6 @@
 (require 'hermes-sessions)
 (require 'hermes-skin)
 (require 'hermes-compose)
-(require 'hermes-dashboard)
 
 ;;;; Routing: filter event → buffer
 
@@ -83,10 +82,8 @@ without this cache, the very first buffer would never see the skin.")
   "Wire RPC hooks once.  Idempotent."
   (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
   (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
-  (add-hook 'hermes-rpc-event-functions #'hermes-dashboard--refresh-if-open)
   (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection)
-  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open)
-  (add-hook 'hermes-rpc-connection-functions #'hermes-dashboard--refresh-if-open))
+  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open))
 
 ;;;; Major mode
 
@@ -114,21 +111,25 @@ without this cache, the very first buffer would never see the skin.")
 
 ;;;; Public entry points
 
-;;;###autoload
-(defun hermes ()
-  "Open the Hermes dashboard, start the gateway, and create a session.
-The conversation buffer is created in the background and registered as the
-dashboard's primary session; press `i' on the dashboard to start chatting."
-  (interactive)
+(defun hermes-new-session (&optional callback)
+  "Start the gateway (if needed), create a session, and prepare its buffer.
+The buffer is registered in `hermes--session-buffers' but NOT popped to the
+user; that's the caller's job.  CALLBACK, if non-nil, is called with the new
+buffer (or nil on error) once `session.create' resolves.
+
+This is the building block dashboards use to spawn sessions in the
+background; for the user-facing entry that also pops the buffer, see
+`hermes'."
   (hermes--install-hooks)
   (unless (hermes-rpc-live-p)
     (hermes-rpc-start))
-  (hermes-dashboard-show)
   (hermes-rpc-request
    "session.create" '(:cols 100)
    (lambda (result error)
      (cond
-      (error (message "hermes: session.create failed: %S" error))
+      (error
+       (message "hermes: session.create failed: %S" error)
+       (when callback (funcall callback nil)))
       (result
        (let* ((sid (gethash "session_id" result))
               (buf (generate-new-buffer (format "*hermes:%s*" sid))))
@@ -136,12 +137,20 @@ dashboard's primary session; press `i' on the dashboard to start chatting."
          (with-current-buffer buf
            (hermes-mode)
            (setf (hermes-state-session-id hermes--state) sid)
-           ;; Replay the cached gateway.ready so the buffer learns its skin.
            (when hermes--last-gateway-ready
              (hermes-dispatch
               (cons "gateway.ready" hermes--last-gateway-ready)))
            (hermes-input-fetch-catalog))
-         (hermes-dashboard--note-session sid)))))))
+         (when callback (funcall callback buf))))))))
+
+;;;###autoload
+(defun hermes ()
+  "Start the gateway (if needed), create a session, and pop its chat buffer.
+This is the lean entry point — it does not open a dashboard.  For a landing
+screen, use `M-x hermes-dashboard' or `M-x doom-dashboard-hermes' instead."
+  (interactive)
+  (hermes-new-session
+   (lambda (buf) (when (buffer-live-p buf) (pop-to-buffer buf)))))
 
 (defalias 'hermes-send #'hermes-input-send
   "Queue-aware submission entry; see `hermes-input-send'.")

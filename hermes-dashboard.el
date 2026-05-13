@@ -34,11 +34,12 @@ Overrides any banner the gateway may provide via `gateway.ready'."
 
 (defconst hermes-dashboard--builtin-logo
   "\
- _   _  ___  _   _ ____    _   _ _____ ____  __  __ _____ ____
-| \\ | |/ _ \\| | | / ___|  | | | | ____|  _ \\|  \\/  | ____/ ___|
-|  \\| | | | | | | \\___ \\  | |_| |  _| | |_) | |\\/| |  _| \\___ \\
-| |\\  | |_| | |_| |___) | |  _  | |___|  _ <| |  | | |___ ___) |
-|_| \\_|\\___/ \\___/|____/  |_| |_|_____|_| \\_\\_|  |_|_____|____/"
+██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
+███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
+██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
+██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   "Fallback NOUS HERMES banner.")
 
 ;;;; State
@@ -88,6 +89,20 @@ Overrides any banner the gateway may provide via `gateway.ready'."
     (insert (hermes-dashboard--strip-rich string))
     (add-face-text-property start (point) 'hermes-dashboard-logo-face)))
 
+(defun hermes-dashboard--logo-with-status (logo status)
+  "Return LOGO with STATUS appended to its last line, right-padded to logo width.
+Returns LOGO unchanged when STATUS is empty."
+  (if (or (null status) (string-empty-p (string-trim status)))
+      logo
+    (let* ((lines (split-string logo "\n")))
+      (when lines
+        (let* ((width (apply #'max (mapcar #'length lines)))
+               (last (car (last lines)))
+               (pad (max 1 (- width (length last) (length status) 2))))
+          (setf (car (last lines))
+                (concat last (make-string pad ?\s) " " status))))
+      (string-join lines "\n"))))
+
 (defun hermes-dashboard--short-sid (sid)
   (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 8) (or sid "?")))
 
@@ -110,12 +125,10 @@ Overrides any banner the gateway may provide via `gateway.ready'."
          (buffer-local-value 'hermes--state buf))))
 
 (defun hermes-dashboard--insert-heading (text)
-  (insert (propertize text 'face 'hermes-dashboard-heading-face) "\n")
-  (insert (propertize (make-string (length text) ?─)
-                      'face 'hermes-dashboard-dim-face) "\n"))
+  (insert (propertize (format "◆  %s" text) 'face 'hermes-dashboard-heading-face) "\n"))
 
 (defun hermes-dashboard--info-row (label value)
-  (insert (format "  %-10s %s\n"
+  (insert (format "   %-10s %s\n"
                   (propertize label 'face 'hermes-dashboard-dim-face)
                   (or value "—"))))
 
@@ -124,7 +137,7 @@ Overrides any banner the gateway may provide via `gateway.ready'."
          (info (and st (hermes-state-session-info st))))
     (hermes-dashboard--insert-heading "Session")
     (cond
-     ((null st) (insert "  (no session)\n"))
+     ((null st) (insert "   (no session)\n"))
      (t
       (let* ((sid (hermes-state-session-id st))
              (model (and (hash-table-p info) (gethash "model" info)))
@@ -145,10 +158,10 @@ Overrides any banner the gateway may provide via `gateway.ready'."
                        ((sequencep skills) (length skills))
                        (t "?"))))
         (when (and (stringp sysp) (not (string-empty-p sysp)))
-          (insert (propertize "  system prompt:\n"
+          (insert (propertize "   system prompt:\n"
                               'face 'hermes-dashboard-dim-face))
           (dolist (line (split-string sysp "\n"))
-            (insert "    " (propertize line 'face 'hermes-dashboard-dim-face)
+            (insert "     " (propertize line 'face 'hermes-dashboard-dim-face)
                     "\n"))))))
     (insert "\n")))
 
@@ -156,6 +169,8 @@ Overrides any banner the gateway may provide via `gateway.ready'."
   (hermes-dashboard--insert-heading "Sessions")
   (let ((empty t))
     (when (boundp 'hermes--session-buffers)
+      (insert (propertize "   SID        Model              Status      Msgs\n"
+                          'face 'hermes-dashboard-dim-face))
       (maphash
        (lambda (sid buf)
          (when (buffer-live-p buf)
@@ -170,7 +185,7 @@ Overrides any banner the gateway may provide via `gateway.ready'."
                                 ((and st (hermes-state-stream  st)) "running")
                                 (t "idle")))
                   (start (point)))
-             (insert (format "  %-10s  %-16s  %-8s  %d msgs\n"
+             (insert (format "   %-10s  %-16s  %-8s  %d msgs\n"
                              (hermes-dashboard--short-sid sid)
                              model status msgs))
              (add-text-properties start (point)
@@ -178,19 +193,19 @@ Overrides any banner the gateway may provide via `gateway.ready'."
                                         'mouse-face 'highlight)))))
        hermes--session-buffers))
     (when empty
-      (insert (propertize "  (no live sessions)\n"
+      (insert (propertize "   (no live sessions)\n"
                           'face 'hermes-dashboard-dim-face))))
   (insert "\n"))
 
 (defun hermes-dashboard--insert-commands ()
   (hermes-dashboard--insert-heading "Commands")
-  (dolist (row '(("i / RET" . "send prompt to primary session")
-                 ("c"       . "open multi-line composer")
+  (dolist (row '(("i / RET" . "send")
+                 ("c"       . "compose")
                  ("n"       . "new session")
-                 ("s"       . "sessions sidebar")
+                 ("s"       . "sidebar")
                  ("g"       . "refresh")
-                 ("q"       . "bury dashboard")))
-    (insert (format "  %-9s %s\n"
+                 ("q"       . "quit")))
+    (insert (format "   %-9s %s\n"
                     (propertize (car row) 'face 'hermes-dashboard-key-face)
                     (cdr row)))))
 
@@ -202,9 +217,13 @@ Overrides any banner the gateway may provide via `gateway.ready'."
         (pt (point)))
     (erase-buffer)
     (insert "\n")
-    (hermes-dashboard--insert-logo (hermes-dashboard--logo))
-    (insert "\n\n")
-    (insert (hermes-dashboard--connection-line) "\n\n")
+    (let ((logo (hermes-dashboard--logo-with-status
+                 (hermes-dashboard--logo)
+                 (hermes-dashboard--connection-line))))
+      (hermes-dashboard--insert-logo logo)
+      (insert "\n")
+      (let ((w (car (sort (mapcar #'length (split-string logo "\n")) #'>))))
+        (insert (propertize (make-string (min w 80) ?─) 'face 'hermes-dashboard-dim-face) "\n\n")))
     (hermes-dashboard--insert-session-info)
     (hermes-dashboard--insert-session-list)
     (hermes-dashboard--insert-commands)

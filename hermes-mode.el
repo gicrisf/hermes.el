@@ -26,6 +26,7 @@
 (require 'hermes-sessions)
 (require 'hermes-skin)
 (require 'hermes-compose)
+(require 'hermes-dashboard)
 
 ;;;; Routing: filter event → buffer
 
@@ -82,8 +83,10 @@ without this cache, the very first buffer would never see the skin.")
   "Wire RPC hooks once.  Idempotent."
   (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
   (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
+  (add-hook 'hermes-rpc-event-functions #'hermes-dashboard--refresh-if-open)
   (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection)
-  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open))
+  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open)
+  (add-hook 'hermes-rpc-connection-functions #'hermes-dashboard--refresh-if-open))
 
 ;;;; Major mode
 
@@ -113,11 +116,14 @@ without this cache, the very first buffer would never see the skin.")
 
 ;;;###autoload
 (defun hermes ()
-  "Start the Hermes gateway (if needed), create a session, open a buffer."
+  "Open the Hermes dashboard, start the gateway, and create a session.
+The conversation buffer is created in the background and registered as the
+dashboard's primary session; press `i' on the dashboard to start chatting."
   (interactive)
   (hermes--install-hooks)
   (unless (hermes-rpc-live-p)
     (hermes-rpc-start))
+  (hermes-dashboard-show)
   (hermes-rpc-request
    "session.create" '(:cols 100)
    (lambda (result error)
@@ -135,7 +141,7 @@ without this cache, the very first buffer would never see the skin.")
              (hermes-dispatch
               (cons "gateway.ready" hermes--last-gateway-ready)))
            (hermes-input-fetch-catalog))
-         (pop-to-buffer buf)))))))
+         (hermes-dashboard--note-session sid)))))))
 
 (defalias 'hermes-send #'hermes-input-send
   "Queue-aware submission entry; see `hermes-input-send'.")

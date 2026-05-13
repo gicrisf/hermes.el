@@ -13,6 +13,7 @@
         "hermes-md.el"
         "hermes-skin.el"
         "hermes-compose.el"
+        "hermes-dashboard.el"
         "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"

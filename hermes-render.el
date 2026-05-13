@@ -21,6 +21,7 @@
 (require 'cl-lib)
 (require 'org-id)
 (require 'hermes-state)
+(require 'hermes-skin)
 
 ;;;; Buffer-local markers for the in-flight region
 
@@ -89,21 +90,31 @@ tool subtrees accumulate AFTER this marker.")
 (defun hermes--render-committed-message (msg)
   "Append MSG to the buffer.  Skip assistant messages — those are streamed."
   (pcase (hermes-message-kind msg)
-    ('user      (hermes--insert-headline "user" (hermes-message-text msg)))
-    ('system    (hermes--insert-headline "system" (hermes-message-text msg)))
+    ('user      (hermes--insert-headline "user"   'hermes-user-face
+                                         (hermes-message-text msg)))
+    ('system    (hermes--insert-headline "system" 'hermes-system-face
+                                         (hermes-message-text msg)))
     ('assistant
      ;; Streaming already rendered the text; we only need to make sure the
      ;; sentinel markers are gone (stream-commit handles that).
      nil)))
 
-(defun hermes--insert-headline (kind text)
-  "Insert a `* KIND' headline followed by TEXT at `point-max'."
+(defun hermes--insert-headline (kind face text)
+  "Insert a `* KIND' headline (tinted with FACE) followed by TEXT at `point-max'."
   (goto-char (point-max))
   (unless (bolp) (insert "\n"))
-  (insert (format "* %s\n" kind))
+  (let ((hb (point)))
+    (insert (format "* %s\n" kind))
+    (hermes--face-overlay hb (1- (point)) face))
   (when (and text (not (string-empty-p text)))
     (insert text)
     (unless (eq (char-before) ?\n) (insert "\n"))))
+
+(defun hermes--face-overlay (beg end face)
+  "Put a face overlay over the headline region [BEG, END)."
+  (let ((ov (make-overlay beg end nil t nil)))
+    (overlay-put ov 'face face)
+    (overlay-put ov 'hermes-headline t)))
 
 ;;;; Stream lifecycle
 
@@ -113,7 +124,9 @@ tool subtrees accumulate AFTER this marker.")
   (unless (bolp) (insert "\n"))
   (setq hermes--stream-headline-marker (point-marker))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
-  (insert "* assistant\n")
+  (let ((hb (point)))
+    (insert "* assistant\n")
+    (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face))
   (setq hermes--stream-stable-end (point-marker)
         hermes--stream-end        (point-marker)
         hermes--stream-tool-markers nil)
@@ -237,9 +250,14 @@ Returns 0 if no such boundary exists yet."
   "Append the subtree for TOOL at point-max, recording a marker."
   (goto-char (point-max))
   (unless (bolp) (insert "\n"))
-  (let ((start (point-marker)))
+  (let ((start (point-marker))
+        (hb (point)))
     (set-marker-insertion-type start nil)
     (insert (hermes--format-tool-subtree tool))
+    ;; Overlay the tool headline (first line) with the tool face.
+    (save-excursion
+      (goto-char hb)
+      (hermes--face-overlay (point) (line-end-position) 'hermes-tool-face))
     (push (cons (hermes-tool-id tool) start) hermes--stream-tool-markers)))
 
 (defun hermes--rewrite-tool-subtree (tool)

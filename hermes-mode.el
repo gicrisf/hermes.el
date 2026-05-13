@@ -24,11 +24,19 @@
 (require 'hermes-prompts)
 (require 'hermes-input)
 (require 'hermes-sessions)
+(require 'hermes-skin)
+(require 'hermes-compose)
 
 ;;;; Routing: filter event → buffer
 
 (defvar hermes--session-buffers (make-hash-table :test 'equal)
   "Map of session-id → conversation buffer.")
+
+(defvar hermes--last-gateway-ready nil
+  "Most recent `gateway.ready' payload, cached for replay into new buffers.
+The event broadcasts to every existing session buffer when it arrives, but
+the first session is typically created AFTER `gateway.ready' lands — so
+without this cache, the very first buffer would never see the skin.")
 
 (defun hermes--lookup-buffer (session-id)
   "Return the buffer for SESSION-ID, or nil."
@@ -39,14 +47,17 @@
 
 (defun hermes--route-event (type session-id payload)
   "Dispatch event TYPE/PAYLOAD into the session buffer's atoms."
-  (let ((buf (and session-id (hermes--lookup-buffer session-id))))
-    ;; Some events arrive before we know the session id (e.g. gateway.ready);
-    ;; broadcast those to every Hermes buffer.
+  (when (or (equal type "gateway.ready") (equal type "skin.changed"))
+    (setq hermes--last-gateway-ready payload))
+  (let ((buf (and session-id (not (string-empty-p session-id))
+                  (hermes--lookup-buffer session-id))))
+    ;; Some events arrive before we know the session id (gateway.ready,
+    ;; skin.changed) — broadcast those to every existing Hermes buffer.
     (cond
      (buf (with-current-buffer buf
             (hermes-dispatch (cons type payload))
             (hermes-ui-dispatch (cons type payload))))
-     ((null session-id)
+     ((or (null session-id) (string-empty-p session-id))
       (maphash (lambda (_sid b)
                  (when (buffer-live-p b)
                    (with-current-buffer b
@@ -79,6 +90,7 @@
 (defvar hermes-mode-map
   (let ((m (make-sparse-keymap)))
     (define-key m (kbd "C-c C-i") #'hermes-send)
+    (define-key m (kbd "C-c C-l") #'hermes-compose)
     (define-key m (kbd "C-c C-k") #'hermes-interrupt)
     m)
   "Keymap for `hermes-mode'.")
@@ -91,6 +103,7 @@
   (add-hook 'hermes-state-change-hook    #'hermes--render        nil t)
   (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  nil t)
   (add-hook 'hermes-state-change-hook    #'hermes-input--drain   nil t)
+  (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     nil t)
   (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     nil t)
   ;; Initial header line.
   (with-silent-modifications
@@ -117,6 +130,10 @@
          (with-current-buffer buf
            (hermes-mode)
            (setf (hermes-state-session-id hermes--state) sid)
+           ;; Replay the cached gateway.ready so the buffer learns its skin.
+           (when hermes--last-gateway-ready
+             (hermes-dispatch
+              (cons "gateway.ready" hermes--last-gateway-ready)))
            (hermes-input-fetch-catalog))
          (pop-to-buffer buf)))))))
 
@@ -152,6 +169,9 @@ queued input is drained."
                (setf (hermes-state-session-id hermes--state) sid)
                (rename-buffer (generate-new-buffer-name
                                (format "*hermes:%s*" sid)))
+               (when hermes--last-gateway-ready
+                 (hermes-dispatch
+                  (cons "gateway.ready" hermes--last-gateway-ready)))
                (hermes-input-fetch-catalog)
                (hermes-input--drain-after-reconnect)
                (message "hermes: reconnected as %s" sid))))))))))

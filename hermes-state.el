@@ -15,6 +15,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ansi-color)
 
 (defcustom hermes-history-max 200
   "Maximum number of past inputs retained in `hermes-state-history'."
@@ -175,7 +176,10 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
       ("gateway.ready"
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-connection s) 'connected
-               (hermes-state-skin s) (hermes--get p "skin"))))
+               (hermes-state-skin s) (or (hermes--get p "skin") p))))
+      ("skin.changed"
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-skin s) p)))
       ("session.info"
        ;; Merge into existing (createGatewayEventHandler.ts:279-292).
        (hermes--with-copy state hermes-state-copy s
@@ -317,6 +321,14 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                (make-hermes-pending :kind 'secret
                                     :request-id (hermes--get p "request_id")
                                     :payload p))))
+      (:system-message
+       (let ((text (plist-get p :text)))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-messages s)
+                 (hermes--vector-append
+                  (hermes-state-messages state)
+                  (make-hermes-message :kind 'system :text text
+                                       :timestamp (current-time)))))))
       (:pending-clear
        (if (hermes-state-pending state)
            (hermes--with-copy state hermes-state-copy s
@@ -324,7 +336,8 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
          state))
       ;;; --- Errors --------------------------------------------------------
       ("error"
-       (let ((text (or (hermes--get p "message") "(unknown error)")))
+       (let ((text (ansi-color-apply
+                    (or (hermes--get p "message") "(unknown error)"))))
          (hermes--with-copy state hermes-state-copy s
            (setf (hermes-state-messages s)
                  (hermes--vector-append

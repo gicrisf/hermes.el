@@ -11,6 +11,8 @@
         "hermes-input.el"
         "hermes-sessions.el"
         "hermes-md.el"
+        "hermes-skin.el"
+        "hermes-compose.el"
         "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"

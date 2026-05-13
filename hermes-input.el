@@ -23,6 +23,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ansi-color)
 (require 'hermes-rpc)
 (require 'hermes-state)
 
@@ -171,11 +172,26 @@ optimistically committed and queued behind any in-flight turn."
       (hermes-dispatch (cons :enqueue     (list :text text))))
      ;; Slash command — fire immediately, no transcript, no history.
      ((eq (aref text 0) ?/)
-      (hermes-rpc-request
-       "slash.exec"
-       (list :session_id sid :command (substring text 1))
-       (lambda (_r e)
-         (when e (message "hermes: slash.exec error: %S" e)))))
+      (let ((buf (current-buffer)))
+        (hermes-rpc-request
+         "slash.exec"
+         (list :session_id sid :command (substring text 1))
+         (lambda (result error)
+           (let* ((raw
+                   (cond
+                    (error
+                     (format "%s: %s" text
+                             (or (and (hash-table-p error)
+                                      (gethash "message" error))
+                                 (format "%S" error))))
+                    ((and (hash-table-p result)
+                          (let ((out (gethash "output" result)))
+                            (and out (not (string-empty-p out)) out))))))
+                  (msg (and raw (ansi-color-apply raw))))
+             (when (and msg (buffer-live-p buf))
+               (with-current-buffer buf
+                 (hermes-dispatch
+                  (cons :system-message (list :text msg))))))))))
      ;; Live turn → optimistic commit + enqueue (drain hook handles dispatch).
      ((hermes-state-stream hermes--state)
       (hermes-dispatch (cons :user-submit (list :text text)))

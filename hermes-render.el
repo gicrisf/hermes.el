@@ -22,6 +22,7 @@
 (require 'org-id)
 (require 'hermes-state)
 (require 'hermes-skin)
+(require 'hermes-md)
 
 ;;;; Buffer-local markers for the in-flight region
 
@@ -145,6 +146,16 @@ tool subtrees accumulate AFTER this marker.")
         (save-excursion
           (goto-char m)
           (ignore-errors (org-id-get-create))))))
+  ;; Convert any residual unstable tail from markdown to Org.
+  (when (and (markerp hermes--stream-stable-end)
+             (markerp hermes--stream-end)
+             (> (marker-position hermes--stream-end)
+                (marker-position hermes--stream-stable-end)))
+    (let ((beg (marker-position hermes--stream-stable-end))
+          (end (marker-position hermes--stream-end)))
+      (save-excursion
+        (goto-char beg)
+        (insert (hermes-md-to-org (delete-and-extract-region beg end))))))
   ;; Stamp the assistant headline itself so external Org buffers can cite it.
   (when (and (markerp hermes--stream-headline-marker)
              (marker-position hermes--stream-headline-marker))
@@ -180,28 +191,27 @@ tool subtrees accumulate AFTER this marker.")
 
 (defun hermes--rewrite-stream (text)
   "Place TEXT into the in-flight region using a stable/unstable split.
-Stable prefix is appended at `hermes--stream-stable-end' (which then
-advances).  Unstable suffix replaces the region between the stable
-marker and `hermes--stream-end'."
+Stable prefix is converted from markdown and appended at
+`hermes--stream-stable-end' (which then advances).  Unstable suffix
+replaces the region between the stable marker and `hermes--stream-end'."
   (let* ((boundary (hermes--stable-boundary text))
          (already  (- (marker-position hermes--stream-stable-end)
-                      (save-excursion
-                        (goto-char hermes--stream-stable-end)
-                        (re-search-backward "^\\* assistant\n" nil t)
-                        (match-end 0))))
+                       (save-excursion
+                         (goto-char hermes--stream-stable-end)
+                         (re-search-backward "^\\* assistant\n" nil t)
+                         (match-end 0))))
          (stable   (substring text 0 boundary))
          (unstable (substring text boundary))
          (new-stable-substring (substring stable already)))
-    ;; Append the newly-stable chunk at the stable marker, advancing it.
+    ;; Append the newly-stable chunk at the stable marker, converting to Org.
     (when (> (length new-stable-substring) 0)
       (goto-char hermes--stream-stable-end)
-      (insert new-stable-substring))
+      (insert (hermes-md-to-org new-stable-substring))
+      (set-marker hermes--stream-stable-end (point)))
     ;; Replace the unstable region.
     (delete-region hermes--stream-stable-end hermes--stream-end)
     (goto-char hermes--stream-stable-end)
-    (insert unstable)
-    ;; `hermes--stream-end' has insertion-type t, so it tracked our inserts.
-    ))
+    (insert unstable)))
 
 (defun hermes--stable-boundary (text)
   "Return the index of the last `\\n\\n' in TEXT outside a fenced code block.

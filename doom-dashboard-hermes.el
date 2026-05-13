@@ -88,6 +88,11 @@ leader (e.g. `SPC h h'), that key appears automatically."
 
 (defconst doom-dashboard-hermes-buffer-name "*doom-hermes*")
 
+(defvar doom-dashboard-hermes--pending-start nil
+  "Non-nil while a `start' is waiting for `hermes-new-session' to resolve.
+Prevents accidentally spawning a second session if the user presses `s'
+twice before the first one has appeared.")
+
 ;;;; Faces
 
 (defface doom-dashboard-hermes-banner-face
@@ -113,6 +118,10 @@ leader (e.g. `SPC h h'), that key appears automatically."
 (defface doom-dashboard-hermes-status-down-face
   '((t :inherit error))
   "Face for the gateway-down status dot.")
+
+(defface doom-dashboard-hermes-status-starting-face
+  '((t :inherit warning))
+  "Face for the gateway-starting status dot.")
 
 ;;;; Helpers
 
@@ -150,24 +159,30 @@ to a binding in the dashboard's own keymap."
               'face 'doom-dashboard-hermes-banner-face))
 
 (defun doom-dashboard-hermes--status-str ()
-  (let* ((live (hermes-rpc-live-p))
-         (st   (doom-dashboard-hermes--primary-state))
-         (sid  (and st (hermes-state-session-id st)))
-         (info (and st (hermes-state-session-info st)))
+  (let* ((state hermes-rpc--state)
+         (st    (doom-dashboard-hermes--primary-state))
+         (sid   (and st (hermes-state-session-id st)))
+         (info  (and st (hermes-state-session-info st)))
          (model (and (hash-table-p info) (gethash "model" info)))
-         (face (if live 'doom-dashboard-hermes-status-face
-                 'doom-dashboard-hermes-status-down-face))
-         (dot (propertize "●" 'face face))
-         (label (cond
-                 ((not live) "gateway down")
-                 ((null sid) "no session yet")
-                 (model (format "session %s ready  ·  %s"
-                                (doom-dashboard-hermes--short-sid sid)
-                                (if (> (length model) 28)
-                                    (concat (substring model 0 27) "…")
-                                  model)))
-                 (t (format "session %s ready"
-                            (doom-dashboard-hermes--short-sid sid))))))
+         (face  (pcase state
+                  ('ready    'doom-dashboard-hermes-status-face)
+                  ('starting 'doom-dashboard-hermes-status-starting-face)
+                  (_         'doom-dashboard-hermes-status-down-face)))
+         (dot   (propertize "●" 'face face))
+         (label (pcase state
+                  ('down     "gateway down")
+                  ('starting "gateway starting…")
+                  ('ready
+                   (cond
+                    (doom-dashboard-hermes--pending-start "creating session…")
+                    ((null sid) "ready  ·  no session yet")
+                    (model (format "session %s ready  ·  %s"
+                                   (doom-dashboard-hermes--short-sid sid)
+                                   (if (> (length model) 28)
+                                       (concat (substring model 0 27) "…")
+                                     model)))
+                    (t (format "session %s ready"
+                               (doom-dashboard-hermes--short-sid sid))))))))
     (concat dot "  " label)))
 
 (defun doom-dashboard-hermes--insert-menu-row (row)
@@ -203,10 +218,10 @@ right-aligned within `doom-dashboard-hermes-width' columns."
 
 (defun doom-dashboard-hermes--footer-str ()
   (let* ((n (length (doom-dashboard-hermes--live-buffers)))
-         (live (hermes-rpc-live-p))
          (txt (format "%d %s live  ·  gateway %s"
                       n (if (= n 1) "session" "sessions")
-                      (if live "up" "down"))))
+                      (pcase hermes-rpc--state
+                        ('ready "up") ('starting "starting") (_ "down")))))
     (propertize txt 'face 'doom-dashboard-hermes-footer-face)))
 
 ;;;; Render (flush-left, no per-line centering)
@@ -314,16 +329,25 @@ right-aligned within `doom-dashboard-hermes-width' columns."
   (doom-dashboard-hermes--do-refresh))
 
 (defun doom-dashboard-hermes-start ()
-  "Pop the primary session buffer and prompt via `hermes-input-send'.
-If no session exists, offer to create one and chat into it."
+  "Start chatting: pop the primary session buffer and read a prompt.
+If no session exists yet, create one in the background and pop the
+buffer the moment it appears.  A second press while creation is still
+in flight is a no-op."
   (interactive)
   (let ((buf (doom-dashboard-hermes--primary-buffer)))
     (cond
-     (buf (pop-to-buffer buf)
-          (call-interactively #'hermes-input-send))
-     ((yes-or-no-p "No live session — create one? ")
+     (buf
+      (pop-to-buffer buf)
+      (call-interactively #'hermes-input-send))
+     (doom-dashboard-hermes--pending-start
+      (message "Hermes: session is on its way…"))
+     (t
+      (setq doom-dashboard-hermes--pending-start t)
+      (message "Hermes: creating session…")
       (hermes-new-session
        (lambda (b)
+         (setq doom-dashboard-hermes--pending-start nil)
+         (doom-dashboard-hermes--schedule-refresh)
          (when (buffer-live-p b)
            (pop-to-buffer b)
            (call-interactively #'hermes-input-send))))))))

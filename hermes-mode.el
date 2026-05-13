@@ -67,6 +67,10 @@ without this cache, the very first buffer would never see the skin.")
 
 (defun hermes--route-connection (state)
   "Broadcast a connection state change into every Hermes buffer."
+  ;; Clear the cached `gateway.ready' payload so that the *next* time we
+  ;; reconnect we wait for a fresh one before firing `session.create'.
+  (when (eq state 'disconnected)
+    (setq hermes--last-gateway-ready nil))
   (maphash (lambda (_sid b)
              (when (buffer-live-p b)
                (with-current-buffer b
@@ -111,18 +115,8 @@ without this cache, the very first buffer would never see the skin.")
 
 ;;;; Public entry points
 
-(defun hermes-new-session (&optional callback)
-  "Start the gateway (if needed), create a session, and prepare its buffer.
-The buffer is registered in `hermes--session-buffers' but NOT popped to the
-user; that's the caller's job.  CALLBACK, if non-nil, is called with the new
-buffer (or nil on error) once `session.create' resolves.
-
-This is the building block dashboards use to spawn sessions in the
-background; for the user-facing entry that also pops the buffer, see
-`hermes'."
-  (hermes--install-hooks)
-  (unless (hermes-rpc-live-p)
-    (hermes-rpc-start))
+(defun hermes--do-session-create (callback)
+  "Internal: send `session.create' and wire its response to CALLBACK."
   (hermes-rpc-request
    "session.create" '(:cols 100)
    (lambda (result error)
@@ -142,6 +136,24 @@ background; for the user-facing entry that also pops the buffer, see
               (cons "gateway.ready" hermes--last-gateway-ready)))
            (hermes-input-fetch-catalog))
          (when callback (funcall callback buf))))))))
+
+(defun hermes-new-session (&optional callback)
+  "Start the gateway (if needed), create a session, and prepare its buffer.
+The buffer is registered in `hermes--session-buffers' but NOT popped to the
+user; that's the caller's job.  CALLBACK, if non-nil, is called with the new
+buffer (or nil on error) once `session.create' resolves.
+
+If the gateway is still warming up, the request is queued by the transport
+(`hermes-rpc--pending-frames') and flushed when `gateway.ready' arrives —
+no special-casing required here.
+
+This is the building block dashboards use to spawn sessions in the
+background; for the user-facing entry that also pops the buffer, see
+`hermes'."
+  (hermes--install-hooks)
+  (unless (hermes-rpc-live-p)
+    (hermes-rpc-start))
+  (hermes--do-session-create callback))
 
 ;;;###autoload
 (defun hermes ()

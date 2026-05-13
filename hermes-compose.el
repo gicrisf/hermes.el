@@ -49,7 +49,13 @@
             (concat " Hermes compose · "
                     (propertize "C-c C-c" 'face 'help-key-binding) " send · "
                     (propertize "C-c C-k" 'face 'help-key-binding) " cancel")))
-    (pop-to-buffer buf)))
+    ;; `pop-to-buffer-same-window' is the recommended replacement for
+    ;; `switch-to-buffer' in elisp.  It guarantees the new buffer is in the
+    ;; selected window and ignores popup-routing rules (notably Doom's
+    ;; `+popup-mode' which can steal focus and leave keystrokes hitting
+    ;; the previous buffer — `*doom-hermes*' is `special-mode' so typing
+    ;; into it is silently swallowed).
+    (pop-to-buffer-same-window buf)))
 
 (defun hermes-compose-send ()
   "Send the buffer contents to the target session, then kill the composer."

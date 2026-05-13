@@ -44,6 +44,9 @@ Overrides any banner the gateway may provide via `gateway.ready'."
 ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
   "Fallback NOUS HERMES banner.")
 
+(defvar hermes-dashboard--pending-start nil
+  "Non-nil while a `send' is waiting on a freshly-spawned session.")
+
 ;;;; Primary-session lookup
 ;;
 ;; Picked lazily on every render: the most-recently-modified live buffer
@@ -118,17 +121,25 @@ Returns LOGO unchanged when STATUS is empty."
   (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 8) (or sid "?")))
 
 (defun hermes-dashboard--connection-line ()
-  (let* ((live (hermes-rpc-live-p))
+  (let* ((state hermes-rpc--state)
          (buf (car (hermes-dashboard--live-buffers)))
          (sid (and buf (buffer-local-value 'hermes--state buf)
                    (hermes-state-session-id
                     (buffer-local-value 'hermes--state buf))))
-         (label (cond ((not live) "gateway down")
-                      ((null sid) "no session yet")
-                      (t (format "session %s ready"
-                                 (hermes-dashboard--short-sid sid))))))
-    (propertize (format "  ● %s" label) 'face
-                (if live 'success 'error))))
+         (face (pcase state
+                 ('ready    'success)
+                 ('starting 'warning)
+                 (_         'error)))
+         (label (pcase state
+                  ('down     "gateway down")
+                  ('starting "gateway starting…")
+                  ('ready
+                   (cond
+                    (hermes-dashboard--pending-start "creating session…")
+                    (sid (format "session %s ready"
+                                 (hermes-dashboard--short-sid sid)))
+                    (t   "ready · no session yet"))))))
+    (propertize (format "  ● %s" label) 'face face)))
 
 (defun hermes-dashboard--primary-state ()
   "Return the `hermes-state' of the primary session buffer, or nil."
@@ -304,13 +315,28 @@ nil and we always refresh."
       (hermes-dashboard-send))))
 
 (defun hermes-dashboard-send ()
-  "Pop the primary session buffer and call `hermes-input-send'."
+  "Pop the primary session buffer and call `hermes-input-send'.
+If no session exists yet, create one in the background and chat into
+it as soon as the buffer appears.  A second press while creation is
+still in flight is a no-op."
   (interactive)
   (let ((buf (hermes-dashboard--primary-buffer)))
-    (unless buf
-      (user-error "No primary session yet — wait for `session ready'"))
-    (pop-to-buffer buf)
-    (call-interactively #'hermes-input-send)))
+    (cond
+     (buf
+      (pop-to-buffer buf)
+      (call-interactively #'hermes-input-send))
+     (hermes-dashboard--pending-start
+      (message "Hermes: session is on its way…"))
+     (t
+      (setq hermes-dashboard--pending-start t)
+      (message "Hermes: creating session…")
+      (hermes-new-session
+       (lambda (b)
+         (setq hermes-dashboard--pending-start nil)
+         (hermes-dashboard--refresh-if-open)
+         (when (buffer-live-p b)
+           (pop-to-buffer b)
+           (call-interactively #'hermes-input-send))))))))
 
 (defun hermes-dashboard-compose ()
   "Pop the primary session buffer and open the multi-line composer."

@@ -81,6 +81,24 @@ TYPE is a string from `hermes-events-incoming'.  PAYLOAD is a hash table.")
 (defvar hermes-rpc-connection-functions nil
   "Hook of (STATE) where STATE is one of `connecting', `connected', `disconnected'.")
 
+(defvar hermes-rpc--state 'down
+  "Gateway lifecycle state machine.  One of:
+
+  `down'      no subprocess running
+  `starting'  subprocess spawned, awaiting the `gateway.ready' event
+  `ready'     gateway has greeted us; requests are flushed immediately
+
+`hermes-rpc-request' buffers outgoing frames in
+`hermes-rpc--pending-frames' while in `starting' and dispatches them in
+order on the `down' → `ready' transition.  The sentinel resets the state
+back to `down' (and drops any still-pending frames) when the process
+dies.")
+
+(defvar hermes-rpc--pending-frames nil
+  "FIFO list of frames waiting to be sent once the gateway is ready.
+Each element is the JSON-RPC frame plist as produced by
+`hermes-rpc-request'.  Drained by `hermes-rpc--flush-pending'.")
+
 ;;;; Process lifecycle
 
 ;;;###autoload
@@ -123,7 +141,9 @@ TYPE is a string from `hermes-events-incoming'.  PAYLOAD is a hash table.")
     (when stderr-pipe
       (set-process-filter stderr-pipe #'hermes-rpc--stderr-filter))
     (setq hermes-rpc--stderr-buffer stderr-buf
-          hermes-rpc--process proc)
+          hermes-rpc--process proc
+          hermes-rpc--state 'starting
+          hermes-rpc--pending-frames nil)
     (run-hook-with-args 'hermes-rpc-connection-functions 'connecting)
     proc))
 
@@ -134,7 +154,9 @@ TYPE is a string from `hermes-events-incoming'.  PAYLOAD is a hash table.")
   (when (and hermes-rpc--process
              (process-live-p hermes-rpc--process))
     (delete-process hermes-rpc--process))
-  (setq hermes-rpc--process nil))
+  (setq hermes-rpc--process nil
+        hermes-rpc--state 'down
+        hermes-rpc--pending-frames nil))
 
 (defun hermes-rpc-live-p ()
   "Return non-nil if the gateway process is alive."
@@ -145,7 +167,14 @@ TYPE is a string from `hermes-events-incoming'.  PAYLOAD is a hash table.")
 (defun hermes-rpc-request (method params &optional callback)
   "Send a JSON-RPC request for METHOD with PARAMS (a plist or alist).
 CALLBACK, if non-nil, is called as (RESULT ERROR) when the response
-arrives.  Exactly one of RESULT / ERROR is non-nil."
+arrives.  Exactly one of RESULT / ERROR is non-nil.
+
+If the gateway is `starting' (process spawned but no `gateway.ready'
+event yet), the frame is buffered in `hermes-rpc--pending-frames' and
+sent in order when the gateway transitions to `ready'.  The Python
+gateway drops requests that arrive before its handlers are installed,
+so this queue is the only thing keeping the first request from being
+lost."
   (unless (hermes-rpc-live-p)
     (error "Hermes gateway is not running"))
   (let* ((id (cl-incf hermes-rpc--next-id))
@@ -155,8 +184,20 @@ arrives.  Exactly one of RESULT / ERROR is non-nil."
                       :params (or params (make-hash-table)))))
     (when callback
       (puthash id callback hermes-rpc--pending))
-    (hermes-rpc--send frame)
+    (pcase hermes-rpc--state
+      ('ready    (hermes-rpc--send frame))
+      ('starting (setq hermes-rpc--pending-frames
+                       (append hermes-rpc--pending-frames (list frame))))
+      (_ ;; 'down — process should be alive per `hermes-rpc-live-p' above,
+       ;; so this is an inconsistency.  Surface it loudly.
+       (error "hermes-rpc: process alive but state is %s" hermes-rpc--state)))
     id))
+
+(defun hermes-rpc--flush-pending ()
+  "Send every frame buffered while the gateway was `starting'."
+  (let ((frames hermes-rpc--pending-frames))
+    (setq hermes-rpc--pending-frames nil)
+    (dolist (f frames) (hermes-rpc--send f))))
 
 (defun hermes-rpc--send (frame)
   "Encode FRAME as JSON, append newline, write to gateway stdin."
@@ -210,6 +251,13 @@ arrives.  Exactly one of RESULT / ERROR is non-nil."
            (type    (and params (gethash "type" params)))
            (sid     (and params (gethash "session_id" params)))
            (payload (and params (gethash "payload" params))))
+      ;; `gateway.ready' is the transition that lets us send buffered
+      ;; frames.  Do this BEFORE the user-facing hook so subscribers see
+      ;; an already-ready state.
+      (when (and (equal type "gateway.ready")
+                 (eq hermes-rpc--state 'starting))
+        (setq hermes-rpc--state 'ready)
+        (hermes-rpc--flush-pending))
       (when type
         (run-hook-with-args 'hermes-rpc-event-functions type sid payload))))
    (t
@@ -236,7 +284,9 @@ arrives.  Exactly one of RESULT / ERROR is non-nil."
       (run-hook-with-args 'hermes-rpc-stderr-functions
                           hermes-rpc--stderr-tail)
       (setq hermes-rpc--stderr-tail ""))
-    (setq hermes-rpc--process nil)
+    (setq hermes-rpc--process nil
+          hermes-rpc--state 'down
+          hermes-rpc--pending-frames nil)
     (run-hook-with-args 'hermes-rpc-connection-functions 'disconnected)
     (message "hermes-rpc: gateway %s" (string-trim event))))
 

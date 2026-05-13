@@ -24,6 +24,7 @@
 (declare-function hermes-input-send "hermes-input" (text))
 (declare-function hermes-sessions "hermes-sessions" ())
 (declare-function hermes "hermes-mode" ())
+(declare-function hermes-interrupt "hermes-mode" ())
 
 (defcustom hermes-dashboard-logo nil
   "If non-nil, a string used as the dashboard banner instead of the builtin.
@@ -307,6 +308,15 @@ nil and we always refresh."
       (user-error "No primary session yet — wait for `session ready'"))
     (pop-to-buffer buf)
     (call-interactively (intern-soft "hermes-compose"))))
+
+(defun hermes-dashboard-interrupt ()
+  "Interrupt the primary session from anywhere."
+  (interactive)
+  (let ((buf (hermes-dashboard--primary-buffer)))
+    (unless buf
+      (user-error "No primary session yet — wait for `session ready'"))
+    (with-current-buffer buf
+      (call-interactively #'hermes-interrupt))))
 
 (defun hermes-dashboard-new-session ()
   "Create another Hermes session and make it the primary."

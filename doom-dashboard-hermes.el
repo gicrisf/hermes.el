@@ -40,6 +40,14 @@
 (declare-function hermes-compose "hermes-compose" ())
 (declare-function hermes-sessions "hermes-sessions" ())
 
+;; The dashboard intentionally avoids `(require 'hermes-mode)' so it can be
+;; loaded standalone; autoload the entry points it actually calls.
+(autoload 'hermes              "hermes-mode"     nil t)
+(autoload 'hermes-new-session  "hermes-mode"     nil nil)
+(autoload 'hermes-input-send   "hermes-input"    nil t)
+(autoload 'hermes-compose      "hermes-compose"  nil t)
+(autoload 'hermes-sessions     "hermes-sessions" nil t)
+
 ;;;; User options
 
 (defgroup doom-dashboard-hermes nil
@@ -162,22 +170,36 @@ to a binding in the dashboard's own keymap."
                             (doom-dashboard-hermes--short-sid sid))))))
     (concat dot "  " label)))
 
-(defun doom-dashboard-hermes--menu-row (row)
+(defun doom-dashboard-hermes--insert-menu-row (row)
+  "Insert ROW (LABEL COMMAND) as a clickable text-button.
+Label is flush-left; key (looked up via `where-is-internal') is
+right-aligned within `doom-dashboard-hermes-width' columns."
   (let* ((label (nth 0 row))
          (cmd   (nth 1 row))
-         (key   (doom-dashboard-hermes--key-for cmd))
-         (key-s (if key
-                    (propertize (format "%-10s" key)
-                                'face 'doom-dashboard-hermes-key-face)
-                  (propertize (format "%-10s" "")
-                              'face 'doom-dashboard-hermes-key-face))))
-    (concat key-s "  "
-            (propertize label 'face 'doom-dashboard-hermes-menu-face))))
+         (key   (or (doom-dashboard-hermes--key-for cmd) ""))
+         (lw    (string-width label))
+         (kw    (string-width key))
+         (gap   (max 1 (- doom-dashboard-hermes-width lw kw 4)))
+         (text  (concat "  "
+                        (propertize label 'face 'doom-dashboard-hermes-menu-face)
+                        (make-string gap ?\s)
+                        (propertize key 'face 'doom-dashboard-hermes-key-face)
+                        "  ")))
+    (insert-text-button
+     text
+     'action (lambda (_btn) (call-interactively cmd))
+     'follow-link t
+     'help-echo (format "Run `%s'" cmd)
+     'mouse-face 'highlight
+     'face nil)))
 
-(defun doom-dashboard-hermes--menu-str ()
-  (mapconcat #'doom-dashboard-hermes--menu-row
-             doom-dashboard-hermes-menu
-             "\n"))
+(defun doom-dashboard-hermes--insert-menu ()
+  "Insert all menu rows; called from the render function."
+  (let ((first t))
+    (dolist (row doom-dashboard-hermes-menu)
+      (unless first (insert "\n"))
+      (setq first nil)
+      (doom-dashboard-hermes--insert-menu-row row))))
 
 (defun doom-dashboard-hermes--footer-str ()
   (let* ((n (length (doom-dashboard-hermes--live-buffers)))
@@ -193,7 +215,8 @@ to a binding in the dashboard's own keymap."
   "Insert the dashboard content flush-left.  Margins handle centering."
   (insert (doom-dashboard-hermes--banner-str) "\n\n")
   (insert (doom-dashboard-hermes--status-str) "\n\n")
-  (insert (doom-dashboard-hermes--menu-str)   "\n\n")
+  (doom-dashboard-hermes--insert-menu)
+  (insert "\n\n")
   (insert (doom-dashboard-hermes--footer-str)))
 
 (defun doom-dashboard-hermes--render ()
@@ -203,7 +226,10 @@ to a binding in the dashboard's own keymap."
     (doom-dashboard-hermes--render-content)
     (doom-dashboard-hermes--apply-vertical-padding)
     (doom-dashboard-hermes--apply-margins)
-    (goto-char (point-min))))
+    (goto-char (point-min))
+    ;; Park point on the first menu button so RET / TAB Just Work.
+    (when (ignore-errors (forward-button 1))
+      t)))
 
 ;;;; Window-margin centering (mirrors `+doom-dashboard-resize-h')
 
@@ -324,7 +350,16 @@ If no session exists, offer to create one and chat into it."
     ;; Single-letter shortcuts inside the buffer.  Doom users will mostly
     ;; reach the same commands via SPC h h / SPC h c / … which `where-is'
     ;; picks up automatically and shows next to each menu row.
-    (define-key m (kbd "RET") #'doom-dashboard-hermes-start)
+    ;; Button navigation (mirrors `+doom-dashboard-mode-map').
+    (define-key m (kbd "TAB")     #'forward-button)
+    (define-key m (kbd "<tab>")   #'forward-button)
+    (define-key m (kbd "<backtab>") #'backward-button)
+    (define-key m (kbd "C-n")     #'forward-button)
+    (define-key m (kbd "C-p")     #'backward-button)
+    (define-key m (kbd "<down>")  #'forward-button)
+    (define-key m (kbd "<up>")    #'backward-button)
+    ;; Direct triggers (preserved muscle-memory).
+    (define-key m (kbd "RET") #'push-button)
     (define-key m (kbd "s")   #'doom-dashboard-hermes-start)
     (define-key m (kbd "c")   #'doom-dashboard-hermes-compose)
     (define-key m (kbd "n")   #'doom-dashboard-hermes-new)
@@ -355,9 +390,13 @@ If no session exists, offer to create one and chat into it."
   (let ((buf (get-buffer-create doom-dashboard-hermes-buffer-name)))
     (with-current-buffer buf
       (unless (derived-mode-p 'doom-dashboard-hermes-mode)
-        (doom-dashboard-hermes-mode))
-      (doom-dashboard-hermes--render))
-    (pop-to-buffer-same-window buf)))
+        (doom-dashboard-hermes-mode)))
+    ;; Display BEFORE rendering so `--apply-margins' has a real window
+    ;; to read `window-total-width' from.  Rendering first leaves the
+    ;; first frame flush-left until a resize hook fires.
+    (pop-to-buffer-same-window buf)
+    (with-current-buffer buf
+      (doom-dashboard-hermes--render))))
 
 ;;;###autoload
 (defun doom-dashboard-hermes-setup ()

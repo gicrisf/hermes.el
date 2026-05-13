@@ -1,71 +1,130 @@
 # Hermes Dashboard — Design Spec
 
-## What it is
+Two independent dashboard implementations exist:
 
-The Hermes dashboard is the landing screen shown when you invoke `M-x hermes` or press `SPC h d` in Doom Emacs.
+- **Core dashboard** (`hermes-dashboard.el`) — vanilla Emacs, no dependencies.
+  Buffer: `*Hermes*`. Mode: `hermes-dashboard-mode`.
+- **Doom dashboard** (`doom-dashboard-hermes.el`) — Doom-styled, standalone.
+  Buffer: `*doom-hermes*`. Mode: `doom-dashboard-hermes-mode`.
 
-## Layout
+Both are loaded independently and do not interfere. The core dashboard is
+accessed via `M-x hermes` in vanilla Emacs; the Doom dashboard via `SPC h d`
+in Doom Emacs.
 
-The dashboard is a read-only, full-window buffer divided into three visual zones, top to bottom:
+---
+
+## Core dashboard (`*Hermes*`)
+
+The vanilla dashboard is a `special-mode` buffer split into three zones:
 
 ### 1. Logo banner
 
-A large ASCII "HERMES" wordmark in block characters, centred horizontally. The logo has no accompanying status text — it is a pure visual identifier.
+Unicode "HERMES" block-art, centred horizontally. Connection status
+(`● connected` / `● gateway down` / `● starting session…`) appended to the
+last logo line, right-padded to the logo width.
 
-### 2. Session information panel
+### 2. Session information
 
-Three lines below the logo:
+- Model name
+- Session ID
+- Tools / Skills count
 
-| Line | Content                                                                            |
-|------|------------------------------------------------------------------------------------|
-| 1    | Connection status: `● connected`, `● starting session…`, or `● gateway down`       |
-| 2    | Model name (e.g. `Model: nvidia/nemotron-3-super-120b-a12b:free`)                  |
-| 3    | Session ID and tool/skill counts (e.g. `Session: a1b2c3d4 | Tools: 12  Skills: 5`) |
+When no session exists, shows: `(no session)`.
 
-All three lines are centred to the same horizontal alignment.
+### 3. Actions
 
-When no session exists, the panel shows a single prompt: `Press SPC h n to start a session`.
+- `i` / `RET` — send prompt to primary session
+- `c` — multi-line composer
+- `n` — new session
+- `s` — sessions sidebar
+- `g` — refresh
+- `q` — bury
 
-### 3. Action menu
+### Keymap
 
-A list of clickable action items, each with an auto-detected keybinding displayed to the right:
+Standard Emacs `define-key` in `hermes-dashboard-mode-map`. No Evil remaps,
+no Doom-specific code.
+
+---
+
+## Doom dashboard (`*doom-hermes*`)
+
+Standalone buffer styled after Doom Emacs's `+doom-dashboard-mode`.
+Independent of the core dashboard — no shared code.
+
+### Layout
 
 ```
-  Send                  SPC h i
-  Interrupt             SPC h k
-  Compose               SPC h c
-  New session           SPC h n
-  Sessions              SPC h s
-  Refresh               SPC g
+              ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+              ██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
+              ███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
+              ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
+              ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
+              ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝
+
+        ● session af19d21b ready  ·  nvidia/nemotron-3-super-120b-a12b
+
+          Start chatting                                                  SPC h i
+          Open composer                                                   SPC h c
+          New session                                                     SPC h n
+          Session list                                                    SPC h l
+          Quit
+
+                         1 session live  ·  gateway up
 ```
 
-Pressing any keybinding invokes the action directly; clicking the label with a mouse works too. The keybindings are detected at render time by looking up the current mode's keymap — they always reflect the user's actual bindings, not hardcoded assumptions.
+### Centering
 
-## Behaviour
+- **Horizontal**: window margins via `set-window-margins`. Content is flush-left;
+  margins push the canvas to the centre. Recalculated on `window-configuration-change-hook`.
+- **Vertical**: blank lines at top, sized to `(/ (window-height) 2)`. Recalculated
+  on `window-size-change-functions`.
 
-### Vertical centering
+### Performance
 
-The entire content block (logo + session panel + action menu) is vertically centred in the window. When you resize the Emacs frame or change the window height, the content re-centres immediately without a full redraw — only the blank padding at the top adjusts. Dragging margins or splitting windows is instant.
+Debounced refresh via `run-with-idle-timer` (default 0.1s). Burst events
+(gateway.ready + session.info + message.complete) coalesce into a single
+repaint. Streaming deltas (message.delta, tool.progress) are filtered entirely
+and never trigger a refresh.
 
-### Navigation
+### Keybindings
 
-| Key             | Action                                                  |
-|-----------------|---------------------------------------------------------|
-| `n` / `p`       | Next / previous item in the action menu                 |
-| `TAB` / `S-TAB` | Next / previous item                                    |
-| `RET`           | Invoke the action under point                           |
-| `g`             | Full content rebuild (re-read session state, re-centre) |
-| `q`             | Close the dashboard window                              |
+Menu keybindings are auto-detected at render time via `where-is-internal`.
+The display shows whatever key is actually bound to each command. Single-letter
+shortcuts in the dashboard buffer:
 
-In Doom Emacs with Evil, hjkl also navigate between items, and all Evil insertion/change commands are disabled — the dashboard is read-only.
+| Key | Action |
+|-----|--------|
+| `s` | Start chatting |
+| `c` | Open composer |
+| `n` | New session |
+| `l` | Session list sidebar |
+| `g` | Refresh |
+| `q` | Quit |
+| `TAB` / `C-n` / `<down>` | Next item |
+| `C-p` / `<up>` | Previous item |
+| `RET` | Activate item |
 
-## Visual style
+### Faces
 
-The dashboard uses the same face hierarchy as the Doom Emacs splash screen:
+| Face | Inherits | Used for |
+|------|----------|----------|
+| `doom-dashboard-hermes-banner-face` | `font-lock-keyword-face` | Logo banner |
+| `doom-dashboard-hermes-menu-face` | `default` | Menu row labels |
+| `doom-dashboard-hermes-key-face` | `font-lock-constant-face` | Keybinding strings |
+| `doom-dashboard-hermes-footer-face` | `shadow` | Status footer |
+| `doom-dashboard-hermes-status-face` | `success` | Gateway up dot |
+| `doom-dashboard-hermes-status-down-face` | `error` | Gateway down dot |
+| `doom-dashboard-hermes-status-starting-face` | `warning` | Gateway starting dot |
 
-- Logo text inherits from `+dashboard-banner` (comment-face tone)
-- Action labels inherit from `+dashboard-menu-title` (keyword-face)
-- Keybinding descriptions inherit from `+dashboard-menu-desc` (constant-face)
-- Secondary info (session ID, tool counts) inherits from `+dashboard-loaded` (dimmed)
+All adapt to the active Emacs theme — no hardcoded colours.
 
-No hardcoded colours — everything adapts to the active Emacs theme.
+### Customisation
+
+```elisp
+(setq doom-dashboard-hermes-width 80)         ;; canvas width in columns
+(setq doom-dashboard-hermes-banner "...")     ;; override logo
+(setq doom-dashboard-hermes-debounce 0.1)     ;; idle seconds before refresh
+(setq doom-dashboard-hermes-menu             ;; override menu items
+      '(("Action" some-command) ...))
+```

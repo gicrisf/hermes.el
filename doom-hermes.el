@@ -82,18 +82,19 @@ Centers relative to (window-width)."
 ;; ── Shortmenu ──────────────────────────────────────────────────────────────────
 
 (defvar +hermes-dashboard-menu-sections
-  '((:label "Send"        :action hermes-dashboard-send)
-    (:label "Interrupt"   :action hermes-dashboard-interrupt)
-    (:label "Compose"     :action hermes-dashboard-compose)
-    (:label "New session" :action hermes)
-    (:label "Sessions"    :action hermes-sessions)
-    (:label "Refresh"     :action revert-buffer))
+  '((:label "Send"        :action hermes-dashboard-send      :key "SPC h i")
+    (:label "Interrupt"   :action hermes-dashboard-interrupt  :key "SPC h k")
+    (:label "Compose"     :action hermes-dashboard-compose    :key "SPC h c")
+    (:label "New session" :action hermes                      :key "SPC h n")
+    (:label "Sessions"    :action hermes-sessions             :key "SPC h s")
+    (:label "Refresh"     :action revert-buffer               :key "g"))
   "Menu sections for the Hermes dashboard shortmenu.")
 
 (defun +hermes-dashboard--shortmenu-widget ()
   (dolist (item +hermes-dashboard-menu-sections)
     (let ((label (plist-get item :label))
-          (action (plist-get item :action)))
+          (action (plist-get item :action))
+          (key    (plist-get item :key)))
       (insert (+hermes-dashboard--center-line
                (format "%s%10s"
                        (with-temp-buffer
@@ -105,18 +106,8 @@ Centers relative to (window-width)."
                           'face '+hermes-dashboard-label
                           'follow-link t)
                          (buffer-string))
-                       (propertize
-                        (or (when-let*
-                                ((keymaps (delq nil (list (when (bound-and-true-p evil-local-mode)
-                                                            (evil-get-auxiliary-keymap +hermes-dashboard-mode-map 'normal))
-                                                          +hermes-dashboard-mode-map)))
-                                 (key (or (when keymaps (where-is-internal action keymaps t))
-                                          (where-is-internal action nil t))))
-                              (key-description key))
-                            "")
-                        'face '+hermes-dashboard-desc))
-               (window-width))
-              "\n"))))
+(propertize (or key "") 'face '+hermes-dashboard-desc))
+               "\n")))))
 
 ;; ── Mode ──────────────────────────────────────────────────────────────────────
 
@@ -265,7 +256,8 @@ Called from `window-size-change-functions' on resize."
   (evil-define-key 'normal hermes-mode-map
     (kbd "C-c C-i") #'hermes-send
     (kbd "C-c C-k") #'hermes-interrupt
-    (kbd "C-c C-l") #'hermes-compose))
+    (kbd "C-c C-l") #'hermes-compose)
+  )
 
 ;; ─────────────────────────────────────────────────────────────────────────────
 ;;  Leader prefix: SPC h

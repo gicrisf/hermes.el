@@ -83,9 +83,9 @@
 (ert-deftest hermes-state-test/message-start-creates-empty-stream ()
   (let ((s (hermes--reduce nil (cons "message.start" nil))))
     (should (hermes-stream-p (hermes-state-stream s)))
-    (should (equal "" (hermes-stream-text (hermes-state-stream s))))
-    (should (equal "" (hermes-stream-thinking (hermes-state-stream s))))
-    (should (equal "" (hermes-stream-reasoning (hermes-state-stream s))))))
+    (let ((segs (hermes-stream-segments (hermes-state-stream s))))
+      (should (vectorp segs))
+      (should (= 0 (length segs))))))
 
 (ert-deftest hermes-state-test/message-start-discards-in-flight ()
   ;; Edge case #1: turnController.ts:746-757 silently discards.
@@ -93,7 +93,7 @@
          (s2 (hermes--reduce s1 (cons "message.delta"
                                       (hermes-test--ht "text" "stale"))))
          (s3 (hermes--reduce s2 (cons "message.start" nil))))
-    (should (equal "" (hermes-stream-text (hermes-state-stream s3))))))
+    (should (= 0 (length (hermes-stream-segments (hermes-state-stream s3)))))))
 
 (ert-deftest hermes-state-test/message-delta-accumulates ()
   (let* ((s0 (hermes--reduce nil (cons "message.start" nil)))
@@ -101,8 +101,11 @@
                                       (hermes-test--ht "text" "Hello"))))
          (s2 (hermes--reduce s1 (cons "message.delta"
                                       (hermes-test--ht "text" " world")))))
-    (should (equal "Hello world"
-                   (hermes-stream-text (hermes-state-stream s2))))))
+    (let* ((segs (hermes-stream-segments (hermes-state-stream s2)))
+           (seg (aref segs 0)))
+      (should (= 1 (length segs)))
+      (should (eq 'text (hermes-segment-type seg)))
+      (should (equal "Hello world" (hermes-segment-content seg))))))
 
 (ert-deftest hermes-state-test/thinking-and-reasoning-accumulate ()
   (let* ((s0 (hermes--reduce nil (cons "message.start" nil)))
@@ -112,10 +115,12 @@
                                       (hermes-test--ht "text" "more"))))
          (s3 (hermes--reduce s2 (cons "reasoning.delta"
                                       (hermes-test--ht "text" "why")))))
-    (should (equal "think more"
-                   (hermes-stream-thinking (hermes-state-stream s3))))
-    (should (equal "why"
-                   (hermes-stream-reasoning (hermes-state-stream s3))))))
+    (let ((segs (hermes-stream-segments (hermes-state-stream s3))))
+      (should (= 2 (length segs)))
+      (should (eq 'thinking (hermes-segment-type (aref segs 0))))
+      (should (equal "think more" (hermes-segment-content (aref segs 0))))
+      (should (eq 'reasoning (hermes-segment-type (aref segs 1))))
+      (should (equal "why" (hermes-segment-content (aref segs 1)))))))
 
 (ert-deftest hermes-state-test/message-complete-commits-and-clears ()
   (let* ((s (hermes-test--reduce*
@@ -179,11 +184,11 @@
 
 (ert-deftest hermes-state-test/reducer-is-pure ()
   (let* ((s0 (hermes--reduce nil (cons "message.start" nil)))
-         (s0-snapshot (hermes-stream-text (hermes-state-stream s0)))
+         (s0-snapshot (length (hermes-stream-segments (hermes-state-stream s0))))
          (_  (hermes--reduce s0 (cons "message.delta"
                                       (hermes-test--ht "text" "leak?")))))
-    (should (equal s0-snapshot
-                   (hermes-stream-text (hermes-state-stream s0))))))
+    (should (= s0-snapshot
+               (length (hermes-stream-segments (hermes-state-stream s0)))))))
 
 (ert-deftest hermes-state-test/reducer-returns-same-state-for-unknown-type ()
   (let* ((s0 (hermes--reduce nil '(:connected)))
@@ -236,11 +241,13 @@
              (cons "message.start" nil)
              (cons "tool.generating"
                    (hermes-test--ht "tool_id" "t1" "name" "bash"))))
-         (tools (hermes-stream-tools (hermes-state-stream s))))
-    (should (= 1 (length tools)))
-    (should (equal "t1"   (hermes-tool-id (aref tools 0))))
-    (should (equal "bash" (hermes-tool-name (aref tools 0))))
-    (should (eq 'generating (hermes-tool-status (aref tools 0))))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 1 (length segs)))
+    (should (eq 'tool (hermes-segment-type (aref segs 0))))
+    (let ((tool (hermes-segment-content (aref segs 0))))
+      (should (equal "t1" (hermes-tool-id tool)))
+      (should (equal "bash" (hermes-tool-name tool)))
+      (should (eq 'generating (hermes-tool-status tool))))))
 
 (ert-deftest hermes-state-test/tool-generating-without-stream-dropped ()
   ;; Edge case #2: tool events with no stream are dropped (turnController.ts:620).
@@ -258,8 +265,8 @@
                    (hermes-test--ht "tool_id" "t1" "name" "bash"))
              (cons "tool.generating"
                    (hermes-test--ht "tool_id" "t1" "name" "bash"))))
-         (tools (hermes-stream-tools (hermes-state-stream s))))
-    (should (= 1 (length tools)))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 1 (length segs)))))
 
 (ert-deftest hermes-state-test/tool-complete-updates-status ()
   (let* ((s (hermes-test--reduce*
@@ -271,7 +278,8 @@
                    (hermes-test--ht "tool_id" "t1"
                                     "output" "file1\nfile2"
                                     "duration_s" 2.3))))
-         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
     (should (eq 'complete (hermes-tool-status tool)))
     (should (equal "file1\nfile2" (hermes-tool-output tool)))
     (should (equal 2.3 (hermes-tool-duration tool)))))
@@ -284,7 +292,8 @@
                    (hermes-test--ht "tool_id" "t1" "name" "bash"))
              (cons "tool.complete"
                    (hermes-test--ht "tool_id" "t1" "error" "kaboom"))))
-         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
     (should (eq 'error (hermes-tool-status tool)))
     (should (equal "kaboom" (hermes-tool-error tool)))))
 
@@ -319,7 +328,8 @@
                    (hermes-test--ht "tool_id" "t1" "name" "bash"))
              (cons "tool.progress"
                    (hermes-test--ht "tool_id" "t1" "preview" "ls /tmp"))))
-         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
     (should (equal "ls /tmp" (hermes-tool-preview tool)))))
 
 (ert-deftest hermes-state-test/tool-complete-stores-inline-diff ()
@@ -331,7 +341,8 @@
              (cons "tool.complete"
                    (hermes-test--ht "tool_id" "t1"
                                     "inline_diff" "- old\n+ new"))))
-         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
     (should (equal "- old\n+ new" (hermes-tool-inline-diff tool)))))
 
 (ert-deftest hermes-state-test/tool-complete-stores-todos ()
@@ -343,7 +354,8 @@
              (cons "tool.complete"
                    (hermes-test--ht "tool_id" "t1"
                                     "todos" '(("text" . "fix bug") ("done" . t))))))
-         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
     (should (equal '(("text" . "fix bug") ("done" . t))
                    (hermes-tool-todos tool)))))
 

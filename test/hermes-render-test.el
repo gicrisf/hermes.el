@@ -1,6 +1,7 @@
-;;; hermes-render-test.el --- ERT tests for the streaming renderer -*- lexical-binding: t; -*-
+;;; hermes-render-test.el --- ERT tests for the segmented renderer -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'hermes-state)
 (require 'hermes-render)
 
 (defun hermes-render-test--setup ()
@@ -10,13 +11,10 @@ position right after the heading line."
   (insert "** assistant :hermes:\n")
   (setq hermes--stream-headline-marker (copy-marker 1))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
-  (setq hermes--stream-content-start (copy-marker (point)))
-  (set-marker-insertion-type hermes--stream-content-start nil)
-  (setq hermes--stream-stable-end (copy-marker (point)))
-  (setq hermes--stream-end        (copy-marker (point)))
-  (set-marker-insertion-type hermes--stream-stable-end nil)
-  (set-marker-insertion-type hermes--stream-end        t)
-  (setq hermes--stream-tool-markers nil)
+  (setq hermes--stream-segments-start (copy-marker (point)))
+  (set-marker-insertion-type hermes--stream-segments-start nil)
+  (setq hermes--stream-segments-end (copy-marker (point)))
+  (set-marker-insertion-type hermes--stream-segments-end t)
   (point))
 
 (defun hermes-render-test--body ()
@@ -26,111 +24,111 @@ position right after the heading line."
     (forward-line 1)
     (buffer-substring-no-properties (point) (point-max))))
 
-(ert-deftest hermes-render-test/single-paragraph-roundtrip ()
-  ;; A single paragraph never crosses a `\\n\\n' boundary; all text lives
-  ;; in the unstable region and gets rewritten on each delta.
-  (with-temp-buffer
-    (hermes-render-test--setup)
-    (hermes--rewrite-stream "Hi")
-    (hermes--rewrite-stream "Hi there")
-    (should (equal "** assistant :hermes:\nHi there"
-                   (buffer-substring-no-properties (point-min) (point-max))))))
+;;;; Format segment tests
 
-(ert-deftest hermes-render-test/stable-advance-preserves-prose ()
-  ;; Regression: when a `\\n\\n' boundary advances, the stable prefix must
-  ;; remain in the buffer, not be deleted along with the unstable suffix.
-  (with-temp-buffer
-    (hermes-render-test--setup)
-    (hermes--rewrite-stream "Hi there\n\nNew")
-    (should (equal "Hi there\n\nNew" (hermes-render-test--body)))
-    ;; Stable marker advanced past the stable chunk.
-    (should (= (marker-position hermes--stream-stable-end)
-               (+ (marker-position hermes--stream-headline-marker)
-                  (length "** assistant :hermes:\nHi there\n\n"))))))
+(ert-deftest hermes-render-test/format-text-segment ()
+  "Text segments are converted from markdown to Org."
+  (let ((result (hermes--format-segment
+                 (make-hermes-segment :type 'text :content "I am **strong**."))))
+    (should (string-match-p "I am \\*strong\\*" result))))
 
-(ert-deftest hermes-render-test/multiple-stable-advances ()
+(ert-deftest hermes-render-test/format-thinking-segment ()
+  "Thinking segments are rendered as example blocks."
+  (let ((result (hermes--format-segment
+                 (make-hermes-segment :type 'thinking :content "hmm"))))
+    (should (string-match-p "#\\+begin_example Thinking" result))
+    (should (string-match-p "hmm" result))
+    (should (string-match-p "#\\+end_example" result))))
+
+(ert-deftest hermes-render-test/format-reasoning-segment ()
+  "Reasoning segments are rendered as example blocks."
+  (let ((result (hermes--format-segment
+                 (make-hermes-segment :type 'reasoning :content "because"))))
+    (should (string-match-p "#\\+begin_example Reasoning" result))
+    (should (string-match-p "because" result))
+    (should (string-match-p "#\\+end_example" result))))
+
+(ert-deftest hermes-render-test/format-tool-segment ()
+  "Tool segments are rendered as sub-headlines."
+  (let* ((tool (make-hermes-tool :id "t1" :name "bash"
+                                 :status 'complete :output "done"))
+         (result (hermes--format-segment
+                  (make-hermes-segment :type 'tool :content tool))))
+    (should (string-match-p "\\*\\*\\* bash" result))
+    (should (string-match-p "done" result))))
+
+(ert-deftest hermes-render-test/format-system-segment ()
+  "System segments are rendered as comment blocks."
+  (let ((result (hermes--format-segment
+                 (make-hermes-segment :type 'system :content "note"))))
+    (should (string-match-p "#\\+begin_comment" result))
+    (should (string-match-p "note" result))
+    (should (string-match-p "#\\+end_comment" result))))
+
+;;;; Stream rendering tests
+
+(ert-deftest hermes-render-test/single-text-segment ()
+  "A single text segment renders correctly."
   (with-temp-buffer
     (hermes-render-test--setup)
-    (hermes--rewrite-stream "First.\n\nSecond.")
-    (hermes--rewrite-stream "First.\n\nSecond para finished.\n\nThird.")
-    (should (equal "First.\n\nSecond para finished.\n\nThird."
+    (let ((seg (make-hermes-segment :type 'text :content "Hi there")))
+      (hermes--render-stream-segments (vector seg)))
+    (should (equal "Hi there\n"
                    (hermes-render-test--body)))))
 
-(ert-deftest hermes-render-test/fenced-block-stays-unstable ()
-  ;; The stable boundary tracker should not split inside a fence — even if
-  ;; a `\\n\\n' appears between the open and close fences.
+(ert-deftest hermes-render-test/multiple-segments-ordered ()
+  "Segments render in arrival order."
   (with-temp-buffer
     (hermes-render-test--setup)
-    (hermes--rewrite-stream "Code:\n\n```python\n\nprint(1)\n```\n")
-    (should (equal "Code:\n\n```python\n\nprint(1)\n```\n"
+    (let ((s1 (make-hermes-segment :type 'text :content "Hello"))
+          (s2 (make-hermes-segment :type 'thinking :content "hmm"))
+          (s3 (make-hermes-segment :type 'text :content "World")))
+      (hermes--render-stream-segments (vector s1 s2 s3)))
+    (let ((body (hermes-render-test--body)))
+      (should (string-match-p "Hello" body))
+      (should (string-match-p "hmm" body))
+      (should (string-match-p "World" body))
+      (should (string-match-p "Hello\n#\\+begin_example Thinking\nhmm" body)))))
+
+(ert-deftest hermes-render-test/segment-update-rewrites ()
+  "Updating segments rewrites the region in place."
+  (with-temp-buffer
+    (hermes-render-test--setup)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "Old")))
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "New content")))
+    (should (equal "New content\n"
                    (hermes-render-test--body)))))
 
-(ert-deftest hermes-render-test/stable-boundary-finds-last-blank-line ()
-  ;; Plain unit test for the boundary helper.
-  (should (= 0 (hermes--stable-boundary "no blank lines here")))
-  (should (= 5 (hermes--stable-boundary "abc\n\ndef")))
-  (should (= 10 (hermes--stable-boundary "abc\n\ndef\n\nghi"))))
-
-(ert-deftest hermes-render-test/stable-boundary-skips-fence ()
-  ;; A `\\n\\n' inside a fence does not count.
-  (should (= 0 (hermes--stable-boundary "```\n\nfoo\n"))))
-
-(ert-deftest hermes-render-test/stable-chunks-converted-to-org ()
-  ;; Stable chunks pass through hermes-md-to-org on insert.
+(ert-deftest hermes-render-test/text-segment-markdown-to-org ()
+  "Text segments are converted from markdown to Org."
   (with-temp-buffer
     (hermes-render-test--setup)
-    (hermes--rewrite-stream "I am **strong**.\n\nNext.")
-    (should (equal "I am *strong*.\n\nNext."
-                   (hermes-render-test--body)))))
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "I am **strong**.")))
+    (should (string-match-p "I am \\*strong\\*."
+                            (hermes-render-test--body)))))
 
-(ert-deftest hermes-render-test/commit-flushes-unstable-tail ()
-  ;; The residual unstable tail must be converted when the stream commits.
+(ert-deftest hermes-render-test/stream-update-renders-segments ()
+  "hermes--stream-update renders segments from stream."
   (with-temp-buffer
-    (hermes-render-test--setup)
-    (hermes--rewrite-stream "Hi.\n\nA `code` example")
-    ;; "A `code` example" is still unstable here.
-    (should (string-match-p "`code`" (hermes-render-test--body)))
-    (hermes--stream-commit)
-    ;; The markdown got cooked into Org, and the raw backticks are gone.
-    (should (string-match-p "A ~code~ example"
-                             (buffer-substring-no-properties
-                              (point-min) (point-max))))
-    (should-not (string-match-p "`code`"
-                                 (buffer-substring-no-properties
-                                  (point-min) (point-max))))))
-
-(ert-deftest hermes-render-test/thinking-block-inserted-before-text ()
-  (with-temp-buffer
-    (hermes-render-test--setup)
-    (hermes--update-thinking-block "hmm" nil)
-    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should (string-match-p "#\\+begin_example Thinking\nhmm\n#\\+end_example" body))
-      ;; The block sits before the (empty) text region, followed by blank line.
-      (should (string-match-p "#\\+end_example\n\n\\'" body)))))
-
-(ert-deftest hermes-render-test/thinking-block-updated-on-change ()
-  (with-temp-buffer
-    (hermes-render-test--setup)
-    (hermes--update-thinking-block "hmm" nil)
-    (hermes--update-thinking-block "hmm maybe" nil)
-    (should (string-match-p
-             "#\\+begin_example Thinking\nhmm maybe\n#\\+end_example"
-             (buffer-substring-no-properties (point-min) (point-max))))))
-
-(ert-deftest hermes-render-test/thinking-block-removed-when-empty ()
-  (with-temp-buffer
-    (hermes-render-test--setup)
-    (hermes--update-thinking-block "hmm" nil)
-    (hermes--update-thinking-block nil nil)
-    (should-not (string-match-p
-                 "Thinking"
-                 (buffer-substring-no-properties (point-min) (point-max))))))
+    (hermes--stream-begin)
+    (let* ((stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment :type 'text :content "Hi")))))
+      (hermes--stream-update nil stream))
+    (should (string-match-p "Hi"
+                            (buffer-substring-no-properties
+                             (point-min) (point-max))))))
 
 (ert-deftest hermes-render-test/thinking-and-reasoning-separate-blocks ()
+  "thinking and reasoning segments produce separate blocks."
   (with-temp-buffer
     (hermes-render-test--setup)
-    (hermes--update-thinking-block "think" "reason")
-    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'thinking :content "think")
+             (make-hermes-segment :type 'reasoning :content "reason")))
+    (let ((body (hermes-render-test--body)))
       (should (string-match-p "#\\+begin_example Thinking\nthink\n#\\+end_example" body))
       (should (string-match-p "#\\+begin_example Reasoning\nreason\n#\\+end_example" body)))))
 

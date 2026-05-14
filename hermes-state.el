@@ -23,6 +23,11 @@
 
 ;;;; Persistent state — mirrored in the Org buffer
 
+(cl-defstruct (hermes-segment (:copier hermes-segment-copy))
+  type        ; 'text | 'thinking | 'reasoning | 'tool | 'system
+  content     ; string for text/thinking/reasoning/system; hermes-tool for tool segments
+  id)         ; unique segment id (for stable updates)
+
 (cl-defstruct (hermes-tool (:copier hermes-tool-copy))
   id name
   status      ; 'generating | 'running | 'complete | 'error
@@ -34,15 +39,16 @@
 
 (cl-defstruct (hermes-message (:copier hermes-message-copy))
   kind        ; 'user | 'assistant | 'system
-  text        ; raw markdown for assistant / plain for user / status text
-  thinking    ; accumulated thinking text (assistant only)
-  reasoning   ; accumulated reasoning text (assistant only)
-  tools       ; vector of hermes-tool (the trail)
+  text        ; DEPRECATED: derive from segments
+  thinking    ; DEPRECATED: derive from segments
+  reasoning   ; DEPRECATED: derive from segments
+  tools       ; DEPRECATED: derive from segments
+  segments    ; vector of hermes-segment
   usage timestamp)
 
 (cl-defstruct (hermes-stream (:copier hermes-stream-copy))
-  text thinking reasoning
-  tools)
+  segments    ; vector of hermes-segment, ordered by arrival
+  tools)      ; DEPRECATED: kept for backward compat
 
 (cl-defstruct (hermes-pending (:copier hermes-pending-copy))
   kind        ; 'approval | 'clarify | 'secret | 'sudo
@@ -127,6 +133,67 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
   "Return a new vector that is VEC with ELT pushed onto the end."
   (vconcat vec (vector elt)))
 
+(defvar hermes--segment-counter 0
+  "Monotonic counter for segment IDs.")
+
+(defun hermes--next-segment-id ()
+  "Return a fresh segment ID string."
+  (format "seg-%d" (cl-incf hermes--segment-counter)))
+
+;;;; Segment helpers
+
+(defun hermes--last-segment (stream)
+  "Return the last segment in STREAM, or nil."
+  (let ((segs (hermes-stream-segments stream)))
+    (when (> (length segs) 0)
+      (aref segs (1- (length segs))))))
+
+(defun hermes--append-segment (stream seg)
+  "Return a new stream with SEG appended to segments."
+  (hermes--with-copy stream hermes-stream-copy s
+    (setf (hermes-stream-segments s)
+          (hermes--vector-append (hermes-stream-segments stream) seg))))
+
+(defun hermes--update-last-segment (stream updater)
+  "Return a new stream with the last segment replaced by (UPDATER last-seg)."
+  (let* ((segs (hermes-stream-segments stream))
+         (n (length segs)))
+    (if (= n 0)
+        stream
+      (let* ((last-idx (1- n))
+             (old-seg (aref segs last-idx))
+             (new-seg (funcall updater old-seg))
+             (new-segs (copy-sequence segs)))
+        (aset new-segs last-idx new-seg)
+        (hermes--with-copy stream hermes-stream-copy s
+          (setf (hermes-stream-segments s) new-segs))))))
+
+(defun hermes--find-tool-segment-index (segments tool-id)
+  "Return index of tool segment with matching TOOL-ID, or nil."
+  (cl-position-if
+   (lambda (seg)
+     (and (eq 'tool (hermes-segment-type seg))
+          (let ((tool (hermes-segment-content seg)))
+            (and (hermes-tool-p tool)
+                 (equal tool-id (hermes-tool-id tool))))))
+   segments))
+
+(defun hermes--segments-derive-deprecated (segments)
+  "Derive deprecated slots from SEGMENTS.
+Returns a plist with :text :thinking :reasoning :tools."
+  (let (text-parts thinking-parts reasoning-parts tools-vec)
+    (dotimes (i (length segments))
+      (let ((seg (aref segments i)))
+        (pcase (hermes-segment-type seg)
+          ('text (push (hermes-segment-content seg) text-parts))
+          ('thinking (push (hermes-segment-content seg) thinking-parts))
+          ('reasoning (push (hermes-segment-content seg) reasoning-parts))
+          ('tool (push (hermes-segment-content seg) tools-vec)))))
+    (list :text (apply #'concat (nreverse text-parts))
+          :thinking (apply #'concat (nreverse thinking-parts))
+          :reasoning (apply #'concat (nreverse reasoning-parts))
+          :tools (vconcat (nreverse tools-vec)))))
+
 ;;;; Persistent reducer
 ;;
 ;; MSG is (TYPE . PAYLOAD).  TYPE is a string for gateway events
@@ -139,7 +206,7 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
   (let ((type (car msg))
         (p    (cdr msg)))
     (pcase type
-      ;;; --- Internal actions ----------------------------------------------
+      ;; --- Internal actions ----------------------------------------------
       (:connecting
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-connection s) 'connecting)))
@@ -150,8 +217,6 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-connection s) 'disconnected)))
       (:user-submit
-       ;; Optimistic commit (mirrors useSubmission.ts:87-149).  Also push
-       ;; the input onto the history ring, capped at `hermes-history-max'.
        (let ((text (plist-get p :text)))
          (hermes--with-copy state hermes-state-copy s
            (setf (hermes-state-messages s)
@@ -179,8 +244,7 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
       (:slash-catalog
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-slash-catalog s) (plist-get p :catalog))))
-      ;;; --- Gateway lifecycle ---------------------------------------------
-      ;; Debug payload: ("skin" . "default")
+      ;; --- Gateway lifecycle ---------------------------------------------
       ("gateway.ready"
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-connection s) 'connected
@@ -188,14 +252,7 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
       ("skin.changed"
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-skin s) p)))
-      ;; Debug payload keys:
-      ;;   "model" "cwd" "skills" "tools" "version" "release_date"
-      ;;   "usage" "system_prompt" "config_warning" "service_tier"
-      ;;   "fast" "reasoning_effort" "update_behind" "update_command"
-      ;;   "mcp_servers"
       ("session.info"
-       ;; Merge into existing (createGatewayEventHandler.ts:279-292).
-       ;; Also extract usage data if present.
        (hermes--with-copy state hermes-state-copy s
          (when (hash-table-p p)
            (let ((sid (hermes--get p "session_id"))
@@ -205,8 +262,6 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
              (maphash (lambda (k v) (puthash k v merged)) p)
              (setf (hermes-state-session-info s) merged)
              (when sid (setf (hermes-state-session-id s) sid))
-             ;; Merge usage if payload contains a "usage" key or usage-related
-             ;; top-level fields.
              (when usage-payload
                (let ((u (or (hermes-state-usage state)
                             (make-hash-table :test 'equal))))
@@ -218,78 +273,90 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                      (when (consp kv)
                        (puthash (car kv) (cdr kv) u)))))
                  (setf (hermes-state-usage s) u)))))))
-      ;;; --- Message stream ------------------------------------------------
-      ;; Debug payload: nil (empty hash-table)
+      ;; --- Message stream ------------------------------------------------
       ("message.start"
-       ;; Discard any in-flight stream silently (turnController.ts:746-757).
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-stream s)
-               (make-hermes-stream :text "" :thinking "" :reasoning ""
-                                   :tools []))))
-      ;; Debug payload: ("text" . "hello")
+               (make-hermes-stream :segments [] :tools []))))
       ("message.delta"
-       (let ((old-stream (or (hermes-state-stream state)
-                             (make-hermes-stream :text "" :thinking ""
-                                                 :reasoning "" :tools [])))
-             (chunk (or (hermes--get p "text") "")))
+       (let* ((old-stream (or (hermes-state-stream state)
+                              (make-hermes-stream :segments [] :tools [])))
+              (chunk (or (hermes--get p "text") ""))
+              (last (hermes--last-segment old-stream)))
          (hermes--with-copy state hermes-state-copy s
            (setf (hermes-state-stream s)
-                 (hermes--with-copy old-stream hermes-stream-copy ns
-                   (setf (hermes-stream-text ns)
-                         (concat (hermes-stream-text old-stream) chunk)))))))
-       ;; Debug payload: ("text" . "thinking text here")
-       ("thinking.delta"
-        (let ((old-stream (or (hermes-state-stream state)
-                              (make-hermes-stream :text "" :thinking ""
-                                                  :reasoning "" :tools [])))
-              (chunk (or (hermes--get p "text") "")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-stream s)
-                  (hermes--with-copy old-stream hermes-stream-copy ns
-                    (setf (hermes-stream-thinking ns)
-                          (concat (hermes-stream-thinking old-stream)
-                                  chunk)))))))
-        ;; Debug payload: ("text" . "reasoning text here")
-        ("reasoning.available"
-         ;; Initialize reasoning text before deltas arrive.
-         (let ((old-stream (or (hermes-state-stream state)
-                               (make-hermes-stream :text "" :thinking ""
-                                                   :reasoning "" :tools [])))
-               (text (or (hermes--get p "text") "")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-stream s)
-                  (hermes--with-copy old-stream hermes-stream-copy ns
-                    (when (string-empty-p (hermes-stream-reasoning old-stream))
-                      (setf (hermes-stream-reasoning ns) text)))))))
-        ;; Debug payload: ("text" . "reasoning text here")
-        ("reasoning.delta"
-         (let ((old-stream (or (hermes-state-stream state)
-                               (make-hermes-stream :text "" :thinking ""
-                                                   :reasoning "" :tools [])))
-               (chunk (or (hermes--get p "text") "")))
-           (hermes--with-copy state hermes-state-copy s
-             (setf (hermes-state-stream s)
-                   (hermes--with-copy old-stream hermes-stream-copy ns
-                     (setf (hermes-stream-reasoning ns)
-                           (concat (hermes-stream-reasoning old-stream)
-                                   chunk)))))))
-       ;; Debug payload keys: "reasoning" "status" "usage" "text"
-       ;; The "text" field appears to be a summary, not the stream text.
-       ("message.complete"
-        ;; Commit stream → messages.
-        ;; Also extract token counts from payload and accumulate into state usage.
+                 (if (and last (eq 'text (hermes-segment-type last)))
+                     (hermes--update-last-segment old-stream
+                       (lambda (seg)
+                         (hermes--with-copy seg hermes-segment-copy ns
+                           (setf (hermes-segment-content ns)
+                                 (concat (hermes-segment-content seg) chunk)))))
+                   (hermes--append-segment old-stream
+                     (make-hermes-segment :type 'text :content chunk
+                                          :id (hermes--next-segment-id))))))))
+      ("thinking.delta"
+       (let* ((old-stream (or (hermes-state-stream state)
+                              (make-hermes-stream :segments [] :tools [])))
+              (chunk (or (hermes--get p "text") ""))
+              (last (hermes--last-segment old-stream)))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-stream s)
+                 (if (and last (eq 'thinking (hermes-segment-type last)))
+                     (hermes--update-last-segment old-stream
+                       (lambda (seg)
+                         (hermes--with-copy seg hermes-segment-copy ns
+                           (setf (hermes-segment-content ns)
+                                 (concat (hermes-segment-content seg) chunk)))))
+                   (hermes--append-segment old-stream
+                     (make-hermes-segment :type 'thinking :content chunk
+                                          :id (hermes--next-segment-id))))))))
+      ("reasoning.available"
+       (let* ((old-stream (or (hermes-state-stream state)
+                              (make-hermes-stream :segments [] :tools [])))
+              (text (or (hermes--get p "text") ""))
+              (last (hermes--last-segment old-stream)))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-stream s)
+                 (if (and last (eq 'reasoning (hermes-segment-type last)))
+                     (hermes--update-last-segment old-stream
+                       (lambda (seg)
+                         (hermes--with-copy seg hermes-segment-copy ns
+                           (setf (hermes-segment-content ns) text))))
+                   (hermes--append-segment old-stream
+                     (make-hermes-segment :type 'reasoning :content text
+                                          :id (hermes--next-segment-id))))))))
+      ("reasoning.delta"
+       (let* ((old-stream (or (hermes-state-stream state)
+                              (make-hermes-stream :segments [] :tools [])))
+              (chunk (or (hermes--get p "text") ""))
+              (last (hermes--last-segment old-stream)))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-stream s)
+                 (if (and last (eq 'reasoning (hermes-segment-type last)))
+                     (hermes--update-last-segment old-stream
+                       (lambda (seg)
+                         (hermes--with-copy seg hermes-segment-copy ns
+                           (setf (hermes-segment-content ns)
+                                 (concat (hermes-segment-content seg) chunk)))))
+                   (hermes--append-segment old-stream
+                     (make-hermes-segment :type 'reasoning :content chunk
+                                          :id (hermes--next-segment-id))))))))
+      ("message.complete"
        (let ((str (hermes-state-stream state)))
          (if (null str)
-             state                      ; nothing to commit
+             state
            (let* ((sent (hermes--get p "tokens_sent"))
                   (received (hermes--get p "tokens_received"))
                   (msg-usage (make-hash-table :test 'equal))
+                  (segs (hermes-stream-segments str))
+                  (deprecated (hermes--segments-derive-deprecated segs))
                   (msg (make-hermes-message
                         :kind 'assistant
-                        :text (hermes-stream-text str)
-                        :thinking (hermes-stream-thinking str)
-                        :reasoning (hermes-stream-reasoning str)
-                        :tools (hermes-stream-tools str)
+                        :segments segs
+                        :text (plist-get deprecated :text)
+                        :thinking (plist-get deprecated :thinking)
+                        :reasoning (plist-get deprecated :reasoning)
+                        :tools (plist-get deprecated :tools)
                         :usage msg-usage
                         :timestamp (current-time)))
                   (acc-usage (or (hermes-state-usage state)
@@ -306,133 +373,119 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                      (hermes--vector-append (hermes-state-messages state) msg)
                      (hermes-state-usage s) acc-usage
                      (hermes-state-stream s) nil))))))
-       ;;; --- Tools ---------------------------------------------------------
-         ;; Debug payload: ("name" . "terminal")
-         ("tool.generating"
-          ;; tool.generating means a tool has been selected and is about to run.
-          ;; Add it to stream.tools if not already present.  Drop if no stream
-          ;; (edge case #2: turnController.ts:620-645).
-         (let ((str (hermes-state-stream state))
-               (tid (or (hermes--get p "tool_id")
-                        (hermes--get p "id")
-                        (hermes--get p "name")))
-               (tname (hermes--get p "name")))
-           (if (or (null str) (null tid))
-               state
-             (let* ((tools (hermes-stream-tools str))
-                    (already (cl-some (lambda (tl)
-                                        (equal tid (hermes-tool-id tl)))
-                                      (append tools nil))))
-               (if already
-                   state
-                 (let ((tool (make-hermes-tool :id tid :name tname
-                                               :status 'generating)))
-                   (hermes--with-copy state hermes-state-copy s
-                     (setf (hermes-state-stream s)
-                           (hermes--with-copy str hermes-stream-copy ns
-                             (setf (hermes-stream-tools ns)
-                                   (hermes--vector-append tools tool))
-                             ns)))))))))
-         ;; Debug payload: ("context" . "uptime") ("name" . "terminal")
-         ;;                ("tool_id" . "chatcmpl-tool-...")
-         ("tool.start"
-          ;; tool.start means execution has actually begun.
-          ;; Transition the matching tool from generating → running.
-         (let ((str (hermes-state-stream state))
-               (tid (hermes--get p "tool_id"))
-               (ctx (hermes--get p "context")))
-           (if (or (null str) (null tid))
-               state
-             (let* ((tools (hermes-stream-tools str))
-                    (idx (cl-position-if
-                          (lambda (tl) (equal tid (hermes-tool-id tl)))
-                          tools)))
-               (if (null idx)
-                   state
-                 (let* ((old-tool (aref tools idx))
-                        (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                   (setf (hermes-tool-status nt) 'running
-                                         (hermes-tool-context nt) ctx)))
-                        (new-tools (copy-sequence tools)))
-                   (aset new-tools idx new-tool)
-                    (hermes--with-copy state hermes-state-copy s
-                      (setf (hermes-state-stream s)
-                            (hermes--with-copy str hermes-stream-copy ns
-                              (setf (hermes-stream-tools ns) new-tools)
-                              ns)))))))))
-          ;; Debug payload: ("preview" . "uptime") ("name" . "terminal")
-          ("tool.progress"
-           ;; Store the live preview on the matching tool in stream.tools.
-          (let ((str (hermes-state-stream state))
-                (tid (hermes--get p "tool_id"))
-                (preview (hermes--get p "preview")))
-            (if (or (null str) (null tid))
-                state
-              (let* ((tools (hermes-stream-tools str))
-                     (idx (cl-position-if
-                           (lambda (tl) (equal tid (hermes-tool-id tl)))
-                           tools)))
-                (if (null idx)
-                    state
-                  (let* ((old-tool (aref tools idx))
-                         (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                    (setf (hermes-tool-preview nt) preview)))
-                         (new-tools (copy-sequence tools)))
-                    (aset new-tools idx new-tool)
-                    (hermes--with-copy state hermes-state-copy s
-                      (setf (hermes-state-stream s)
-                            (hermes--with-copy str hermes-stream-copy ns
-                              (setf (hermes-stream-tools ns) new-tools)
-                              ns)))))))))
-          ("tool.complete"
-          ;; Debug: real payload from gateway (nvidia/nemotron model):
-          ;;   (("duration_s" . 0.47) ("name" . "terminal")
-          ;;    ("tool_id" . "chatcmpl-tool-..."))
-          ;; Note: "output" may be absent for some tools/models.
-          (let* ((str (hermes-state-stream state))
-                (tid (or (hermes--get p "tool_id")
-                         (hermes--get p "id")
-                         (hermes--get p "name")
-                         ;; Fallback: use the id of the last tool in stream.
-                         (and str
-                              (let ((ts (hermes-stream-tools str)))
-                                (and (> (length ts) 0)
-                                     (hermes-tool-id (aref ts (1- (length ts)))))))))
-                (inline-diff (hermes--get p "inline_diff"))
-                (todos-raw (hermes--get p "todos"))
-               (output (hermes--get p "output"))
+      ;; --- Tools ---------------------------------------------------------
+      ("tool.generating"
+       (let ((str (hermes-state-stream state))
+             (tid (or (hermes--get p "tool_id")
+                      (hermes--get p "id")
+                      (hermes--get p "name")))
+             (tname (hermes--get p "name")))
+         (if (or (null str) (null tid))
+             state
+           (let* ((segs (hermes-stream-segments str))
+                  (already (hermes--find-tool-segment-index segs tid)))
+             (if already
+                 state
+               (let ((tool (make-hermes-tool :id tid :name tname
+                                             :status 'generating)))
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--append-segment str
+                           (make-hermes-segment :type 'tool :content tool
+                                                :id (hermes--next-segment-id)))))))))))
+      ("tool.start"
+       (let ((str (hermes-state-stream state))
+             (tid (hermes--get p "tool_id"))
+             (ctx (hermes--get p "context")))
+         (if (or (null str) (null tid))
+             state
+           (let* ((segs (hermes-stream-segments str))
+                  (idx (hermes--find-tool-segment-index segs tid)))
+             (if (null idx)
+                 state
+               (let* ((old-seg (aref segs idx))
+                      (old-tool (hermes-segment-content old-seg))
+                      (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                                 (setf (hermes-tool-status nt) 'running
+                                       (hermes-tool-context nt) ctx)))
+                      (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
+                                (setf (hermes-segment-content ns) new-tool)))
+                      (new-segs (copy-sequence segs)))
+                 (aset new-segs idx new-seg)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-segments ns) new-segs))))))))))
+      ("tool.progress"
+       (let ((str (hermes-state-stream state))
+             (tid (hermes--get p "tool_id"))
+             (preview (hermes--get p "preview")))
+         (if (or (null str) (null tid))
+             state
+           (let* ((segs (hermes-stream-segments str))
+                  (idx (hermes--find-tool-segment-index segs tid)))
+             (if (null idx)
+                 state
+               (let* ((old-seg (aref segs idx))
+                      (old-tool (hermes-segment-content old-seg))
+                      (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                                  (setf (hermes-tool-preview nt) preview)))
+                      (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
+                                 (setf (hermes-segment-content ns) new-tool)))
+                      (new-segs (copy-sequence segs)))
+                 (aset new-segs idx new-seg)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-segments ns) new-segs))))))))))
+      ("tool.complete"
+       (let* ((str (hermes-state-stream state))
+              (tid (or (hermes--get p "tool_id")
+                       (hermes--get p "id")
+                       (hermes--get p "name")
+                       (and str
+                            (let ((segs (hermes-stream-segments str)))
+                              (and (> (length segs) 0)
+                                   (let ((last-seg (aref segs (1- (length segs)))))
+                                     (and (eq 'tool (hermes-segment-type last-seg))
+                                          (hermes-tool-id (hermes-segment-content last-seg)))))))))
+              (inline-diff (hermes--get p "inline_diff"))
+              (todos-raw (hermes--get p "todos"))
+              (output (hermes--get p "output"))
               (err    (hermes--get p "error"))
               (dur    (hermes--get p "duration_s")))
-          (if (or (null str) (null tid))
-              state
-            (let* ((tools (hermes-stream-tools str))
-                   (tname (hermes--get p "name"))
-                   (idx (cl-position-if
-                         (lambda (tl)
-                           (or (equal tid (hermes-tool-id tl))
-                               (and tname (equal tname (hermes-tool-name tl)))))
-                         tools)))
-              (if (null idx)
-                  state
-                 (let* ((old-tool (aref tools idx))
-                        (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                   (setf (hermes-tool-status nt)
-                                         (if err 'error 'complete)
-                                         (hermes-tool-output nt) output
-                                         (hermes-tool-error nt) err
-                                         (hermes-tool-duration nt) dur
-                                         (hermes-tool-inline-diff nt) inline-diff
-                                         (hermes-tool-todos nt) todos-raw)))
-                       (new-tools (copy-sequence tools)))
-                   (aset new-tools idx new-tool)
-                    (hermes--with-copy state hermes-state-copy s
-                      (setf (hermes-state-stream s)
-                            (hermes--with-copy str hermes-stream-copy ns
-                              (setf (hermes-stream-tools ns) new-tools)
-                              ns)))))))))
-       ;;; --- Blocking prompts ----------------------------------------------
-      ;; All four: replace wholesale; only one pending slot
-      ;; (createGatewayEventHandler.ts:519-547).
+         (if (or (null str) (null tid))
+             state
+           (let* ((segs (hermes-stream-segments str))
+                  (tname (hermes--get p "name"))
+                  (idx (cl-position-if
+                        (lambda (seg)
+                          (and (eq 'tool (hermes-segment-type seg))
+                               (let ((tl (hermes-segment-content seg)))
+                                 (or (equal tid (hermes-tool-id tl))
+                                     (and tname (equal tname (hermes-tool-name tl)))))))
+                        segs)))
+             (if (null idx)
+                 state
+               (let* ((old-seg (aref segs idx))
+                      (old-tool (hermes-segment-content old-seg))
+                      (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                                 (setf (hermes-tool-status nt)
+                                       (if err 'error 'complete)
+                                       (hermes-tool-output nt) output
+                                       (hermes-tool-error nt) err
+                                       (hermes-tool-duration nt) dur
+                                       (hermes-tool-inline-diff nt) inline-diff
+                                       (hermes-tool-todos nt) todos-raw)))
+                      (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
+                                (setf (hermes-segment-content ns) new-tool)))
+                      (new-segs (copy-sequence segs)))
+                 (aset new-segs idx new-seg)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-segments ns) new-segs))))))))))
+      ;; --- Blocking prompts ----------------------------------------------
       ("approval.request"
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-pending s)
@@ -470,103 +523,94 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
            (hermes--with-copy state hermes-state-copy s
              (setf (hermes-state-pending s) nil))
          state))
-       ;;; --- Errors --------------------------------------------------------
-        ;; Debug payload: ("message" . "error text here")
-        ("error"
-         ;; Commit any in-flight stream so the partial response is not lost,
-        ;; then append the error as a system message.  This mirrors the TUI's
-        ;; recordError() → idle() path which resets turn state.
-        (let ((text (ansi-color-apply
-                     (or (hermes--get p "message") "(unknown error)")))
-              (str (hermes-state-stream state)))
-          (if (null str)
-              ;; No stream in flight — just append the error.
-              (hermes--with-copy state hermes-state-copy s
-                (setf (hermes-state-messages s)
-                      (hermes--vector-append
-                       (hermes-state-messages state)
-                       (make-hermes-message :kind 'system :text text
-                                            :timestamp (current-time)))))
-            ;; Stream is live: commit it as a partial assistant message,
-            ;; then append the error.
-            (let ((msg (make-hermes-message
+      ;; --- Errors --------------------------------------------------------
+      ("error"
+       (let ((text (ansi-color-apply
+                    (or (hermes--get p "message") "(unknown error)")))
+             (str (hermes-state-stream state)))
+         (if (null str)
+             (hermes--with-copy state hermes-state-copy s
+               (setf (hermes-state-messages s)
+                     (hermes--vector-append
+                      (hermes-state-messages state)
+                      (make-hermes-message :kind 'system :text text
+                                           :timestamp (current-time)))))
+           (let* ((segs (hermes-stream-segments str))
+                  (deprecated (hermes--segments-derive-deprecated segs))
+                  (msg (make-hermes-message
                         :kind 'assistant
-                        :text (hermes-stream-text str)
-                        :thinking (hermes-stream-thinking str)
-                        :reasoning (hermes-stream-reasoning str)
-                        :tools (hermes-stream-tools str)
+                        :segments segs
+                        :text (plist-get deprecated :text)
+                        :thinking (plist-get deprecated :thinking)
+                        :reasoning (plist-get deprecated :reasoning)
+                        :tools (plist-get deprecated :tools)
                         :usage nil
                         :timestamp (current-time))))
-              (hermes--with-copy state hermes-state-copy s
-                (setf (hermes-state-messages s)
-                      (hermes--vector-append
-                       (hermes--vector-append (hermes-state-messages state) msg)
-                       (make-hermes-message :kind 'system :text text
-                                            :timestamp (current-time)))
-                      (hermes-state-stream s) nil))))))
-       ;;; --- Gateway diagnostics -------------------------------------------
-        ;; Debug payload: ("line" . "stderr text here")
-        ("gateway.stderr"
-         (let ((line (hermes--get p "line")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-messages s)
-                  (hermes--vector-append
-                   (hermes-state-messages state)
-                   (make-hermes-message
-                    :kind 'system
-                    :text (format "[stderr] %s"
-                                  (substring line 0 (min 120 (length line))))
-                    :timestamp (current-time)))))))
-        ;; Debug payload: ("preview" . "{bad json...")
-        ("gateway.protocol_error"
-         (let ((preview (hermes--get p "preview")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-messages s)
-                  (hermes--vector-append
-                   (hermes-state-messages state)
-                   (make-hermes-message
-                    :kind 'system
-                    :text (format "[protocol noise] %s" preview)
-                    :timestamp (current-time)))))))
-        ;; Debug payload: ("lines" . '("err1" "err2"))
-        ("gateway.start_timeout"
-         (let ((lines (hermes--get p "lines")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-messages s)
-                  (hermes--vector-append
-                   (hermes-state-messages state)
-                   (make-hermes-message
-                    :kind 'system
-                    :text (concat "[gateway start timeout]\n"
-                                  (mapconcat (lambda (l) (format "  %s" l))
-                                             lines "\n"))
-                    :timestamp (current-time)))))))
-       ;;; --- Background / review -------------------------------------------
-        ;; Debug payload: ("task_id" . "t1") ("text" . "done")
-        ("background.complete"
-         (let ((tid (hermes--get p "task_id"))
-               (text (hermes--get p "text")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-messages s)
-                  (hermes--vector-append
-                   (hermes-state-messages state)
-                   (make-hermes-message
-                    :kind 'system
-                    :text (format "[bg %s] %s" (or tid "?") (or text ""))
-                    :timestamp (current-time)))))))
-        ;; Debug payload: ("text" . "looks good")
-        ("review.summary"
-         (let ((text (hermes--get p "text")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-messages s)
-                  (hermes--vector-append
-                   (hermes-state-messages state)
-                   (make-hermes-message
-                    :kind 'system
-                    :text (format "[review] %s" (or text ""))
-                    :timestamp (current-time)))))))
-       ;;; --- Pass-through (no-op for M2) -----------------------------------
-       (_ state))))
+             (hermes--with-copy state hermes-state-copy s
+               (setf (hermes-state-messages s)
+                     (hermes--vector-append
+                      (hermes--vector-append (hermes-state-messages state) msg)
+                      (make-hermes-message :kind 'system :text text
+                                           :timestamp (current-time)))
+                     (hermes-state-stream s) nil))))))
+      ;; --- Gateway diagnostics -------------------------------------------
+      ("gateway.stderr"
+       (let ((line (hermes--get p "line")))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-messages s)
+                 (hermes--vector-append
+                  (hermes-state-messages state)
+                  (make-hermes-message
+                   :kind 'system
+                   :text (format "[stderr] %s"
+                                 (substring line 0 (min 120 (length line))))
+                   :timestamp (current-time)))))))
+      ("gateway.protocol_error"
+       (let ((preview (hermes--get p "preview")))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-messages s)
+                 (hermes--vector-append
+                  (hermes-state-messages state)
+                  (make-hermes-message
+                   :kind 'system
+                   :text (format "[protocol noise] %s" preview)
+                   :timestamp (current-time)))))))
+      ("gateway.start_timeout"
+       (let ((lines (hermes--get p "lines")))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-messages s)
+                 (hermes--vector-append
+                  (hermes-state-messages state)
+                  (make-hermes-message
+                   :kind 'system
+                   :text (concat "[gateway start timeout]\n"
+                                 (mapconcat (lambda (l) (format "  %s" l))
+                                            lines "\n"))
+                   :timestamp (current-time)))))))
+      ;; --- Background / review -------------------------------------------
+      ("background.complete"
+       (let ((tid (hermes--get p "task_id"))
+             (text (hermes--get p "text")))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-messages s)
+                 (hermes--vector-append
+                  (hermes-state-messages state)
+                  (make-hermes-message
+                   :kind 'system
+                   :text (format "[bg %s] %s" (or tid "?") (or text ""))
+                   :timestamp (current-time)))))))
+      ("review.summary"
+       (let ((text (hermes--get p "text")))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-messages s)
+                 (hermes--vector-append
+                  (hermes-state-messages state)
+                  (make-hermes-message
+                   :kind 'system
+                   :text (format "[review] %s" (or text ""))
+                   :timestamp (current-time)))))))
+      ;; --- Pass-through --------------------------------------------------
+      (_ state))))
 
 ;;;; UI reducer (minimal for M2)
 

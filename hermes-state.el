@@ -180,6 +180,7 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-slash-catalog s) (plist-get p :catalog))))
       ;;; --- Gateway lifecycle ---------------------------------------------
+      ;; Debug payload: ("skin" . "default")
       ("gateway.ready"
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-connection s) 'connected
@@ -187,6 +188,11 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
       ("skin.changed"
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-skin s) p)))
+      ;; Debug payload keys:
+      ;;   "model" "cwd" "skills" "tools" "version" "release_date"
+      ;;   "usage" "system_prompt" "config_warning" "service_tier"
+      ;;   "fast" "reasoning_effort" "update_behind" "update_command"
+      ;;   "mcp_servers"
       ("session.info"
        ;; Merge into existing (createGatewayEventHandler.ts:279-292).
        ;; Also extract usage data if present.
@@ -213,12 +219,14 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                        (puthash (car kv) (cdr kv) u)))))
                  (setf (hermes-state-usage s) u)))))))
       ;;; --- Message stream ------------------------------------------------
+      ;; Debug payload: nil (empty hash-table)
       ("message.start"
        ;; Discard any in-flight stream silently (turnController.ts:746-757).
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-stream s)
                (make-hermes-stream :text "" :thinking "" :reasoning ""
                                    :tools []))))
+      ;; Debug payload: ("text" . "hello")
       ("message.delta"
        (let ((old-stream (or (hermes-state-stream state)
                              (make-hermes-stream :text "" :thinking ""
@@ -229,29 +237,8 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                  (hermes--with-copy old-stream hermes-stream-copy ns
                    (setf (hermes-stream-text ns)
                          (concat (hermes-stream-text old-stream) chunk)))))))
-      ("thinking.delta"
-       (let ((old-stream (or (hermes-state-stream state)
-                             (make-hermes-stream :text "" :thinking ""
-                                                 :reasoning "" :tools [])))
-             (chunk (or (hermes--get p "text") "")))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-stream s)
-                 (hermes--with-copy old-stream hermes-stream-copy ns
-                   (setf (hermes-stream-thinking ns)
-                         (concat (hermes-stream-thinking old-stream)
-                                 chunk)))))))
-       ("reasoning.available"
-        ;; Initialize reasoning text before deltas arrive.
-        (let ((old-stream (or (hermes-state-stream state)
-                              (make-hermes-stream :text "" :thinking ""
-                                                  :reasoning "" :tools [])))
-              (text (or (hermes--get p "text") "")))
-          (hermes--with-copy state hermes-state-copy s
-            (setf (hermes-state-stream s)
-                  (hermes--with-copy old-stream hermes-stream-copy ns
-                    (when (string-empty-p (hermes-stream-reasoning old-stream))
-                      (setf (hermes-stream-reasoning ns) text)))))))
-       ("reasoning.delta"
+       ;; Debug payload: ("text" . "thinking text here")
+       ("thinking.delta"
         (let ((old-stream (or (hermes-state-stream state)
                               (make-hermes-stream :text "" :thinking ""
                                                   :reasoning "" :tools [])))
@@ -259,12 +246,38 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
           (hermes--with-copy state hermes-state-copy s
             (setf (hermes-state-stream s)
                   (hermes--with-copy old-stream hermes-stream-copy ns
-                    (setf (hermes-stream-reasoning ns)
-                          (concat (hermes-stream-reasoning old-stream)
+                    (setf (hermes-stream-thinking ns)
+                          (concat (hermes-stream-thinking old-stream)
                                   chunk)))))))
-      ("message.complete"
-       ;; Commit stream → messages.
-       ;; Also extract token counts from payload and accumulate into state usage.
+        ;; Debug payload: ("text" . "reasoning text here")
+        ("reasoning.available"
+         ;; Initialize reasoning text before deltas arrive.
+         (let ((old-stream (or (hermes-state-stream state)
+                               (make-hermes-stream :text "" :thinking ""
+                                                   :reasoning "" :tools [])))
+               (text (or (hermes--get p "text") "")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-stream s)
+                  (hermes--with-copy old-stream hermes-stream-copy ns
+                    (when (string-empty-p (hermes-stream-reasoning old-stream))
+                      (setf (hermes-stream-reasoning ns) text)))))))
+        ;; Debug payload: ("text" . "reasoning text here")
+        ("reasoning.delta"
+         (let ((old-stream (or (hermes-state-stream state)
+                               (make-hermes-stream :text "" :thinking ""
+                                                   :reasoning "" :tools [])))
+               (chunk (or (hermes--get p "text") "")))
+           (hermes--with-copy state hermes-state-copy s
+             (setf (hermes-state-stream s)
+                   (hermes--with-copy old-stream hermes-stream-copy ns
+                     (setf (hermes-stream-reasoning ns)
+                           (concat (hermes-stream-reasoning old-stream)
+                                   chunk)))))))
+       ;; Debug payload keys: "reasoning" "status" "usage" "text"
+       ;; The "text" field appears to be a summary, not the stream text.
+       ("message.complete"
+        ;; Commit stream → messages.
+        ;; Also extract token counts from payload and accumulate into state usage.
        (let ((str (hermes-state-stream state)))
          (if (null str)
              state                      ; nothing to commit
@@ -293,11 +306,12 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                      (hermes--vector-append (hermes-state-messages state) msg)
                      (hermes-state-usage s) acc-usage
                      (hermes-state-stream s) nil))))))
-      ;;; --- Tools ---------------------------------------------------------
-        ("tool.generating"
-         ;; tool.generating means a tool has been selected and is about to run.
-         ;; Add it to stream.tools if not already present.  Drop if no stream
-         ;; (edge case #2: turnController.ts:620-645).
+       ;;; --- Tools ---------------------------------------------------------
+         ;; Debug payload: ("name" . "terminal")
+         ("tool.generating"
+          ;; tool.generating means a tool has been selected and is about to run.
+          ;; Add it to stream.tools if not already present.  Drop if no stream
+          ;; (edge case #2: turnController.ts:620-645).
          (let ((str (hermes-state-stream state))
                (tid (or (hermes--get p "tool_id")
                         (hermes--get p "id")
@@ -319,9 +333,11 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                              (setf (hermes-stream-tools ns)
                                    (hermes--vector-append tools tool))
                              ns)))))))))
-        ("tool.start"
-         ;; tool.start means execution has actually begun.
-         ;; Transition the matching tool from generating → running.
+         ;; Debug payload: ("context" . "uptime") ("name" . "terminal")
+         ;;                ("tool_id" . "chatcmpl-tool-...")
+         ("tool.start"
+          ;; tool.start means execution has actually begun.
+          ;; Transition the matching tool from generating → running.
          (let ((str (hermes-state-stream state))
                (tid (hermes--get p "tool_id"))
                (ctx (hermes--get p "context")))
@@ -344,8 +360,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                             (hermes--with-copy str hermes-stream-copy ns
                               (setf (hermes-stream-tools ns) new-tools)
                               ns)))))))))
-         ("tool.progress"
-          ;; Store the live preview on the matching tool in stream.tools.
+          ;; Debug payload: ("preview" . "uptime") ("name" . "terminal")
+          ("tool.progress"
+           ;; Store the live preview on the matching tool in stream.tools.
           (let ((str (hermes-state-stream state))
                 (tid (hermes--get p "tool_id"))
                 (preview (hermes--get p "preview")))
@@ -454,8 +471,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
              (setf (hermes-state-pending s) nil))
          state))
        ;;; --- Errors --------------------------------------------------------
-       ("error"
-        ;; Commit any in-flight stream so the partial response is not lost,
+        ;; Debug payload: ("message" . "error text here")
+        ("error"
+         ;; Commit any in-flight stream so the partial response is not lost,
         ;; then append the error as a system message.  This mirrors the TUI's
         ;; recordError() → idle() path which resets turn state.
         (let ((text (ansi-color-apply
@@ -487,8 +505,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                                             :timestamp (current-time)))
                       (hermes-state-stream s) nil))))))
        ;;; --- Gateway diagnostics -------------------------------------------
-       ("gateway.stderr"
-        (let ((line (hermes--get p "line")))
+        ;; Debug payload: ("line" . "stderr text here")
+        ("gateway.stderr"
+         (let ((line (hermes--get p "line")))
           (hermes--with-copy state hermes-state-copy s
             (setf (hermes-state-messages s)
                   (hermes--vector-append
@@ -498,8 +517,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                     :text (format "[stderr] %s"
                                   (substring line 0 (min 120 (length line))))
                     :timestamp (current-time)))))))
-       ("gateway.protocol_error"
-        (let ((preview (hermes--get p "preview")))
+        ;; Debug payload: ("preview" . "{bad json...")
+        ("gateway.protocol_error"
+         (let ((preview (hermes--get p "preview")))
           (hermes--with-copy state hermes-state-copy s
             (setf (hermes-state-messages s)
                   (hermes--vector-append
@@ -508,8 +528,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                     :kind 'system
                     :text (format "[protocol noise] %s" preview)
                     :timestamp (current-time)))))))
-       ("gateway.start_timeout"
-        (let ((lines (hermes--get p "lines")))
+        ;; Debug payload: ("lines" . '("err1" "err2"))
+        ("gateway.start_timeout"
+         (let ((lines (hermes--get p "lines")))
           (hermes--with-copy state hermes-state-copy s
             (setf (hermes-state-messages s)
                   (hermes--vector-append
@@ -521,9 +542,10 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                                              lines "\n"))
                     :timestamp (current-time)))))))
        ;;; --- Background / review -------------------------------------------
-       ("background.complete"
-        (let ((tid (hermes--get p "task_id"))
-              (text (hermes--get p "text")))
+        ;; Debug payload: ("task_id" . "t1") ("text" . "done")
+        ("background.complete"
+         (let ((tid (hermes--get p "task_id"))
+               (text (hermes--get p "text")))
           (hermes--with-copy state hermes-state-copy s
             (setf (hermes-state-messages s)
                   (hermes--vector-append
@@ -532,8 +554,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                     :kind 'system
                     :text (format "[bg %s] %s" (or tid "?") (or text ""))
                     :timestamp (current-time)))))))
-       ("review.summary"
-        (let ((text (hermes--get p "text")))
+        ;; Debug payload: ("text" . "looks good")
+        ("review.summary"
+         (let ((text (hermes--get p "text")))
           (hermes--with-copy state hermes-state-copy s
             (setf (hermes-state-messages s)
                   (hermes--vector-append
@@ -553,6 +576,7 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
   (let ((type (car msg))
         (p    (cdr msg)))
     (pcase type
+      ;; Debug payload: ("kind" . "thinking") ("text" . "pondering...")
       ("status.update"
        (hermes--with-copy state hermes-ui-state-copy s
          (setf (hermes-ui-state-status-text s) (hermes--get p "text")

@@ -42,6 +42,13 @@
     "tool.start"             ; {tool_id, name, context}
     "tool.progress"          ; {name, tool_id, preview}
     "tool.complete"          ; {name, tool_id, output, error?, exit_code?, duration_s?}
+    ;; Subagents
+    "subagent.spawn_requested"  ; {subagent_id, goal}
+    "subagent.start"            ; {subagent_id, goal}
+    "subagent.thinking"         ; {subagent_id, text}
+    "subagent.tool"             ; {subagent_id, tool_name, args}
+    "subagent.progress"         ; {subagent_id, note}
+    "subagent.complete"         ; {subagent_id, status, summary, duration_s}
     ;; Blocking prompts
     "approval.request"       ; {request_id, command, description, ...}
     "clarify.request"        ; {request_id, question, choices}

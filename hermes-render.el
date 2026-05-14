@@ -40,6 +40,9 @@
 (defvar-local hermes--stream-segments-end nil
   "Marker: end of the rendered segment region.")
 
+(defvar-local hermes--stream-subagents-marker nil
+  "Marker at the start of the subagent block region in the stream.")
+
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
@@ -171,6 +174,86 @@ Each block is followed by a blank line for visual separation."
             parts))
     (apply #'concat (nreverse parts))))
 
+(defun hermes--format-subagent (sa)
+  "Return an Org subtree string for subagent SA."
+  (let* ((goal (or (hermes-subagent-goal sa) "subagent"))
+         (status (hermes-subagent-status sa))
+         (status-label (pcase status
+                         ('queued "queued")
+                         ('running "running…")
+                         ('complete "complete")
+                         ('error "error")
+                         (_ (format "%s" status))))
+         (thinking (hermes-subagent-thinking sa))
+         (tools (hermes-subagent-tools sa))
+         (notes (hermes-subagent-notes sa))
+         (summary (hermes-subagent-summary sa))
+         (duration (hermes-subagent-duration sa))
+         (id (hermes-subagent-id sa))
+         parts)
+    (push (format "**** %s (%s)\n:PROPERTIES:\n:ID:       %s\n:END:\n"
+                  goal status-label id) parts)
+    (when (and thinking (not (string-empty-p thinking)))
+      (push (concat "#+begin_example Thinking\n"
+                    thinking
+                    (unless (eq (aref thinking (1- (length thinking))) ?\n) "\n")
+                    "#+end_example\n") parts))
+    (when (> (length tools) 0)
+      (push (mapconcat
+             (lambda (tool-plist)
+               (format "- %s(%s)"
+                       (or (plist-get tool-plist :name) "?")
+                       (or (plist-get tool-plist :args) "")))
+             tools "\n")
+            parts))
+    (when (> (length notes) 0)
+      (push (mapconcat (lambda (n) (format "- %s" n)) notes "\n") parts))
+    (when (memq status '(complete error))
+      (push (format "#+begin_example\n%s (%ss)\n#+end_example\n"
+                    (or summary "")
+                    (if duration (format "%.1f" duration) "?"))
+            parts))
+    (mapconcat #'identity (nreverse parts) "\n")))
+
+(defun hermes--format-subagents-block (subagents)
+  "Return an Org block string for all SUBAGENTS, or empty string if none."
+  (if (not (and (vectorp subagents) (> (length subagents) 0)))
+      ""
+    (let (parts)
+      (dotimes (i (length subagents))
+        (let ((formatted (hermes--format-subagent (aref subagents i))))
+          (when (> (length formatted) 0)
+            (push formatted parts))))
+      (let ((result (mapconcat #'identity (nreverse parts) "\n")))
+        (if (> (length result) 0)
+            (concat result "\n")
+          "")))))
+
+(defun hermes--update-subagent-views (subagents)
+  "Replace the subagent block region in the stream buffer."
+  (let ((formatted (hermes--format-subagents-block subagents)))
+    (cond ((and (string-empty-p formatted)
+                (markerp hermes--stream-subagents-marker)
+                (marker-position hermes--stream-subagents-marker))
+           (delete-region hermes--stream-subagents-marker (point-max))
+           (set-marker hermes--stream-subagents-marker nil))
+          ((not (string-empty-p formatted))
+           (let ((boundary
+                  (if (and (markerp hermes--stream-subagents-marker)
+                           (marker-position hermes--stream-subagents-marker))
+                      (marker-position hermes--stream-subagents-marker)
+                    (if (and (markerp hermes--stream-segments-end)
+                             (marker-position hermes--stream-segments-end))
+                        (marker-position hermes--stream-segments-end)
+                      (point-max)))))
+             (delete-region boundary (point-max))
+             (goto-char boundary)
+             (insert formatted)
+             (unless (and (markerp hermes--stream-subagents-marker)
+                          (marker-position hermes--stream-subagents-marker))
+               (setq hermes--stream-subagents-marker (copy-marker boundary))
+               (set-marker-insertion-type hermes--stream-subagents-marker nil)))))))
+
 (defun hermes--format-tool (tool)
   "Return an Org block string for a single TOOL."
   (let* ((name (or (hermes-tool-name tool) "tool"))
@@ -270,7 +353,9 @@ Each block is followed by a blank line for visual separation."
   (setq hermes--stream-segments-start (point-marker)
         hermes--stream-segments-end   (point-marker))
   (set-marker-insertion-type hermes--stream-segments-start nil)
-  (set-marker-insertion-type hermes--stream-segments-end   t))
+  (set-marker-insertion-type hermes--stream-segments-end   t)
+  (setq hermes--stream-subagents-marker (copy-marker (point-marker)))
+  (set-marker-insertion-type hermes--stream-subagents-marker t))
 
 (defun hermes--stream-commit ()
   "Stream finished: stamp Org :ID:s on the trail, drop markers."
@@ -282,10 +367,12 @@ Each block is followed by a blank line for visual separation."
       (ignore-errors (org-id-get-create))))
   (dolist (m (list hermes--stream-segments-start
                     hermes--stream-segments-end
+                    hermes--stream-subagents-marker
                     hermes--stream-headline-marker))
     (when (markerp m) (set-marker m nil)))
   (setq hermes--stream-segments-start nil
         hermes--stream-segments-end nil
+        hermes--stream-subagents-marker nil
         hermes--stream-headline-marker nil))
 
 (defun hermes--stream-update (old-stream new-stream)
@@ -295,7 +382,9 @@ Each block is followed by a blank line for visual separation."
     (hermes--stream-begin))
   (let ((new-segs (hermes-stream-segments new-stream)))
     (when (vectorp new-segs)
-      (hermes--render-stream-segments new-segs))))
+      (hermes--render-stream-segments new-segs)))
+  (when (vectorp (hermes-stream-subagents new-stream))
+    (hermes--update-subagent-views (hermes-stream-subagents new-stream))))
 
 ;;;; Header line
 

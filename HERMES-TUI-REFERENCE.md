@@ -91,12 +91,12 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 | 22 | `gateway.protocol_error` | **Handled** | Sets warning status, pushes one-time "protocol noise" activity, shows truncated preview | Emacs: reducer appends `[protocol noise] <preview>` system message. UI reducer sets warning status text. Routed from `hermes-rpc-protocol-error-functions` hook. |
 | 23 | `background.complete` | **Handled** | Removes task from `bgTasks`, emits system line `[bg <id>] <text>` | Emacs: reducer appends `[bg <id>] <text>` system message. |
 | 24 | `review.summary` | **Handled** | Emits persistent system line (self-improvement review summary) | Emacs: reducer appends `[review] <text>` system message. |
-| 25 | `subagent.spawn_requested` | **Missing** | Upserts subagent with status `queued`, fetches delegation caps | Emacs: no subagent state. |
-| 26 | `subagent.start` | **Missing** | Upserts subagent with status `running` | Emacs: no handler. |
-| 27 | `subagent.thinking` | **Missing** | Appends thinking text to subagent's `thinking` array | Emacs: no handler. |
-| 28 | `subagent.tool` | **Missing** | Appends formatted tool call to subagent's `tools` array | Emacs: no handler. |
-| 29 | `subagent.progress` | **Missing** | Appends progress note to subagent's `notes` array | Emacs: no handler. |
-| 30 | `subagent.complete` | **Missing** | Finalizes subagent with duration, status, summary | Emacs: no handler. |
+| 25 | `subagent.spawn_requested` | **Handled** | Upserts subagent with status `queued`, fetches delegation caps | Emacs: reducer creates `hermes-subagent` with `status='queued` on `stream.subagents`. Dedupes by id. |
+| 26 | `subagent.start` | **Handled** | Upserts subagent with status `running` | Emacs: reducer transitions `queued` → `running`. UI reducer sets status text. |
+| 27 | `subagent.thinking` | **Handled** | Appends thinking text to subagent's `thinking` array | Emacs: reducer concatenates text onto `hermes-subagent.thinking`. |
+| 28 | `subagent.tool` | **Handled** | Appends formatted tool call to subagent's `tools` array | Emacs: reducer stores plist `(:name :args :timestamp)` in `hermes-subagent.tools` vector. |
+| 29 | `subagent.progress` | **Handled** | Appends progress note to subagent's `notes` array | Emacs: reducer appends note string to `hermes-subagent.notes` vector. |
+| 30 | `subagent.complete` | **Handled** | Finalizes subagent with duration, status, summary | Emacs: reducer sets status (`complete`/`error`), summary, duration. UI reducer clears status text. |
 | 31 | `browser.progress` | **No-op** | Emits to system log | Emacs: commented "v1: no-op". Low impact. |
 | 32 | `voice.status` | **No-op** | Updates voice recording/processing state | Emacs: commented "v1: no-op". |
 | 33 | `voice.transcript` | **No-op** | Clears input, submits transcript as new turn | Emacs: commented "v1: no-op". |
@@ -690,12 +690,12 @@ Emacs only has **queue** mode:
 | | `voice.transcript` | No-op | Full | Low |
 | | `background.complete` | Full | Full | None |
 | | `review.summary` | Full | Full | None |
-| **Subagent** | `subagent.spawn_requested` | Missing | Full | **High** |
-| | `subagent.start` | Missing | Full | **High** |
-| | `subagent.thinking` | Missing | Full | Medium |
-| | `subagent.tool` | Missing | Full | Medium |
-| | `subagent.progress` | Missing | Full | Low |
-| | `subagent.complete` | Missing | Full | Medium |
+| **Subagent** | `subagent.spawn_requested` | Full | Full | None |
+| | `subagent.start` | Full | Full | None |
+| | `subagent.thinking` | Full | Full | None |
+| | `subagent.tool` | Full | Full | None |
+| | `subagent.progress` | Full | Full | None |
+| | `subagent.complete` | Full | Full | None |
 
 ### 10.2 RPC Methods
 
@@ -815,21 +815,26 @@ Emacs only has **queue** mode:
    - Reducer stores `todos` from `tool.complete`
    - Renderer renders as `:TODOS:` drawer with checklist
 
-### Phase 3 — Subagent Support
+### Phase 3 — Subagent Support ✅ Completed
 
-**Files:** `hermes-state.el`, `hermes-render.el`
+**Files:** `hermes-state.el`, `hermes-render.el`, `hermes-events.el`, `hermes-mode.el`, `test/hermes-state-test.el`, `test/hermes-render-test.el`
 
-1. **Add subagent state**
+1. **Add subagent state** ✅
    - New struct: `hermes-subagent` with `id`, `goal`, `status`, `thinking`, `tools`, `notes`, `summary`, `duration`
-   - Add `subagents` vector to `hermes-stream`
+   - Add `subagents` vector to `hermes-stream` and `hermes-message`
 
-2. **Handle 6 subagent events**
-   - Reducer: upsert subagent in `stream.subagents`
-   - UI reducer: set status text for active subagents
+2. **Handle 6 subagent events** ✅
+   - Reducer: upsert subagent in `stream.subagents`, copy to `message.subagents` on commit
+   - UI reducer: set status text "Delegating to <goal>…" on start, clear on complete
 
-3. **Renderer**
-   - Insert subagent subtrees under assistant headline
+3. **Renderer** ✅
+   - Insert subagent subtrees after segment region in stream
    - Show goal, status, thinking, tools, notes
+   - Rewrites on update via `hermes--stream-subagents-marker`
+
+4. **Tests** ✅
+   - 10+ ERT tests for reducer (spawn, start, thinking, tool, progress, complete, dedup, no-stream, commit)
+   - 9+ ERT tests for renderer (formatting with all fields, stream integration, in-place rewrite)
 
 ### Phase 4 — Gateway Lifecycle ✅ Completed
 

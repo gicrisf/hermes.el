@@ -132,5 +132,99 @@ position right after the heading line."
       (should (string-match-p "#\\+begin_example Thinking\nthink\n#\\+end_example" body))
       (should (string-match-p "#\\+begin_example Reasoning\nreason\n#\\+end_example" body)))))
 
+;;;; Subagent formatting
+
+(ert-deftest hermes-render-test/subagent-block-renders-headline ()
+  "Subagent headline includes goal and status."
+  (let* ((sa (make-hermes-subagent :id "sa1" :goal "fix bugs" :status 'running))
+         (result (hermes--format-subagent sa)))
+    (should (string-match (regexp-quote "**** fix bugs (running…)") result))))
+
+(ert-deftest hermes-render-test/subagent-block-includes-id ()
+  "Subagent property drawer includes ID."
+  (let* ((sa (make-hermes-subagent :id "sa1" :goal "fix" :status 'running))
+         (result (hermes--format-subagent sa)))
+    (should (string-match-p ":ID:       sa1" result))))
+
+(ert-deftest hermes-render-test/subagent-block-includes-thinking ()
+  "Thinking text wrapped in example block."
+  (let* ((sa (make-hermes-subagent :id "sa1" :goal "fix" :status 'running
+                                   :thinking "searching for root cause"))
+         (result (hermes--format-subagent sa)))
+    (should (string-match-p "#\\+begin_example Thinking" result))
+    (should (string-match-p "searching for root cause" result))
+    (should (string-match-p "#\\+end_example" result))))
+
+(ert-deftest hermes-render-test/subagent-block-includes-tools ()
+  "Tool list formatted as bullets with name and args."
+  (let* ((sa (make-hermes-subagent :id "sa1" :goal "fix" :status 'running
+                                   :tools (vector (list :name "bash" :args "ls"))))
+         (result (hermes--format-subagent sa)))
+    (should (string-match (regexp-quote "- bash(ls)") result))))
+
+(ert-deftest hermes-render-test/subagent-block-includes-notes ()
+  "Notes list formatted as bullets."
+  (let* ((sa (make-hermes-subagent :id "sa1" :goal "fix" :status 'running
+                                   :notes ["searching" "found"]))
+         (result (hermes--format-subagent sa)))
+    (should (string-match (regexp-quote "- searching") result))
+    (should (string-match (regexp-quote "- found") result))))
+
+(ert-deftest hermes-render-test/subagent-block-includes-summary ()
+  "Complete subagent shows summary and duration."
+  (let* ((sa (make-hermes-subagent :id "sa1" :goal "fix" :status 'complete
+                                   :summary "all fixed" :duration 2.5))
+         (result (hermes--format-subagent sa)))
+    (should (string-match-p "#\\+begin_example" result))
+    (should (string-match-p "all fixed" result))
+    (should (string-match-p "2.5s" result))))
+
+(ert-deftest hermes-render-test/subagent-block-error-shows-summary ()
+  "Error subagent also shows summary and duration."
+  (let* ((sa (make-hermes-subagent :id "sa1" :goal "fix" :status 'error
+                                   :summary "kaboom" :duration 1.0))
+         (result (hermes--format-subagent sa)))
+    (should (string-match-p "kaboom" result))
+    (should (string-match-p "1.0s" result))))
+
+(ert-deftest hermes-render-test/subagent-blocks-empty-for-empty-vec ()
+  "Empty subagents vector produces empty string."
+  (should (equal "" (hermes--format-subagents-block [])))
+  (should (equal "" (hermes--format-subagents-block nil))))
+
+(ert-deftest hermes-render-test/subagent-blocks-insert-after-tools ()
+  "In stream, subagents appear after segment blocks."
+  (with-temp-buffer
+    (hermes--stream-begin)
+    (let* ((stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment :type 'text :content "Hello"))
+                    :subagents (vector (make-hermes-subagent
+                                        :id "sa1" :goal "fix" :status 'running)))))
+      (hermes--stream-update nil stream))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match (regexp-quote "Hello") body))
+      (should (string-match (regexp-quote "**** fix (running…)") body))
+      ;; subagent headline should appear after text segment
+      (should (> (string-match (regexp-quote "**** fix (running…)") body)
+                 (string-match (regexp-quote "Hello") body))))))
+
+(ert-deftest hermes-render-test/subagent-update-rewrites ()
+  "Updating subagents rewrites in place."
+  (with-temp-buffer
+    (hermes--stream-begin)
+    (let* ((s1 (make-hermes-stream
+                :segments []
+                :subagents (vector (make-hermes-subagent
+                                    :id "sa1" :goal "step1" :status 'running))))
+           (s2 (make-hermes-stream
+                :segments []
+                :subagents (vector (make-hermes-subagent
+                                    :id "sa2" :goal "step2" :status 'complete)))))
+      (hermes--stream-update nil s1)
+      (hermes--stream-update s1 s2))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match (regexp-quote "step2") body))
+      (should-not (string-match (regexp-quote "step1") body)))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

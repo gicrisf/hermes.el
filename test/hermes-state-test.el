@@ -359,6 +359,163 @@
     (should (equal '(("text" . "fix bug") ("done" . t))
                    (hermes-tool-todos tool)))))
 
+;;;; Subagents
+
+(ert-deftest hermes-state-test/subagent-spawn-creates-queued ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "fix bugs"))))
+         (str (hermes-state-stream s))
+         (sas (hermes-stream-subagents str)))
+    (should (= 1 (length sas)))
+    (let ((sa (aref sas 0)))
+      (should (equal "sa1" (hermes-subagent-id sa)))
+      (should (equal "fix bugs" (hermes-subagent-goal sa)))
+      (should (eq 'queued (hermes-subagent-status sa)))
+      (should (equal [] (hermes-subagent-tools sa)))
+      (should (equal [] (hermes-subagent-notes sa))))))
+
+(ert-deftest hermes-state-test/subagent-start-transitions-running ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "fix"))
+             (cons "subagent.start"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "fix"))))
+         (sa (aref (hermes-stream-subagents (hermes-state-stream s)) 0)))
+    (should (eq 'running (hermes-subagent-status sa)))))
+
+(ert-deftest hermes-state-test/subagent-thinking-accumulates ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "x"))
+             (cons "subagent.start"
+                   (hermes-test--ht "subagent_id" "sa1"))
+             (cons "subagent.thinking"
+                   (hermes-test--ht "subagent_id" "sa1" "text" "hmm "))
+             (cons "subagent.thinking"
+                   (hermes-test--ht "subagent_id" "sa1" "text" "maybe"))))
+         (sa (aref (hermes-stream-subagents (hermes-state-stream s)) 0)))
+    (should (equal "hmm maybe" (hermes-subagent-thinking sa)))))
+
+(ert-deftest hermes-state-test/subagent-tool-appends ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "x"))
+             (cons "subagent.start"
+                   (hermes-test--ht "subagent_id" "sa1"))
+             (cons "subagent.tool"
+                   (hermes-test--ht "subagent_id" "sa1"
+                                    "tool_name" "bash" "args" "ls"))))
+         (sa (aref (hermes-stream-subagents (hermes-state-stream s)) 0))
+         (tools (hermes-subagent-tools sa)))
+    (should (= 1 (length tools)))
+    (should (equal "bash" (plist-get (aref tools 0) :name)))
+    (should (equal "ls" (plist-get (aref tools 0) :args)))))
+
+(ert-deftest hermes-state-test/subagent-progress-appends ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "x"))
+             (cons "subagent.start"
+                   (hermes-test--ht "subagent_id" "sa1"))
+             (cons "subagent.progress"
+                   (hermes-test--ht "subagent_id" "sa1" "note" "searching"))
+             (cons "subagent.progress"
+                   (hermes-test--ht "subagent_id" "sa1" "note" "found"))))
+         (sa (aref (hermes-stream-subagents (hermes-state-stream s)) 0))
+         (notes (hermes-subagent-notes sa)))
+    (should (= 2 (length notes)))
+    (should (equal "searching" (aref notes 0)))
+    (should (equal "found" (aref notes 1)))))
+
+(ert-deftest hermes-state-test/subagent-complete-finalizes ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "x"))
+             (cons "subagent.start"
+                   (hermes-test--ht "subagent_id" "sa1"))
+             (cons "subagent.thinking"
+                   (hermes-test--ht "subagent_id" "sa1" "text" "done"))
+             (cons "subagent.complete"
+                   (hermes-test--ht "subagent_id" "sa1"
+                                    "status" "complete"
+                                    "summary" "all good"
+                                    "duration_s" 1.5))))
+         (sa (aref (hermes-stream-subagents (hermes-state-stream s)) 0)))
+    (should (eq 'complete (hermes-subagent-status sa)))
+    (should (equal "all good" (hermes-subagent-summary sa)))
+    (should (equal 1.5 (hermes-subagent-duration sa)))
+    (should (equal "done" (hermes-subagent-thinking sa)))))
+
+(ert-deftest hermes-state-test/subagent-complete-with-error ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "x"))
+             (cons "subagent.start"
+                   (hermes-test--ht "subagent_id" "sa1"))
+             (cons "subagent.complete"
+                   (hermes-test--ht "subagent_id" "sa1"
+                                    "status" "error"
+                                    "summary" "failed"))))
+         (sa (aref (hermes-stream-subagents (hermes-state-stream s)) 0)))
+    (should (eq 'error (hermes-subagent-status sa)))))
+
+(ert-deftest hermes-state-test/subagent-commit-with-message ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "ok"))
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "x"))
+             (cons "subagent.start"
+                   (hermes-test--ht "subagent_id" "sa1"))
+             (cons "subagent.complete"
+                   (hermes-test--ht "subagent_id" "sa1"
+                                    "status" "complete"
+                                    "summary" "done"))
+             (cons "message.complete" nil)))
+         (msg (hermes-test--last-msg s)))
+    (should (null (hermes-state-stream s)))
+    (should (eq 'assistant (hermes-message-kind msg)))
+    (let ((sas (hermes-message-subagents msg)))
+      (should (= 1 (length sas)))
+      (should (eq 'complete (hermes-subagent-status (aref sas 0)))))))
+
+(ert-deftest hermes-state-test/subagent-dedupes-spawn ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "first"))
+             (cons "subagent.spawn_requested"
+                   (hermes-test--ht "subagent_id" "sa1" "goal" "second"))))
+         (sas (hermes-stream-subagents (hermes-state-stream s))))
+    (should (= 1 (length sas)))
+    (should (equal "first" (hermes-subagent-goal (aref sas 0))))))
+
+(ert-deftest hermes-state-test/subagent-without-stream-dropped ()
+  (dolist (event '("subagent.spawn_requested" "subagent.start"
+                   "subagent.thinking" "subagent.tool"
+                   "subagent.progress" "subagent.complete"))
+    (let* ((s0 (hermes--reduce nil '(:connected)))
+           (s1 (hermes--reduce s0 (cons event
+                                        (hermes-test--ht "subagent_id" "sa1")))))
+      (should (eq s0 s1)))))
+
 ;;;; Blocking prompts
 
 (ert-deftest hermes-state-test/approval-request-sets-pending ()
@@ -439,6 +596,22 @@
                                     (hermes-test--ht "tool_id" "t1"
                                                      "name" "bash")))))
     (should (equal "Running bash…" (hermes-ui-state-status-text s)))))
+
+(ert-deftest hermes-state-test/ui-subagent-start-sets-status ()
+  (let ((s (hermes--ui-reduce nil
+                              (cons "subagent.start"
+                                    (hermes-test--ht "subagent_id" "sa1"
+                                                     "goal" "fix bugs")))))
+    (should (equal "Delegating to fix bugs…" (hermes-ui-state-status-text s)))))
+
+(ert-deftest hermes-state-test/ui-subagent-complete-clears-status ()
+  (let* ((s1 (hermes--ui-reduce nil
+                                (cons "subagent.start"
+                                      (hermes-test--ht "subagent_id" "sa1"))))
+         (s2 (hermes--ui-reduce s1
+                                (cons "subagent.complete"
+                                      (hermes-test--ht "subagent_id" "sa1")))))
+    (should (null (hermes-ui-state-status-text s2)))))
 
 ;;;; M4 — queue, history, slash catalog
 

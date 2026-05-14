@@ -69,12 +69,14 @@ the property drawer is not counted as stream text.")
         (cond ((and (null os) ns) (hermes--stream-begin))
               ((and os (null ns)) (hermes--stream-commit))
               ((not (eq os ns))   (hermes--stream-update os ns))))
-      ;; 3. Header line — session-info / connection.
+      ;; 3. Header line — session-info / connection / usage.
       (unless (and old
-                   (eq (hermes-state-session-info old)
-                       (hermes-state-session-info new))
-                   (eq (hermes-state-connection old)
-                       (hermes-state-connection new)))
+                    (eq (hermes-state-session-info old)
+                        (hermes-state-session-info new))
+                    (eq (hermes-state-connection old)
+                        (hermes-state-connection new))
+                    (eq (hermes-state-usage old)
+                        (hermes-state-usage new)))
         (hermes--render-header new))
       ;; 4. Queue length changed → refresh header-line :eval forms.
       (unless (eq (and old (hermes-state-queue old))
@@ -494,16 +496,25 @@ at the text/tool boundary."
                    ('connecting   " · ◐")
                    ('disconnected " · ○")
                    (_             "")))
-         '(:eval
-           (let* ((info (and hermes--state
-                             (hermes-state-session-info hermes--state)))
-                  (model (and (hash-table-p info) (gethash "model" info))))
-             (if model (format " · %s" model) "")))
-         '(:eval
-           (let ((q (and hermes--state (hermes-state-queue hermes--state))))
-             (if (and q (> (length q) 0))
-                 (format " · queue: %d" (length q))
-               "")))
+          '(:eval
+            (let* ((info (and hermes--state
+                              (hermes-state-session-info hermes--state)))
+                   (model (and (hash-table-p info) (gethash "model" info))))
+              (if model (format " · %s" model) "")))
+          '(:eval
+            (let* ((usage (and hermes--state
+                               (hermes-state-usage hermes--state)))
+                   (sent (and usage (gethash "tokens_sent" usage)))
+                   (recv (and usage (gethash "tokens_received" usage))))
+              (if (or sent recv)
+                  (format " · %s→%s"
+                          (or sent "?") (or recv "?"))
+                "")))
+          '(:eval
+            (let ((q (and hermes--state (hermes-state-queue hermes--state))))
+              (if (and q (> (length q) 0))
+                  (format " · queue: %d" (length q))
+                "")))
          '(:eval (or hermes--ui-line ""))))
   (force-mode-line-update))
 

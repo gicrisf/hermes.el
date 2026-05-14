@@ -52,6 +52,7 @@
   connection         ; 'disconnected | 'connecting | 'connected
   session-id
   session-info       ; hash-table or nil
+  usage              ; hash-table or nil — accumulated tokens/cost
   (messages [])      ; vector — COMMITTED only
   stream             ; hermes-stream or nil
   pending            ; hermes-pending or nil
@@ -188,14 +189,29 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
          (setf (hermes-state-skin s) p)))
       ("session.info"
        ;; Merge into existing (createGatewayEventHandler.ts:279-292).
+       ;; Also extract usage data if present.
        (hermes--with-copy state hermes-state-copy s
          (when (hash-table-p p)
            (let ((sid (hermes--get p "session_id"))
                  (merged (or (hermes-state-session-info state)
-                             (make-hash-table :test 'equal))))
+                             (make-hash-table :test 'equal)))
+                 (usage-payload (hermes--get p "usage")))
              (maphash (lambda (k v) (puthash k v merged)) p)
              (setf (hermes-state-session-info s) merged)
-             (when sid (setf (hermes-state-session-id s) sid))))))
+             (when sid (setf (hermes-state-session-id s) sid))
+             ;; Merge usage if payload contains a "usage" key or usage-related
+             ;; top-level fields.
+             (when usage-payload
+               (let ((u (or (hermes-state-usage state)
+                            (make-hash-table :test 'equal))))
+                 (cond
+                  ((hash-table-p usage-payload)
+                   (maphash (lambda (k v) (puthash k v u)) usage-payload))
+                  ((listp usage-payload)
+                   (dolist (kv usage-payload)
+                     (when (consp kv)
+                       (puthash (car kv) (cdr kv) u)))))
+                 (setf (hermes-state-usage s) u)))))))
       ;;; --- Message stream ------------------------------------------------
       ("message.start"
        ;; Discard any in-flight stream silently (turnController.ts:746-757).
@@ -246,23 +262,37 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                     (setf (hermes-stream-reasoning ns)
                           (concat (hermes-stream-reasoning old-stream)
                                   chunk)))))))
-       ("message.complete"
-        ;; Commit stream → messages.
-        (let ((str (hermes-state-stream state)))
-          (if (null str)
-              state                      ; nothing to commit
-            (let ((msg (make-hermes-message
+      ("message.complete"
+       ;; Commit stream → messages.
+       ;; Also extract token counts from payload and accumulate into state usage.
+       (let ((str (hermes-state-stream state)))
+         (if (null str)
+             state                      ; nothing to commit
+           (let* ((sent (hermes--get p "tokens_sent"))
+                  (received (hermes--get p "tokens_received"))
+                  (msg-usage (make-hash-table :test 'equal))
+                  (msg (make-hermes-message
                         :kind 'assistant
                         :text (hermes-stream-text str)
                         :thinking (hermes-stream-thinking str)
                         :reasoning (hermes-stream-reasoning str)
                         :tools (hermes-stream-tools str)
-                        :usage p
-                        :timestamp (current-time))))
-              (hermes--with-copy state hermes-state-copy s
-                (setf (hermes-state-messages s)
-                      (hermes--vector-append (hermes-state-messages state) msg)
-                      (hermes-state-stream s) nil))))))
+                        :usage msg-usage
+                        :timestamp (current-time)))
+                  (acc-usage (or (hermes-state-usage state)
+                                 (make-hash-table :test 'equal))))
+             (when sent
+               (puthash "tokens_sent" (+ (or (gethash "tokens_sent" acc-usage) 0) sent)
+                        acc-usage))
+             (when received
+               (puthash "tokens_received" (+ (or (gethash "tokens_received" acc-usage) 0)
+                                             received)
+                        acc-usage))
+             (hermes--with-copy state hermes-state-copy s
+               (setf (hermes-state-messages s)
+                     (hermes--vector-append (hermes-state-messages state) msg)
+                     (hermes-state-usage s) acc-usage
+                     (hermes-state-stream s) nil))))))
       ;;; --- Tools ---------------------------------------------------------
         ("tool.generating"
          ;; tool.generating means a tool has been selected and is about to run.

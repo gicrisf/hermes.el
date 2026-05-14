@@ -62,6 +62,13 @@
     (should (equal "/tmp"   (gethash "cwd"   info)))
     (should (equal "abc"    (hermes-state-session-id s2)))))
 
+(ert-deftest hermes-state-test/session-info-merges-usage ()
+  (let* ((p (hermes-test--ht "usage" (hermes-test--ht "tokens_sent" 100)))
+         (s (hermes--reduce nil (cons "session.info" p)))
+         (usage (hermes-state-usage s)))
+    (should (hash-table-p usage))
+    (should (= 100 (gethash "tokens_sent" usage)))))
+
 ;;;; User submit (optimistic)
 
 (ert-deftest hermes-state-test/user-submit-appends-message ()
@@ -121,7 +128,24 @@
     (should (eq 'assistant (hermes-message-kind m)))
     (should (equal "Hi" (hermes-message-text m)))
     (should (equal "" (hermes-message-thinking m)))
-    (should (equal "" (hermes-message-reasoning m)))))
+     (should (equal "" (hermes-message-reasoning m)))))
+
+(ert-deftest hermes-state-test/message-complete-accumulates-usage ()
+  (let* ((s1 (hermes-test--reduce*
+              nil
+              (cons "message.start" nil)
+              (cons "message.delta" (hermes-test--ht "text" "one"))
+              (cons "message.complete" (hermes-test--ht "tokens_sent" 10
+                                                        "tokens_received" 20))))
+         (s2 (hermes-test--reduce*
+              s1
+              (cons "message.start" nil)
+              (cons "message.delta" (hermes-test--ht "text" "two"))
+              (cons "message.complete" (hermes-test--ht "tokens_sent" 5
+                                                        "tokens_received" 15))))
+         (usage (hermes-state-usage s2)))
+    (should (= 15 (gethash "tokens_sent" usage)))
+    (should (= 35 (gethash "tokens_received" usage)))))
 
 (ert-deftest hermes-state-test/message-complete-without-stream-is-noop ()
   (let* ((s0 (hermes--reduce nil '(:connected)))

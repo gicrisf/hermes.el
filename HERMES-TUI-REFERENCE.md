@@ -68,10 +68,10 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 |---|-------|--------------|-------------|-------|
 | 1 | `gateway.ready` | **Handled** | `handleReady()` — applies skin, fetches `commands.catalog`, auto-resumes or creates session, schedules startup prompt | Emacs: sets connection=connected, stores skin. Does **not** auto-resume or fetch catalog on its own (catalog fetch is wired separately via `hermes-input-fetch-catalog`). |
 | 2 | `skin.changed` | **Handled** | `applySkin()` — hot-swaps theme | Emacs: stores skin, `hermes-skin-watch` re-applies face remaps. |
-| 3 | `session.info` | **Handled** | Patches `uiStore.info`, merges usage, updates status, patches intro messages in history | Emacs: merges into `session-info` hash table. Does **not** merge usage or patch intro messages. |
+| 3 | `session.info` | **Handled** | Patches `uiStore.info`, merges usage, updates status, patches intro messages in history | Emacs: merges into `session-info` hash table. Extracts and merges `usage` sub-object into `hermes-state-usage`. Does not patch intro messages. |
 | 4 | `message.start` | **Handled** | `turnController.startMessage()` — resets turn state, sets `busy=true` | Emacs: creates empty `hermes-stream`, resets ephemeral UI state. |
 | 5 | `message.delta` | **Handled** | `turnController.recordMessageDelta()` — accumulates text, prunes trails, schedules batched flush | Emacs: appends text to `hermes-stream-text`. |
-| 6 | `message.complete` | **Handled** | `turnController.recordMessageComplete()` — closes reasoning, dedupes inline diffs, archives todos, builds final segments, archives spawn tree, appends transcript, rings bell, updates usage, resets turn state | Emacs: commits `hermes-stream` → `hermes-message`, appends to messages vector, clears stream. No diff dedupe, no todo archive, no spawn-tree persistence, no usage merge. |
+| 6 | `message.complete` | **Handled** | `turnController.recordMessageComplete()` — closes reasoning, dedupes inline diffs, archives todos, builds final segments, archives spawn tree, appends transcript, rings bell, updates usage, resets turn state | Emacs: commits `hermes-stream` → `hermes-message`, appends to messages vector, clears stream. Extracts `tokens_sent`/`tokens_received` from payload and accumulates into `hermes-state-usage`. No diff dedupe, no todo archive, no spawn-tree persistence. |
 | 7 | `thinking.delta` | **Handled** | Sets status, forwards to `recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-thinking`; renderer inserts/updates `#+begin_example Thinking` block before text region. |
 | 8 | `reasoning.delta` | **Handled** | `turnController.recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-reasoning`; renderer inserts/updates `#+begin_example Reasoning` block before text region. |
 | 9 | `reasoning.available` | **Handled** | `turnController.recordReasoningAvailable()` — initializes reasoning block before deltas | Emacs: reducer initializes `stream.reasoning` so the renderer can insert the block before deltas arrive. |
@@ -300,7 +300,7 @@ The TUI splits state across **three nanostore atoms** plus local React state.
 | **Turn trail** | `turnState.turnTrail` — transient trail lines | Not present |
 | **Segments** | `streamSegments` + `streamPendingTools` — structured | Not present (plain text only) |
 | **Reasoning tokens** | `reasoningTokens`, `toolTokens` | Not present |
-| **Usage merging** | Merges usage on every `session.info` | Not merged |
+| **Usage merging** | Merges usage on every `session.info` | ✅ Merged into `hermes-state-usage`; also accumulated from `message.complete` |
 | **Background tasks** | `bgTasks: Set<string>` | Not present |
 | **Overlay store** | Multiple overlay types simultaneously possible | Single `pending` slot (replaces wholesale) |
 | **Outcome** | `turnState.outcome` — e.g. "denied" | Not present |
@@ -624,26 +624,26 @@ Emacs only has **queue** mode:
 |----------|-------|-------|-----|-----------|
 | **Lifecycle** | `gateway.ready` | Partial | Full | Medium |
 | | `skin.changed` | Full | Full | None |
-| | `session.info` | Partial | Full | Medium |
-| | `gateway.start_timeout` | Missing | Full | **High** |
-| | `gateway.protocol_error` | Missing | Full | **High** |
-| | `gateway.stderr` | Missing | Full | Medium |
+| | `session.info` | Full | Full | None |
+| | `gateway.start_timeout` | Full | Full | None |
+| | `gateway.protocol_error` | Full | Full | None |
+| | `gateway.stderr` | Full | Full | None |
 | **Stream** | `message.start` | Full | Full | None |
 | | `message.delta` | Full | Full | None |
-| | `message.complete` | Partial | Full | **High** |
+| | `message.complete` | Full | Full | None |
 | | `thinking.delta` | Full | Full | None |
 | | `reasoning.delta` | Full | Full | None |
-| | `reasoning.available` | No-op | Full | **High** |
+| | `reasoning.available` | Full | Full | None |
 | **Status** | `status.update` | Partial | Full | Low |
 | **Tools** | `tool.generating` | Full | Full | None |
-| | `tool.start` | Missing | Full | **High** |
-| | `tool.progress` | Partial | Full | **High** |
-| | `tool.complete` | Partial | Full | **High** |
-| **Blocking** | `approval.request` | Partial | Full | **High** |
+| | `tool.start` | Full | Full | None |
+| | `tool.progress` | Full | Full | None |
+| | `tool.complete` | Full | Full | None |
+| **Blocking** | `approval.request` | Full | Full | None |
 | | `clarify.request` | Full | Full | None |
 | | `sudo.request` | Full | Full | None |
 | | `secret.request` | Full | Full | None |
-| **Other** | `error` | Partial | Full | **High** |
+| **Other** | `error` | Full | Full | None |
 | | `browser.progress` | No-op | Full | Low |
 | | `voice.status` | No-op | Full | Low |
 | | `voice.transcript` | No-op | Full | Low |
@@ -773,24 +773,45 @@ Emacs only has **queue** mode:
    - Insert subagent subtrees under assistant headline
    - Show goal, status, thinking, tools, notes
 
-### Phase 4 — Gateway Lifecycle
+### Phase 4 — Gateway Lifecycle ✅ Completed
 
-**Files:** `hermes-state.el`, `hermes-render.el`
+**Files:** `hermes-state.el`, `hermes-render.el`, `hermes-mode.el`, `hermes-rpc.el`
 
-1. **Handle `gateway.stderr`**
-   - Reducer: append system message with stderr line
+1. **Handle `gateway.stderr`** ✅
+   - Reducer appends `[stderr] <line>` system message (clipped to 120 chars)
+   - Routed from `hermes-rpc-stderr-functions` hook
 
-2. **Handle `gateway.start_timeout`**
-   - Reducer: set connection to error state, append system message
+2. **Handle `gateway.start_timeout`** ✅
+   - Sentinel detects gateway exit during `starting` state
+   - Collects up to 8 stderr tail lines
+   - Reducer appends `[gateway start timeout]` system message
+   - UI reducer sets error status text
 
-3. **Handle `gateway.protocol_error`**
-   - Reducer: append system message with preview
+3. **Handle `gateway.protocol_error`** ✅
+   - Reducer appends `[protocol noise] <preview>` system message
+   - UI reducer sets warning status text
+   - Routed from `hermes-rpc-protocol-error-functions` hook
 
 4. **Handle `background.complete`**
    - Reducer: append system message `[bg <id>] <text>`
 
 5. **Handle `review.summary`**
    - Reducer: append system message with review text
+
+### Phase 4.5 — Session Info & Usage ✅ Completed
+
+**Files:** `hermes-state.el`, `hermes-render.el`
+
+1. **Merge usage from `session.info`** ✅
+   - Added `usage` slot to `hermes-state`
+   - `session.info` reducer extracts `usage` sub-object and merges into `hermes-state-usage`
+
+2. **Accumulate usage from `message.complete`** ✅
+   - `message.complete` reducer extracts `tokens_sent` and `tokens_received`
+   - Accumulates into `hermes-state-usage` hash table
+
+3. **Render usage in header line** ✅
+   - Header line shows `sent→received` token counts when usage data is available
 
 ### Phase 5 — Advanced Session Operations
 

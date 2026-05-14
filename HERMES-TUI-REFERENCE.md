@@ -78,8 +78,8 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 | 10 | `status.update` | **Handled** | Sets status text; if `kind` is compressing/goal, emits system line; else pushes activity item (capped at 8), restores default after 4000ms | Emacs: sets `status-text` and `status-kind` in ephemeral UI state. No activity feed, no auto-restore. |
 | 11 | `tool.generating` | **Handled** | Pushes transient trail line "drafting X…" into `turnTrail` | Emacs: adds tool to `stream.tools` with status `generating`. Renderer inserts `*** tool (running…)` sub-headline after text region. |
 | 12 | `tool.start` | **Handled** | Flushes streaming segment, closes reasoning, records todos, adds tool to `activeTools`, updates tool-token accumulator | Emacs: reducer transitions tool status `generating` → `running`, stores `context`. Renderer rewrites tool block with running status + context drawer. |
-| 13 | `tool.progress` | **Partial** | Updates `activeTool.context`, throttles UI refresh to `STREAM_BATCH_MS` | Emacs: stores preview in ephemeral `tool-previews` alist. **Renderer never reads it** — dead state. |
-| 14 | `tool.complete` | **Handled** | Removes from `activeTools`, builds final trail line, flushes into segments, handles `inline_diff`, handles `todos`, updates `turnTrail` | Emacs: updates tool status/output/error/duration in `stream.tools`. Renderer rewrites tool sub-headline with final status + output/error. **Ignores `inline_diff` and `todos`**. Tool text is **not** interleaved into `stream-text` anymore (refactored 2026-05-14). |
+| 13 | `tool.progress` | **Handled** | Updates `activeTool.context`, throttles UI refresh to `STREAM_BATCH_MS` | Emacs: stores preview in persistent `stream.tools` (via reducer) and renders it in tool block. Also stored in ephemeral `tool-previews` for UI status. |
+| 14 | `tool.complete` | **Handled** | Removes from `activeTools`, builds final trail line, flushes into segments, handles `inline_diff`, handles `todos`, updates `turnTrail` | Emacs: updates tool status/output/error/duration/inline-diff/todos in `stream.tools`. Renderer rewrites tool sub-headline with final status + output/error + inline-diff block + todos checklist. Tool text is **not** interleaved into `stream-text` anymore (refactored 2026-05-14). |
 | 15 | `approval.request` | **Handled** | Patches `overlayStore.approval`, sets status="approval needed" | Emacs: sets `pending` to `hermes-pending` with kind `approval`. `hermes-prompts.el` handles the minibuffer prompt with canonical choices `once`/`session`/`always`/`deny` (fixed 2026-05-14). |
 | 16 | `clarify.request` | **Handled** | Patches `overlayStore.clarify`, sets status="waiting for input…" | Emacs: sets `pending` with kind `clarify`. Minibuffer handler dispatches `clarify.respond`. |
 | 17 | `sudo.request` | **Handled** | Patches `overlayStore.sudo`, sets status="sudo password needed" | Emacs: sets `pending` with kind `sudo`. Minibuffer handler dispatches `sudo.respond`. |
@@ -499,10 +499,10 @@ This follows the same model as thinking/reasoning blocks: **state holds the data
 
 | Issue | Detail | Severity |
 |-------|--------|----------|
-| **Missing `tool.start`** | No `running` status transition, no todo capture, no segment flush | **High** |
-| **Dead `tool.progress` state** | Previews stored in `tool-previews` but never rendered | **Medium** |
-| **No `inline_diff` support** | Diffs from `tool.complete` ignored | **Medium** |
-| **No `todos` support** | Todo lists from tool results lost | **Low** |
+| **Missing `tool.start`** | ✅ Fixed — reducer transitions `generating` → `running`, stores context | **High** |
+| **Dead `tool.progress` state** | ✅ Fixed — preview stored in persistent `tool.preview`, rendered in block | **Medium** |
+| **No `inline_diff` support** | ✅ Fixed — stored in `tool.inline-diff`, rendered as `#+begin_diff` block | **Medium** |
+| **No `todos` support** | ✅ Fixed — stored in `tool.todos`, rendered as `:TODOS:` checklist | **Low** |
 | **No `tool.started` event** | This is a Python-side event type that maps to `tool.progress` emission | N/A |
 | **Tool context missing** | TUI shows tool context (args preview); Emacs does not | Low |
 
@@ -738,21 +738,24 @@ Emacs only has **queue** mode:
    - Persistent reducer: when `"error"` arrives, commits in-flight stream as partial assistant message, appends error system message, clears stream
    - UI reducer: clears `tool-previews`, resets `status-text`
 
-### Phase 2 — Tool Rendering Polish
+### Phase 2 — Tool Rendering Polish ✅ Completed
 
 **Files:** `hermes-state.el`, `hermes-render.el`
 
-1. **Render `tool.progress` previews**
-   - Store preview in `hermes-tool` struct (new slot: `context` or `preview`)
-   - Renderer rewrites subtree to show preview in a drawer
+1. **Render `tool.progress` previews** ✅
+   - Added `preview` slot to `hermes-tool` struct
+   - Persistent reducer updates `tool.preview` on `tool.progress`
+   - Renderer shows preview in `#+begin_example` block for running/generating tools
 
-2. **Handle `inline_diff`**
-   - Add `inline-diff` slot to `hermes-tool`
-   - Renderer: if inline-diff present, insert `#+begin_diff` / `#+end_diff` block
+2. **Handle `inline_diff`** ✅
+   - Added `inline-diff` slot to `hermes-tool`
+   - Reducer stores `inline_diff` from `tool.complete`
+   - Renderer inserts `#+begin_diff` / `#+end_diff` block when present
 
-3. **Handle `todos`**
-   - Add `todos` slot to `hermes-stream` or `hermes-tool`
-   - Renderer: if todos present, render as checklist in tool subtree
+3. **Handle `todos`** ✅
+   - Added `todos` slot to `hermes-tool`
+   - Reducer stores `todos` from `tool.complete`
+   - Renderer renders as `:TODOS:` drawer with checklist
 
 ### Phase 3 — Subagent Support
 

@@ -287,6 +287,42 @@
     (should (= 1 (length (hermes-message-tools msg))))
     (should (eq 'complete (hermes-tool-status (aref (hermes-message-tools msg) 0))))))
 
+(ert-deftest hermes-state-test/tool-progress-updates-persistent-preview ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "bash"))
+             (cons "tool.progress"
+                   (hermes-test--ht "tool_id" "t1" "preview" "ls /tmp"))))
+         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+    (should (equal "ls /tmp" (hermes-tool-preview tool)))))
+
+(ert-deftest hermes-state-test/tool-complete-stores-inline-diff ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "edit"))
+             (cons "tool.complete"
+                   (hermes-test--ht "tool_id" "t1"
+                                    "inline_diff" "- old\n+ new"))))
+         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+    (should (equal "- old\n+ new" (hermes-tool-inline-diff tool)))))
+
+(ert-deftest hermes-state-test/tool-complete-stores-todos ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "todo"))
+             (cons "tool.complete"
+                   (hermes-test--ht "tool_id" "t1"
+                                    "todos" '(("text" . "fix bug") ("done" . t))))))
+         (tool (aref (hermes-stream-tools (hermes-state-stream s)) 0)))
+    (should (equal '(("text" . "fix bug") ("done" . t))
+                   (hermes-tool-todos tool)))))
+
 ;;;; Blocking prompts
 
 (ert-deftest hermes-state-test/approval-request-sets-pending ()

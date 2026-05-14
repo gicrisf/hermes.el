@@ -399,6 +399,10 @@ is removed."
          (dur (hermes-tool-duration tool))
          (output (hermes-tool-output tool))
          (err (hermes-tool-error tool))
+         (preview (hermes-tool-preview tool))
+         (context (hermes-tool-context tool))
+         (inline-diff (hermes-tool-inline-diff tool))
+         (todos (hermes-tool-todos tool))
          (status-label (pcase status
                          ('generating "running…")
                          ('running "running…")
@@ -406,10 +410,29 @@ is removed."
                          ('error "error")
                          (_ (format "%s" status)))))
     (concat (format "*** %s (%s)\n" name status-label)
+            ;; Context / preview for running tools
+            (when (and (eq status 'running) context)
+              (format ":CONTEXT:\n%s\n:END:\n" context))
+            (when (and (memq status '(running generating)) preview)
+              (format "#+begin_example\n%s\n#+end_example\n" preview))
+            ;; Output / error for complete tools
             (cond
              (err (format "#+begin_example\n%s\n#+end_example\n" err))
              (output (format "#+begin_example\n%s\n#+end_example\n" output))
-             (t "")))))
+             (t ""))
+            ;; Inline diff
+            (when inline-diff
+              (format "#+begin_diff\n%s\n#+end_diff\n" inline-diff))
+            ;; Todos checklist
+            (when todos
+              (concat (format ":TODOS:\n")
+                      (mapconcat
+                       (lambda (todo)
+                         (let ((text (or (hermes--get todo "text") ""))
+                               (done (hermes--get todo "done")))
+                           (format "- [%s] %s" (if done "X" " ") text)))
+                       todos "\n")
+                      "\n:END:\n")))))
 
 (defun hermes--format-tools-block (tools)
   "Format TOOLS (vector of hermes-tool) as Org blocks.

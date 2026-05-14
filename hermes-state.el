@@ -27,6 +27,9 @@
   id name
   status      ; 'generating | 'running | 'complete | 'error
   context     ; tool args preview from tool.start
+  preview     ; live preview from tool.progress
+  inline-diff ; diff output from tool.complete
+  todos       ; list of plists (:text :done) from tool.complete
   output error duration)
 
 (cl-defstruct (hermes-message (:copier hermes-message-copy))
@@ -306,21 +309,46 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                                          (hermes-tool-context nt) ctx)))
                         (new-tools (copy-sequence tools)))
                    (aset new-tools idx new-tool)
-                   (hermes--with-copy state hermes-state-copy s
-                     (setf (hermes-state-stream s)
-                           (hermes--with-copy str hermes-stream-copy ns
-                             (setf (hermes-stream-tools ns) new-tools)
-                             ns)))))))))
-        ("tool.complete"
-        (let* ((str (hermes-state-stream state))
-              (tid (or (hermes--get p "tool_id")
-                       (hermes--get p "id")
-                       (hermes--get p "name")
-                       ;; Fallback: use the id of the last tool in stream.
-                       (and str
-                            (let ((ts (hermes-stream-tools str)))
-                              (and (> (length ts) 0)
-                                   (hermes-tool-id (aref ts (1- (length ts)))))))))
+                    (hermes--with-copy state hermes-state-copy s
+                      (setf (hermes-state-stream s)
+                            (hermes--with-copy str hermes-stream-copy ns
+                              (setf (hermes-stream-tools ns) new-tools)
+                              ns)))))))))
+         ("tool.progress"
+          ;; Store the live preview on the matching tool in stream.tools.
+          (let ((str (hermes-state-stream state))
+                (tid (hermes--get p "tool_id"))
+                (preview (hermes--get p "preview")))
+            (if (or (null str) (null tid))
+                state
+              (let* ((tools (hermes-stream-tools str))
+                     (idx (cl-position-if
+                           (lambda (tl) (equal tid (hermes-tool-id tl)))
+                           tools)))
+                (if (null idx)
+                    state
+                  (let* ((old-tool (aref tools idx))
+                         (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                                    (setf (hermes-tool-preview nt) preview)))
+                         (new-tools (copy-sequence tools)))
+                    (aset new-tools idx new-tool)
+                    (hermes--with-copy state hermes-state-copy s
+                      (setf (hermes-state-stream s)
+                            (hermes--with-copy str hermes-stream-copy ns
+                              (setf (hermes-stream-tools ns) new-tools)
+                              ns)))))))))
+         ("tool.complete"
+         (let* ((str (hermes-state-stream state))
+               (tid (or (hermes--get p "tool_id")
+                        (hermes--get p "id")
+                        (hermes--get p "name")
+                        ;; Fallback: use the id of the last tool in stream.
+                        (and str
+                             (let ((ts (hermes-stream-tools str)))
+                               (and (> (length ts) 0)
+                                    (hermes-tool-id (aref ts (1- (length ts)))))))))
+               (inline-diff (hermes--get p "inline_diff"))
+               (todos-raw (hermes--get p "todos"))
               (output (hermes--get p "output"))
               (err    (hermes--get p "error"))
               (dur    (hermes--get p "duration_s")))
@@ -335,20 +363,22 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                          tools)))
               (if (null idx)
                   state
-                (let* ((old-tool (aref tools idx))
-                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                  (setf (hermes-tool-status nt)
-                                        (if err 'error 'complete)
-                                        (hermes-tool-output nt) output
-                                        (hermes-tool-error nt) err
-                                        (hermes-tool-duration nt) dur)))
-                      (new-tools (copy-sequence tools)))
-                  (aset new-tools idx new-tool)
-                   (hermes--with-copy state hermes-state-copy s
-                     (setf (hermes-state-stream s)
-                           (hermes--with-copy str hermes-stream-copy ns
-                             (setf (hermes-stream-tools ns) new-tools)
-                             ns)))))))))
+                 (let* ((old-tool (aref tools idx))
+                        (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                                   (setf (hermes-tool-status nt)
+                                         (if err 'error 'complete)
+                                         (hermes-tool-output nt) output
+                                         (hermes-tool-error nt) err
+                                         (hermes-tool-duration nt) dur
+                                         (hermes-tool-inline-diff nt) inline-diff
+                                         (hermes-tool-todos nt) todos-raw)))
+                       (new-tools (copy-sequence tools)))
+                   (aset new-tools idx new-tool)
+                    (hermes--with-copy state hermes-state-copy s
+                      (setf (hermes-state-stream s)
+                            (hermes--with-copy str hermes-stream-copy ns
+                              (setf (hermes-stream-tools ns) new-tools)
+                              ns)))))))))
        ;;; --- Blocking prompts ----------------------------------------------
       ;; All four: replace wholesale; only one pending slot
       ;; (createGatewayEventHandler.ts:519-547).

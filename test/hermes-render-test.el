@@ -105,8 +105,8 @@ position right after the heading line."
     (hermes--update-thinking-block "hmm" nil)
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       (should (string-match-p "#\\+begin_example Thinking\nhmm\n#\\+end_example" body))
-      ;; The block sits before the (empty) text region.
-      (should (string-match-p "#\\+end_example\n\\'" body)))))
+      ;; The block sits before the (empty) text region, followed by blank line.
+      (should (string-match-p "#\\+end_example\n\n\\'" body)))))
 
 (ert-deftest hermes-render-test/thinking-block-updated-on-change ()
   (with-temp-buffer

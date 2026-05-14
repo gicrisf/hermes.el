@@ -169,19 +169,20 @@ an Org :ID: is stamped."
 
 (defun hermes--format-thinking-block (thinking reasoning)
   "Return an Org block string for THINKING and REASONING content.
-If both are empty or nil, return the empty string."
+If both are empty or nil, return the empty string.
+Each block is followed by a blank line for visual separation."
   (let (parts)
     (when (and thinking (not (string-empty-p thinking)))
       (push (concat "#+begin_example Thinking\n"
                     thinking
                     (unless (eq (aref thinking (1- (length thinking))) ?\n) "\n")
-                    "#+end_example\n")
+                    "#+end_example\n\n")
             parts))
     (when (and reasoning (not (string-empty-p reasoning)))
       (push (concat "#+begin_example Reasoning\n"
                     reasoning
                     (unless (eq (aref reasoning (1- (length reasoning))) ?\n) "\n")
-                    "#+end_example\n")
+                    "#+end_example\n\n")
             parts))
     (apply #'concat (nreverse parts))))
 
@@ -411,30 +412,35 @@ is removed."
                          ('complete (if dur (format "%.1fs" dur) "done"))
                          ('error "error")
                          (_ (format "%s" status)))))
-    (concat (format "*** %s (%s)\n" name status-label)
-            ;; Context / preview for running tools
-            (when (and (eq status 'running) context)
-              (format ":CONTEXT:\n%s\n:END:\n" context))
-            (when (and (memq status '(running generating)) preview)
-              (format "#+begin_example\n%s\n#+end_example\n" preview))
-            ;; Output / error for complete tools
-            (cond
-             (err (format "#+begin_example\n%s\n#+end_example\n" err))
-             (output (format "#+begin_example\n%s\n#+end_example\n" output))
-             (t ""))
-            ;; Inline diff
-            (when inline-diff
-              (format "#+begin_diff\n%s\n#+end_diff\n" inline-diff))
-            ;; Todos checklist
-            (when todos
-              (concat (format ":TODOS:\n")
-                      (mapconcat
-                       (lambda (todo)
-                         (let ((text (or (hermes--get todo "text") ""))
-                               (done (hermes--get todo "done")))
-                           (format "- [%s] %s" (if done "X" " ") text)))
-                       todos "\n")
-                      "\n:END:\n")))))
+    (let ((body
+           (concat (format "*** %s (%s)\n" name status-label)
+                   ;; Context / preview for running tools
+                   (when (and (eq status 'running) context)
+                     (format ":CONTEXT:\n%s\n:END:\n" context))
+                   (when (and (memq status '(running generating)) preview)
+                     (format "#+begin_example\n%s\n#+end_example\n" preview))
+                   ;; Output / error for complete tools
+                   (cond
+                    (err (format "#+begin_example\n%s\n#+end_example\n" err))
+                    (output (format "#+begin_example\n%s\n#+end_example\n" output))
+                    (t ""))
+                   ;; Inline diff
+                   (when inline-diff
+                     (format "#+begin_diff\n%s\n#+end_diff\n" inline-diff))
+                   ;; Todos checklist
+                   (when todos
+                     (concat (format ":TODOS:\n")
+                             (mapconcat
+                              (lambda (todo)
+                                (let ((text (or (hermes--get todo "text") ""))
+                                      (done (hermes--get todo "done")))
+                                  (format "- [%s] %s" (if done "X" " ") text)))
+                              todos "\n")
+                             "\n:END:\n")))))
+      ;; Ensure a blank line after every tool block for visual separation.
+      (if (> (length body) 0)
+          (concat body "\n")
+        body))))
 
 (defun hermes--format-tools-block (tools)
   "Format TOOLS (vector of hermes-tool) as Org blocks.
@@ -449,12 +455,21 @@ Returns the empty string if TOOLS is empty."
 
 (defun hermes--insert-after-text (content)
   "Insert CONTENT after the text region, keeping `hermes--stream-end'
-at the text/tool boundary."
+at the text/tool boundary.  Ensures a blank line between text and
+the inserted content."
   (when (and content (> (length content) 0)
              (markerp hermes--stream-end)
              (marker-position hermes--stream-end))
     (let ((boundary (marker-position hermes--stream-end)))
       (goto-char (point-max))
+      ;; Ensure at least one blank line between text and inserted content.
+      (unless (or (bobp)
+                  (and (>= (point) 2)
+                       (eq (char-before (1- (point))) ?\n)
+                       (eq (char-before) ?\n)))
+        (if (bolp)
+            (insert "\n")
+          (insert "\n\n")))
       (insert content)
       ;; stream-end may have auto-advanced if we inserted at its
       ;; position; snap it back to the boundary.
@@ -464,19 +479,26 @@ at the text/tool boundary."
   "Render TOOLS as Org blocks after the text region."
   (let ((block (hermes--format-tools-block tools)))
     ;; Remove any existing tool blocks first.
+    ;; stream-end and stream-tools-marker both sit at the text/tool boundary,
+    ;; so we must delete from the marker to point-max (tools are always last).
     (when (markerp hermes--stream-tools-marker)
-      (let* ((beg (marker-position hermes--stream-tools-marker))
-             (end (or (and (markerp hermes--stream-end)
-                           (marker-position hermes--stream-end))
-                      (point-max))))
-        (when (> end beg)
-          (delete-region beg end)))
+      (let ((beg (marker-position hermes--stream-tools-marker)))
+        (when (< beg (point-max))
+          (delete-region beg (point-max))))
       (set-marker hermes--stream-tools-marker nil)
       (setq hermes--stream-tools-marker nil))
     ;; Insert new tool blocks if any.
     (when (> (length block) 0)
       (let ((boundary (marker-position hermes--stream-end)))
         (goto-char (point-max))
+        ;; Ensure at least one blank line between text and first tool.
+        (unless (or (bobp)
+                    (and (>= (point) 2)
+                         (eq (char-before (1- (point))) ?\n)
+                         (eq (char-before) ?\n)))
+          (if (bolp)
+              (insert "\n")
+            (insert "\n\n")))
         (insert block)
         (setq hermes--stream-tools-marker (copy-marker boundary))
         (set-marker-insertion-type hermes--stream-tools-marker nil)

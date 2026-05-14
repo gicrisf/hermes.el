@@ -58,17 +58,12 @@ without this cache, the very first buffer would never see the skin.")
                   (hermes--lookup-buffer session-id))))
     ;; Some events arrive before we know the session id (gateway.ready,
     ;; skin.changed) — broadcast those to every existing Hermes buffer.
-    (cond
-     (buf (with-current-buffer buf
-            (hermes-dispatch (cons type payload))
-            (hermes-ui-dispatch (cons type payload))))
-     ((or (null session-id) (string-empty-p session-id))
-      (maphash (lambda (_sid b)
-                 (when (buffer-live-p b)
-                   (with-current-buffer b
-                     (hermes-dispatch (cons type payload))
-                     (hermes-ui-dispatch (cons type payload)))))
-               hermes--session-buffers)))))
+     (cond
+      (buf (with-current-buffer buf
+             (hermes-dispatch (cons type payload))
+             (hermes-ui-dispatch (cons type payload))))
+      ((or (null session-id) (string-empty-p session-id))
+       (hermes--broadcast-dispatch type payload)))))
 
 (defun hermes--route-connection (state)
   "Broadcast a connection state change into every Hermes buffer."
@@ -87,12 +82,45 @@ without this cache, the very first buffer would never see the skin.")
                           (_             :disconnected)))))))
            hermes--session-buffers))
 
+(defun hermes--broadcast-dispatch (type payload)
+  "Dispatch TYPE + PAYLOAD to every active Hermes buffer."
+  (maphash (lambda (_sid b)
+             (when (buffer-live-p b)
+               (with-current-buffer b
+                 (hermes-dispatch (cons type payload))
+                 (hermes-ui-dispatch (cons type payload)))))
+           hermes--session-buffers))
+
+(defun hermes--route-stderr (line)
+  "Broadcast a `gateway.stderr' event with LINE to all Hermes buffers."
+  (let ((payload (let ((ht (make-hash-table :test #'equal)))
+                   (puthash "line" line ht)
+                   ht)))
+    (hermes--broadcast-dispatch "gateway.stderr" payload)))
+
+(defun hermes--route-protocol-error (preview)
+  "Broadcast a `gateway.protocol_error' event with PREVIEW to all buffers."
+  (let ((payload (let ((ht (make-hash-table :test #'equal)))
+                   (puthash "preview" preview ht)
+                   ht)))
+    (hermes--broadcast-dispatch "gateway.protocol_error" payload)))
+
+(defun hermes--route-start-timeout (lines)
+  "Broadcast a `gateway.start_timeout' event with LINES to all buffers."
+  (let ((payload (let ((ht (make-hash-table :test #'equal)))
+                   (puthash "lines" lines ht)
+                   ht)))
+    (hermes--broadcast-dispatch "gateway.start_timeout" payload)))
+
 (defun hermes--install-hooks ()
   "Wire RPC hooks once.  Idempotent."
   (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
   (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
   (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection)
-  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open))
+  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open)
+  (add-hook 'hermes-rpc-stderr-functions #'hermes--route-stderr)
+  (add-hook 'hermes-rpc-protocol-error-functions #'hermes--route-protocol-error)
+  (add-hook 'hermes-rpc-start-timeout-functions #'hermes--route-start-timeout))
 
 ;;;; Major mode
 

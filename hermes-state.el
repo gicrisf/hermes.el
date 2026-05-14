@@ -422,8 +422,42 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                        (make-hermes-message :kind 'system :text text
                                             :timestamp (current-time)))
                       (hermes-state-stream s) nil))))))
-      ;;; --- Pass-through (no-op for M2) -----------------------------------
-      (_ state))))
+       ;;; --- Gateway diagnostics -------------------------------------------
+       ("gateway.stderr"
+        (let ((line (hermes--get p "line")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-messages s)
+                  (hermes--vector-append
+                   (hermes-state-messages state)
+                   (make-hermes-message
+                    :kind 'system
+                    :text (format "[stderr] %s"
+                                  (substring line 0 (min 120 (length line))))
+                    :timestamp (current-time)))))))
+       ("gateway.protocol_error"
+        (let ((preview (hermes--get p "preview")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-messages s)
+                  (hermes--vector-append
+                   (hermes-state-messages state)
+                   (make-hermes-message
+                    :kind 'system
+                    :text (format "[protocol noise] %s" preview)
+                    :timestamp (current-time)))))))
+       ("gateway.start_timeout"
+        (let ((lines (hermes--get p "lines")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-messages s)
+                  (hermes--vector-append
+                   (hermes-state-messages state)
+                   (make-hermes-message
+                    :kind 'system
+                    :text (concat "[gateway start timeout]\n"
+                                  (mapconcat (lambda (l) (format "  %s" l))
+                                             lines "\n"))
+                    :timestamp (current-time)))))))
+       ;;; --- Pass-through (no-op for M2) -----------------------------------
+       (_ state))))
 
 ;;;; UI reducer (minimal for M2)
 
@@ -472,11 +506,19 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
               (setf (hermes-ui-state-tool-previews s)
                     (assoc-delete-all
                      tid (hermes-ui-state-tool-previews state)))))))
-       ("error"
-        (hermes--with-copy state hermes-ui-state-copy s
-          (setf (hermes-ui-state-status-text s) nil
-                (hermes-ui-state-tool-previews s) nil)))
-       (_ state))))
+        ("error"
+         (hermes--with-copy state hermes-ui-state-copy s
+           (setf (hermes-ui-state-status-text s) nil
+                 (hermes-ui-state-tool-previews s) nil)))
+        ("gateway.start_timeout"
+         (hermes--with-copy state hermes-ui-state-copy s
+           (setf (hermes-ui-state-status-text s)
+                 "Gateway failed to start (see chat buffer)")))
+        ("gateway.protocol_error"
+         (hermes--with-copy state hermes-ui-state-copy s
+           (setf (hermes-ui-state-status-text s)
+                 "Protocol noise from gateway (see chat buffer)")))
+        (_ state))))
 
 (provide 'hermes-state)
 ;;; hermes-state.el ends here

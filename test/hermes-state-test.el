@@ -425,5 +425,50 @@
          (s   (hermes--reduce nil (cons :slash-catalog (list :catalog cat)))))
     (should (eq cat (hermes-state-slash-catalog s)))))
 
+;;;; Gateway diagnostics
+
+(ert-deftest hermes-state-test/gateway-stderr-appends-system-message ()
+  (let* ((s (hermes--reduce nil (cons "gateway.stderr"
+                                      (hermes-test--ht "line" "some warning"))))
+         (msg (hermes-test--last-msg s)))
+    (should (eq 'system (hermes-message-kind msg)))
+    (should (string-match-p "\\[stderr\\] some warning"
+                            (hermes-message-text msg)))))
+
+(ert-deftest hermes-state-test/gateway-stderr-clips-long-line ()
+  (let* ((long-line (make-string 200 ?x))
+         (s (hermes--reduce nil (cons "gateway.stderr"
+                                      (hermes-test--ht "line" long-line))))
+         (msg (hermes-test--last-msg s)))
+    (should (= 129 (length (hermes-message-text msg))))))
+
+(ert-deftest hermes-state-test/gateway-protocol-error-appends-system-message ()
+  (let* ((s (hermes--reduce nil (cons "gateway.protocol_error"
+                                      (hermes-test--ht "preview" "not json"))))
+         (msg (hermes-test--last-msg s)))
+    (should (eq 'system (hermes-message-kind msg)))
+    (should (string-match-p "\\[protocol noise\\] not json"
+                            (hermes-message-text msg)))))
+
+(ert-deftest hermes-state-test/gateway-start-timeout-appends-system-message ()
+  (let* ((s (hermes--reduce nil (cons "gateway.start_timeout"
+                                      (hermes-test--ht "lines" '("err1" "err2")))))
+         (msg (hermes-test--last-msg s)))
+    (should (eq 'system (hermes-message-kind msg)))
+    (should (string-match-p "\\[gateway start timeout\\]"
+                            (hermes-message-text msg)))
+    (should (string-match-p "err1" (hermes-message-text msg)))
+    (should (string-match-p "err2" (hermes-message-text msg)))))
+
+(ert-deftest hermes-state-test/ui-gateway-start-timeout-sets-status ()
+  (let ((s (hermes--ui-reduce nil (cons "gateway.start_timeout" nil))))
+    (should (string-match-p "failed to start"
+                            (hermes-ui-state-status-text s)))))
+
+(ert-deftest hermes-state-test/ui-gateway-protocol-error-sets-status ()
+  (let ((s (hermes--ui-reduce nil (cons "gateway.protocol_error" nil))))
+    (should (string-match-p "Protocol noise"
+                            (hermes-ui-state-status-text s)))))
+
 (provide 'hermes-state-test)
 ;;; hermes-state-test.el ends here

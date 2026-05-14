@@ -47,6 +47,10 @@
     "clarify.request"        ; {request_id, question, choices}
     "sudo.request"           ; {request_id}
     "secret.request"         ; {request_id, env_var, prompt}
+    ;; Gateway lifecycle / diagnostics
+    "gateway.stderr"         ; {line}  — raw stderr line from subprocess
+    "gateway.start_timeout"  ; {lines} — last stderr tail when gateway fails to start
+    "gateway.protocol_error" ; {preview} — truncated raw frame that failed JSON parse
     ;; Other
     "error"                  ; {message}
     "browser.progress"       ; v1: no-op

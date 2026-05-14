@@ -78,6 +78,10 @@ TYPE is a string from `hermes-events-incoming'.  PAYLOAD is a hash table.")
 (defvar hermes-rpc-protocol-error-functions nil
   "Hook of (PREVIEW) called when a stdout line fails to parse as JSON.")
 
+(defvar hermes-rpc-start-timeout-functions nil
+  "Hook of (LINES) called when the gateway exits before sending `gateway.ready'.
+LINES is a list of the last non-empty stderr strings.")
+
 (defvar hermes-rpc-connection-functions nil
   "Hook of (STATE) where STATE is one of `connecting', `connected', `disconnected'.")
 
@@ -280,6 +284,23 @@ lost."
 (defun hermes-rpc--sentinel (proc event)
   "Handle subprocess lifecycle: signal disconnection."
   (when (memq (process-status proc) '(exit signal closed))
+    ;; If the gateway never reached `ready', treat it as a start timeout.
+    (when (eq hermes-rpc--state 'starting)
+      (let ((tail-lines nil)
+            (count 0))
+        (when (buffer-live-p hermes-rpc--stderr-buffer)
+          (with-current-buffer hermes-rpc--stderr-buffer
+            (goto-char (point-max))
+            (while (and (< count 8) (not (bobp)))
+              (beginning-of-line)
+              (when (> (point) 1)
+                (let ((line (buffer-substring (point) (line-end-position))))
+                  (setq line (string-trim line))
+                  (unless (string-empty-p line)
+                    (push line tail-lines)
+                    (setq count (1+ count)))))
+              (forward-line -1))))
+        (run-hook-with-args 'hermes-rpc-start-timeout-functions tail-lines)))
     (unless (string-empty-p hermes-rpc--stderr-tail)
       (run-hook-with-args 'hermes-rpc-stderr-functions
                           hermes-rpc--stderr-tail)

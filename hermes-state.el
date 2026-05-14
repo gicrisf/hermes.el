@@ -249,56 +249,46 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                       (hermes--vector-append (hermes-state-messages state) msg)
                       (hermes-state-stream s) nil))))))
       ;;; --- Tools ---------------------------------------------------------
-      ("tool.generating"
-       ;; tool.generating means a tool has been selected and is about to run.
-       ;; Add it to stream.tools if not already present.  Drop if no stream
-       ;; (edge case #2: turnController.ts:620-645).
-       ;; Also append an inline "-> running name" marker to the stream text
-       ;; so tools appear interleaved in the assistant response.
-       (let ((str (hermes-state-stream state))
-             (tid (or (hermes--get p "tool_id")
-                      (hermes--get p "id")
-                      (hermes--get p "name")))
-             (tname (hermes--get p "name")))
-         (if (or (null str) (null tid))
-             state
-           (let* ((tools (hermes-stream-tools str))
-                  (already (cl-some (lambda (tl)
-                                      (equal tid (hermes-tool-id tl)))
-                                    (append tools nil))))
-             (if already
-                 state
-               (let ((tool (make-hermes-tool :id tid :name tname
-                                             :status 'generating)))
-                 (hermes--with-copy state hermes-state-copy s
-                   (setf (hermes-state-stream s)
-                         (hermes--with-copy str hermes-stream-copy ns
-                           (setf (hermes-stream-tools ns)
-                                 (hermes--vector-append tools tool))
-                           (when tname
-                             (setf (hermes-stream-text ns)
-                                   (concat (hermes-stream-text ns)
-                                           (if (string-empty-p
-                                                (hermes-stream-text ns))
-                                               ""
-                                             "\n")
-                                           (format "-> running %s\n" tname))))
-                           ns)))))))))
-      ("tool.complete"
-       (let* ((str (hermes-state-stream state))
-             (tid (or (hermes--get p "tool_id")
-                      (hermes--get p "id")
-                      (hermes--get p "name")
-                      ;; Fallback: use the id of the last tool in stream.
-                      (and str
-                           (let ((ts (hermes-stream-tools str)))
-                             (and (> (length ts) 0)
-                                  (hermes-tool-id (aref ts (1- (length ts)))))))))
-             (output (hermes--get p "output"))
-             (err    (hermes--get p "error"))
-             (dur    (hermes--get p "duration_s")))
-         (if (or (null str) (null tid))
-             state
+       ("tool.generating"
+        ;; tool.generating means a tool has been selected and is about to run.
+        ;; Add it to stream.tools if not already present.  Drop if no stream
+        ;; (edge case #2: turnController.ts:620-645).
+        (let ((str (hermes-state-stream state))
+              (tid (or (hermes--get p "tool_id")
+                       (hermes--get p "id")
+                       (hermes--get p "name")))
+              (tname (hermes--get p "name")))
+          (if (or (null str) (null tid))
+              state
+            (let* ((tools (hermes-stream-tools str))
+                   (already (cl-some (lambda (tl)
+                                       (equal tid (hermes-tool-id tl)))
+                                     (append tools nil))))
+              (if already
+                  state
+                (let ((tool (make-hermes-tool :id tid :name tname
+                                              :status 'generating)))
+                  (hermes--with-copy state hermes-state-copy s
+                    (setf (hermes-state-stream s)
+                          (hermes--with-copy str hermes-stream-copy ns
+                            (setf (hermes-stream-tools ns)
+                                  (hermes--vector-append tools tool))
+                            ns)))))))))
+       ("tool.complete"
+        (let* ((str (hermes-state-stream state))
+              (tid (or (hermes--get p "tool_id")
+                       (hermes--get p "id")
+                       (hermes--get p "name")
+                       ;; Fallback: use the id of the last tool in stream.
+                       (and str
+                            (let ((ts (hermes-stream-tools str)))
+                              (and (> (length ts) 0)
+                                   (hermes-tool-id (aref ts (1- (length ts)))))))))
+              (output (hermes--get p "output"))
+              (err    (hermes--get p "error"))
+              (dur    (hermes--get p "duration_s")))
+          (if (or (null str) (null tid))
+              state
             (let* ((tools (hermes-stream-tools str))
                    (tname (hermes--get p "name"))
                    (idx (cl-position-if
@@ -306,10 +296,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                            (or (equal tid (hermes-tool-id tl))
                                (and tname (equal tname (hermes-tool-name tl)))))
                          tools)))
-             (if (null idx)
-                 state
+              (if (null idx)
+                  state
                 (let* ((old-tool (aref tools idx))
-                       (tname (or tname (hermes-tool-name old-tool)))
                        (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
                                   (setf (hermes-tool-status nt)
                                         (if err 'error 'complete)
@@ -318,30 +307,12 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                                         (hermes-tool-duration nt) dur)))
                       (new-tools (copy-sequence tools)))
                   (aset new-tools idx new-tool)
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
+                   (hermes--with-copy state hermes-state-copy s
+                     (setf (hermes-state-stream s)
+                           (hermes--with-copy str hermes-stream-copy ns
                              (setf (hermes-stream-tools ns) new-tools)
-                             (if tname
-                                 (let ((status (if err "error" "done"))
-                                       (line (format "-> %s %s (%.1fs)\n"
-                                                     (if err "error" "done")
-                                                     tname
-                                                     (or dur 0.0))))
-                                   ;; TODO: remove debug log after tool pipeline is stable
-                                   (message "[hermes] tool.complete: tname=%S status=%s dur=%s output=%S"
-                                            tname status (or dur "nil")
-                                            (and output (substring output 0 (min 80 (length output)))))
-                                   (setf (hermes-stream-text ns)
-                                         (concat (hermes-stream-text ns) line))
-                                   (when output
-                                     (setf (hermes-stream-text ns)
-                                           (concat (hermes-stream-text ns)
-                                                   (format "#+begin_example\n%s\n#+end_example\n"
-                                                           output)))))
-                               (message "[hermes] tool.complete: NO tname (tid=%S)" tid))
-                            ns)))))))))
-      ;;; --- Blocking prompts ----------------------------------------------
+                             ns)))))))))
+       ;;; --- Blocking prompts ----------------------------------------------
       ;; All four: replace wholesale; only one pending slot
       ;; (createGatewayEventHandler.ts:519-547).
       ("approval.request"

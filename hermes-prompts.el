@@ -59,7 +59,8 @@ Guards against re-entrant prompts when the renderer hook fires again.")
 ;;;; Approval
 
 (defun hermes--prompt-approval (sid rid payload)
-  "Ask the user to allow/deny a tool call, then dispatch `approval.respond'."
+  "Ask the user to allow/deny a tool call, then dispatch `approval.respond'.
+Canonical choices match the TUI: once, session, always, deny."
   (let* ((cmd (hermes--prompts-get payload "command"))
          (desc (hermes--prompts-get payload "description"))
          (prompt (format "Approve%s%s? "
@@ -68,16 +69,20 @@ Guards against re-entrant prompts when the renderer hook fires again.")
          (choice (condition-case _
                      (read-multiple-choice
                       prompt
-                      '((?y "yes" "allow this once")
-                        (?a "all" "allow this and similar in this session")
-                        (?n "no"  "deny")))
+                      '((?o "once"    "allow this single invocation")
+                        (?s "session" "allow for this session")
+                        (?a "always"  "allowlist this pattern permanently")
+                        (?n "no"      "deny")))
                    (quit '(?n "no" "deny"))))
          (key (car choice))
-         (resp (pcase key (?y "allow") (?a "allow") (_ "deny"))))
+         (resp (pcase key
+                 (?o "once")
+                 (?s "session")
+                 (?a "always")
+                 (_  "deny"))))
     (hermes-rpc-request
      "approval.respond"
-     (list :session_id sid :request_id rid :choice resp
-           :all (if (eq key ?a) t :false)))))
+     (list :session_id sid :request_id rid :choice resp))))
 
 ;;;; Clarify
 

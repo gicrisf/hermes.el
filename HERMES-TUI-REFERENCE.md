@@ -2,8 +2,13 @@
 
 > **Purpose:** Comprehensive analysis of the official Hermes TUI (`ui-tui` + `tui_gateway`) compared to the Emacs frontend (`emacs-hermes`). This document captures protocol semantics, state shapes, event handling, and implementation gaps for future development.
 >
-> **Date:** 2026-05-13
+> **Date:** 2026-05-13 (updated 2026-05-14)
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).
+>
+> **Recent changes reflected in this version:**
+> - Thinking/reasoning interleaved as Org blocks before stream text
+> - Tool rendering refactored out of `stream-text` into separate Org sub-headlines
+> - Approval choices fixed to canonical `once`/`session`/`always`/`deny`
 
 ---
 
@@ -67,15 +72,15 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 | 4 | `message.start` | **Handled** | `turnController.startMessage()` — resets turn state, sets `busy=true` | Emacs: creates empty `hermes-stream`, resets ephemeral UI state. |
 | 5 | `message.delta` | **Handled** | `turnController.recordMessageDelta()` — accumulates text, prunes trails, schedules batched flush | Emacs: appends text to `hermes-stream-text`. |
 | 6 | `message.complete` | **Handled** | `turnController.recordMessageComplete()` — closes reasoning, dedupes inline diffs, archives todos, builds final segments, archives spawn tree, appends transcript, rings bell, updates usage, resets turn state | Emacs: commits `hermes-stream` → `hermes-message`, appends to messages vector, clears stream. No diff dedupe, no todo archive, no spawn-tree persistence, no usage merge. |
-| 7 | `thinking.delta` | **Handled** | Sets status, forwards to `recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-thinking`. |
-| 8 | `reasoning.delta` | **Handled** | `turnController.recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-reasoning`. |
-| 9 | `reasoning.available` | **Declared but no-op** | `turnController.recordReasoningAvailable()` — initializes reasoning block before deltas | Emacs: **no reducer case**. Event is received but does not update state. |
+| 7 | `thinking.delta` | **Handled** | Sets status, forwards to `recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-thinking`; renderer inserts/updates `#+begin_example Thinking` block before text region. |
+| 8 | `reasoning.delta` | **Handled** | `turnController.recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-reasoning`; renderer inserts/updates `#+begin_example Reasoning` block before text region. |
+| 9 | `reasoning.available` | **Declared but no-op** | `turnController.recordReasoningAvailable()` — initializes reasoning block before deltas | Emacs: **no reducer case**. Event is received but does not update state. Thinking/reasoning blocks render via `thinking.delta`/`reasoning.delta` reducers only. |
 | 10 | `status.update` | **Handled** | Sets status text; if `kind` is compressing/goal, emits system line; else pushes activity item (capped at 8), restores default after 4000ms | Emacs: sets `status-text` and `status-kind` in ephemeral UI state. No activity feed, no auto-restore. |
-| 11 | `tool.generating` | **Handled** | Pushes transient trail line "drafting X…" into `turnTrail` | Emacs: adds tool to `stream.tools` with status `generating`. |
-| 12 | `tool.start` | **Missing** | Flushes streaming segment, closes reasoning, records todos, adds tool to `activeTools`, updates tool-token accumulator | Emacs: **no reducer case, no renderer case**. |
+| 11 | `tool.generating` | **Handled** | Pushes transient trail line "drafting X…" into `turnTrail` | Emacs: adds tool to `stream.tools` with status `generating`. Renderer inserts `*** tool (running…)` sub-headline after text region. |
+| 12 | `tool.start` | **Missing** | Flushes streaming segment, closes reasoning, records todos, adds tool to `activeTools`, updates tool-token accumulator | Emacs: **no reducer case, no renderer case**. Status stays `generating` until `tool.complete`. |
 | 13 | `tool.progress` | **Partial** | Updates `activeTool.context`, throttles UI refresh to `STREAM_BATCH_MS` | Emacs: stores preview in ephemeral `tool-previews` alist. **Renderer never reads it** — dead state. |
-| 14 | `tool.complete` | **Handled** | Removes from `activeTools`, builds final trail line, flushes into segments, handles `inline_diff`, handles `todos`, updates `turnTrail` | Emacs: updates tool status/output/error/duration in `stream.tools`. **Ignores `inline_diff` and `todos`**. |
-| 15 | `approval.request` | **Handled** | Patches `overlayStore.approval`, sets status="approval needed" | Emacs: sets `pending` to `hermes-pending` with kind `approval`. `hermes-prompts.el` handles the minibuffer prompt. |
+| 14 | `tool.complete` | **Handled** | Removes from `activeTools`, builds final trail line, flushes into segments, handles `inline_diff`, handles `todos`, updates `turnTrail` | Emacs: updates tool status/output/error/duration in `stream.tools`. Renderer rewrites tool sub-headline with final status + output/error. **Ignores `inline_diff` and `todos`**. Tool text is **not** interleaved into `stream-text` anymore (refactored 2026-05-14). |
+| 15 | `approval.request` | **Handled** | Patches `overlayStore.approval`, sets status="approval needed" | Emacs: sets `pending` to `hermes-pending` with kind `approval`. `hermes-prompts.el` handles the minibuffer prompt with canonical choices `once`/`session`/`always`/`deny` (fixed 2026-05-14). |
 | 16 | `clarify.request` | **Handled** | Patches `overlayStore.clarify`, sets status="waiting for input…" | Emacs: sets `pending` with kind `clarify`. Minibuffer handler dispatches `clarify.respond`. |
 | 17 | `sudo.request` | **Handled** | Patches `overlayStore.sudo`, sets status="sudo password needed" | Emacs: sets `pending` with kind `sudo`. Minibuffer handler dispatches `sudo.respond`. |
 | 18 | `secret.request` | **Handled** | Patches `overlayStore.secret`, sets status="secret input needed" | Emacs: sets `pending` with kind `secret`. Minibuffer handler dispatches `secret.respond`. |
@@ -243,6 +248,17 @@ The TUI splits state across **three nanostore atoms** plus local React state.
   (tool-previews nil))  ; alist tool-id → preview string (dead state)
 ```
 
+#### Message State (`hermes-message`)
+```elisp
+(cl-defstruct (hermes-message (:copier hermes-message-copy))
+  kind        ; 'user | 'assistant | 'system
+  text        ; raw markdown for assistant / plain for user / status text
+  thinking    ; accumulated thinking text (assistant only)
+  reasoning   ; accumulated reasoning text (assistant only)
+  tools       ; vector of hermes-tool (the trail)
+  usage timestamp)
+```
+
 #### Stream State (`hermes-stream`)
 ```elisp
 (cl-defstruct hermes-stream
@@ -381,10 +397,12 @@ const answerApproval = useCallback(
 )
 ```
 
-### 4.4 Emacs Frontend (`hermes-prompts.el:61-80`)
+### 4.4 Emacs Frontend (`hermes-prompts.el:61-80`) — Fixed 2026-05-14
 
 ```elisp
 (defun hermes--prompt-approval (sid rid payload)
+  "Ask the user to allow/deny a tool call, then dispatch `approval.respond'.
+Canonical choices match the TUI: once, session, always, deny."
   (let* ((cmd (hermes--prompts-get payload "command"))
          (desc (hermes--prompts-get payload "description"))
          (prompt (format "Approve%s%s? "
@@ -393,27 +411,31 @@ const answerApproval = useCallback(
          (choice (condition-case _
                      (read-multiple-choice
                       prompt
-                      '((?y "yes" "allow this once")
-                        (?a "all" "allow this and similar in this session")
-                        (?n "no"  "deny")))
+                      '((?o "once"    "allow this single invocation")
+                        (?s "session" "allow for this session")
+                        (?a "always"  "allowlist this pattern permanently")
+                        (?n "no"      "deny")))
                    (quit '(?n "no" "deny"))))
          (key (car choice))
-         (resp (pcase key (?y "allow") (?a "allow") (_ "deny"))))
+         (resp (pcase key
+                 (?o "once")
+                 (?s "session")
+                 (?a "always")
+                 (_  "deny"))))
     (hermes-rpc-request
      "approval.respond"
-     (list :session_id sid :request_id rid :choice resp
-           :all (if (eq key ?a) t :false)))))
+     (list :session_id sid :request_id rid :choice resp))))
 ```
 
 ### 4.5 Approval Gap Analysis
 
-| Issue | Detail | Severity |
-|-------|--------|----------|
-| **Non-canonical choice values** | Sends `"allow"` instead of `"once"` / `"session"` | **High** — backend accepts it but does not distinguish `once` from `session` |
-| **Missing `always` choice** | No way to permanently allowlist a pattern | **High** — requires switching to CLI |
-| **`all` param semantics** | `all: true` with `"allow"` approximates `session`, but is ambiguous | **Medium** |
-| **No `outcome` tracking** | Turn state does not record approval outcome | Low |
-| **Minibuffer UX** | `read-multiple-choice` with `?y/?a/?n` is fine, but `?o` for once and `?s` for session would match TUI keybindings | Low |
+| Issue | Detail | Severity | Status |
+|-------|--------|----------|--------|
+| ~~Non-canonical choice values~~ | ~~Sends `"allow"` instead of `"once"` / `"session"`~~ | ~~**High**~~ | **Fixed 2026-05-14** |
+| ~~Missing `always` choice~~ | ~~No way to permanently allowlist a pattern~~ | ~~**High**~~ | **Fixed 2026-05-14** |
+| ~~`all` param semantics~~ | ~~`all: true` with `"allow"` approximates `session`, but is ambiguous~~ | ~~**Medium**~~ | **Fixed 2026-05-14** — `all` param removed entirely |
+| **No `outcome` tracking** | Turn state does not record approval outcome | Low | Open |
+| **Minibuffer UX** | `read-multiple-choice` with `?o/?s/?a/?n` matches TUI keybindings | Low | Fixed 2026-05-14 |
 
 ---
 
@@ -461,21 +483,24 @@ The TUI renders tools through `turnController`:
 
 Tools appear inline in the transcript as collapsible segments.
 
-### 5.3 Emacs Tool Rendering
+### 5.3 Emacs Tool Rendering (Refactored 2026-05-14)
 
-Emacs renders tools as **Org subtrees** in the buffer:
-- `tool.generating` → inserts `** <name> (running…)` subtree at point-max
-- `tool.progress` → stored in `hermes-ui-state-tool-previews` but **never rendered**
-- `tool.complete` → rewrites subtree with status, output/error, duration
+**Before:** Tools were interleaved into `stream-text` as plain text (`-> running name\n`, `-> done name (0.5s)\n`). This polluted the assistant's prose and broke the stable/unstable split.
 
-The renderer (`hermes-render.el:243-323`) uses markers (`hermes--stream-tool-markers`) to locate and rewrite tool subtrees in place.
+**After:** Tools are rendered as **separate Org sub-headlines** after the text region, independent of `stream-text`:
+- `tool.generating` → reducer adds tool to `stream.tools`; renderer inserts `*** name (running…)` sub-headline after `stream-end`
+- `tool.complete` → reducer updates tool status/output/error/duration; renderer rewrites the sub-headline with final status + `#+begin_example` output/error block
+- `hermes--stream-tools-marker` tracks the start of the tool blocks region for replacement
+- `hermes--update-tool-views` formats the entire `stream.tools` vector and inserts it after the text region
+
+This follows the same model as thinking/reasoning blocks: **state holds the data, renderer owns the visual representation**.
 
 ### 5.4 Tool Pipeline Gaps
 
 | Issue | Detail | Severity |
 |-------|--------|----------|
 | **Missing `tool.start`** | No `running` status transition, no todo capture, no segment flush | **High** |
-| **Dead `tool.progress` state** | Previews stored but never rendered | **Medium** |
+| **Dead `tool.progress` state** | Previews stored in `tool-previews` but never rendered | **Medium** |
 | **No `inline_diff` support** | Diffs from `tool.complete` ignored | **Medium** |
 | **No `todos` support** | Todo lists from tool results lost | **Low** |
 | **No `tool.started` event** | This is a Python-side event type that maps to `tool.progress` emission | N/A |
@@ -671,25 +696,45 @@ Emacs only has **queue** mode:
 
 ## 11. Implementation Plan
 
-### Phase 1 — Critical Fixes (Approvals + Tool Start + Error Reset)
+### Phase 0 — Thinking/Reasoning + Tool Rendering Refactor (Completed 2026-05-14)
 
-**Files:** `hermes-events.el`, `hermes-state.el`, `hermes-prompts.el`, `hermes-render.el`
+**Files:** `hermes-state.el`, `hermes-render.el`, `hermes-prompts.el`
 
-1. **Fix approval choices**
-   - Change `hermes--prompt-approval` to offer: `once`, `session`, `always`, `deny`
-   - Map to canonical choice strings: `"once"`, `"session"`, `"always"`, `"deny"`
-   - Remove `all` param ambiguity
-   - Add quick-keys: `?o` (once), `?s` (session), `?a` (always), `?n`/`?d` (deny), `?q`/`C-g` (deny)
+1. **Add thinking/reasoning to committed messages**
+   - Added `thinking` and `reasoning` slots to `hermes-message`
+   - `message.complete` reducer commits them alongside `text`
 
-2. **Add `tool.start` event handling**
+2. **Interleave thinking/reasoning as Org blocks**
+   - `hermes--format-thinking-block` — returns `#+begin_example Thinking/Reasoning` blocks
+   - `hermes--insert-before-text` — inserts before text region, advances markers
+   - `hermes--update-thinking-block` — inserts, updates, or removes block on delta changes
+   - `hermes--stream-thinking-marker` tracks block start
+   - Defensive `(max 0 ...)` guards in `hermes--rewrite-stream` prevent negative offsets
+
+3. **Refactor tool rendering out of stream-text**
+   - Removed tool text interleaving from reducer (`-> running name`, `-> done name`)
+   - `hermes--format-tool` / `hermes--format-tools-block` — render tools as `*** name (status)` Org sub-headlines
+   - `hermes--update-tool-views` — renders tool vector after text region
+   - `hermes--stream-tools-marker` tracks tool blocks start
+
+4. **Fix approval choices**
+   - Changed to canonical `once`/`session`/`always`/`deny`
+   - Removed ambiguous `all` param
+   - Quick-keys: `?o` (once), `?s` (session), `?a` (always), `?n` (deny)
+
+### Phase 1 — Critical Fixes (Tool Start + Error Reset + Reasoning.available)
+
+**Files:** `hermes-events.el`, `hermes-state.el`, `hermes-render.el`
+
+1. **Add `tool.start` event handling**
    - Add `"tool.start"` to `hermes-events-incoming`
    - Add reducer case: transition tool status `generating` → `running`, capture context/todos
    - Add renderer case: rewrite tool subtree with running status + context drawer
 
-3. **Add `reasoning.available` reducer**
+2. **Add `reasoning.available` reducer**
    - Initialize reasoning block when `reasoning.available` arrives before `reasoning.delta`
 
-4. **Fix `error` turn reset**
+3. **Fix `error` turn reset**
    - In persistent reducer: when `"error"` arrives, if `stream` is non-nil, commit or discard it and reset queue drain
    - In UI reducer: clear `tool-previews`, reset `status-text`
 

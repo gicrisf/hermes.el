@@ -46,6 +46,9 @@ the property drawer is not counted as stream text.")
 (defvar-local hermes--stream-thinking-marker nil
   "Marker at the start of the thinking block, or nil if none.")
 
+(defvar-local hermes--stream-tools-marker nil
+  "Marker at the start of the tool blocks region, or nil if no tools.")
+
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
@@ -193,14 +196,12 @@ All existing stream markers are pushed forward by the length of CONTENT."
     (set-marker hermes--stream-content-start
                 (+ (marker-position hermes--stream-content-start)
                    (length content)))
-    ;; Advance markers that should follow inserted text.
+    ;; stable-end has insertion-type nil so it stays put during the
+    ;; insert; we must manually advance it.  stream-end has type t
+    ;; and auto-advances — do NOT touch it here.
     (when (markerp hermes--stream-stable-end)
       (set-marker hermes--stream-stable-end
                   (+ (marker-position hermes--stream-stable-end)
-                     (length content))))
-    (when (markerp hermes--stream-end)
-      (set-marker hermes--stream-end
-                  (+ (marker-position hermes--stream-end)
                      (length content))))))
 
 ;;;; Stream lifecycle
@@ -254,13 +255,15 @@ All existing stream markers are pushed forward by the length of CONTENT."
                     hermes--stream-end
                     hermes--stream-content-start
                     hermes--stream-headline-marker
-                    hermes--stream-thinking-marker))
+                    hermes--stream-thinking-marker
+                    hermes--stream-tools-marker))
     (when (markerp m) (set-marker m nil)))
   (setq hermes--stream-stable-end nil
         hermes--stream-end nil
         hermes--stream-content-start nil
         hermes--stream-headline-marker nil
-        hermes--stream-thinking-marker nil))
+        hermes--stream-thinking-marker nil
+        hermes--stream-tools-marker nil))
 
 (defun hermes--stream-update (old-stream new-stream)
   "Reflect OLD-STREAM → NEW-STREAM into the buffer."
@@ -273,12 +276,16 @@ All existing stream markers are pushed forward by the length of CONTENT."
          (old-thinking (and old-stream (hermes-stream-thinking old-stream)))
          (new-thinking (hermes-stream-thinking new-stream))
          (old-reasoning (and old-stream (hermes-stream-reasoning old-stream)))
-         (new-reasoning (hermes-stream-reasoning new-stream)))
+         (new-reasoning (hermes-stream-reasoning new-stream))
+         (old-tools (and old-stream (hermes-stream-tools old-stream)))
+         (new-tools (hermes-stream-tools new-stream)))
     (unless (equal old-text new-text)
       (hermes--rewrite-stream new-text))
     (unless (and (equal old-thinking new-thinking)
                  (equal old-reasoning new-reasoning))
-      (hermes--update-thinking-block new-thinking new-reasoning))))
+      (hermes--update-thinking-block new-thinking new-reasoning))
+    (unless (eq old-tools new-tools)
+      (hermes--update-tool-views new-tools))))
 
 (defun hermes--rewrite-stream (text)
   "Place TEXT into the in-flight region using a stable/unstable split.
@@ -287,14 +294,14 @@ Stable prefix is converted from markdown and appended at
 replaces only the old unstable characters — tools that sit beyond
 `hermes--stream-end' are left untouched."
   (let* ((boundary (hermes--stable-boundary text))
-         (already  (- (marker-position hermes--stream-stable-end)
-                       (marker-position hermes--stream-content-start)))
+         (already  (max 0 (- (marker-position hermes--stream-stable-end)
+                             (marker-position hermes--stream-content-start))))
          (stable   (substring text 0 boundary))
          (unstable (substring text boundary))
          (new-stable-substring (substring stable already))
          (old-unstable-len
-          (- (marker-position hermes--stream-end)
-             (marker-position hermes--stream-stable-end))))
+          (max 0 (- (marker-position hermes--stream-end)
+                    (marker-position hermes--stream-stable-end)))))
     ;; TODO: remove debug log after tool pipeline is stable
     (message "[hermes] rewrite: text=%S boundary=%d already=%d del=%d"
              (substring text 0 (min 120 (length text)))
@@ -355,29 +362,101 @@ is removed."
             have-content)
        (let* ((beg (marker-position hermes--stream-thinking-marker))
               (end (marker-position hermes--stream-content-start))
-              (block (hermes--format-thinking-block thinking reasoning)))
+              (old-len (- end beg))
+              (block (hermes--format-thinking-block thinking reasoning))
+              (new-len (length block))
+              (delta (- new-len old-len)))
          (goto-char beg)
          (delete-region beg end)
          (insert block)
-         ;; Re-anchor the marker at the start of the block.
-         (set-marker hermes--stream-thinking-marker beg)
-         (set-marker hermes--stream-content-start (+ beg (length block)))))
+          ;; Re-anchor the marker at the start of the block.
+          (set-marker hermes--stream-thinking-marker beg)
+          (set-marker hermes--stream-content-start (+ beg new-len))
+          ;; After delete+insert, stable-end sits at `beg' (insertion-type
+          ;; nil).  Snap it forward to the new content-start so the
+          ;; stable region remains consistent.
+          (when (markerp hermes--stream-stable-end)
+            (set-marker hermes--stream-stable-end
+                        (marker-position hermes--stream-content-start)))))
       ;; Block exists but content is now empty → remove.
       ((and (markerp hermes--stream-thinking-marker)
             (marker-position hermes--stream-thinking-marker)
             (not have-content))
        (let* ((beg (marker-position hermes--stream-thinking-marker))
-              (end (marker-position hermes--stream-content-start))
-              (len (- end beg)))
+              (end (marker-position hermes--stream-content-start)))
+         ;; Deletion automatically shifts markers after the region;
+         ;; do NOT manually adjust them again.
          (delete-region beg end)
-         (when (markerp hermes--stream-stable-end)
-           (set-marker hermes--stream-stable-end
-                       (- (marker-position hermes--stream-stable-end) len)))
-         (when (markerp hermes--stream-end)
-           (set-marker hermes--stream-end
-                       (- (marker-position hermes--stream-end) len)))
          (set-marker hermes--stream-thinking-marker nil)
          (setq hermes--stream-thinking-marker nil))))))
+
+;;;; Tool rendering
+
+(defun hermes--format-tool (tool)
+  "Return an Org block string for a single TOOL."
+  (let* ((name (or (hermes-tool-name tool) "tool"))
+         (status (hermes-tool-status tool))
+         (dur (hermes-tool-duration tool))
+         (output (hermes-tool-output tool))
+         (err (hermes-tool-error tool))
+         (status-label (pcase status
+                         ('generating "running…")
+                         ('running "running…")
+                         ('complete (if dur (format "%.1fs" dur) "done"))
+                         ('error "error")
+                         (_ (format "%s" status)))))
+    (concat (format "*** %s (%s)\n" name status-label)
+            (cond
+             (err (format "#+begin_example\n%s\n#+end_example\n" err))
+             (output (format "#+begin_example\n%s\n#+end_example\n" output))
+             (t "")))))
+
+(defun hermes--format-tools-block (tools)
+  "Format TOOLS (vector of hermes-tool) as Org blocks.
+Returns the empty string if TOOLS is empty."
+  (let ((n (length tools)))
+    (if (= n 0)
+        ""
+      (let (parts)
+        (dotimes (i n)
+          (push (hermes--format-tool (aref tools i)) parts))
+        (apply #'concat (nreverse parts))))))
+
+(defun hermes--insert-after-text (content)
+  "Insert CONTENT after the text region, keeping `hermes--stream-end'
+at the text/tool boundary."
+  (when (and content (> (length content) 0)
+             (markerp hermes--stream-end)
+             (marker-position hermes--stream-end))
+    (let ((boundary (marker-position hermes--stream-end)))
+      (goto-char (point-max))
+      (insert content)
+      ;; stream-end may have auto-advanced if we inserted at its
+      ;; position; snap it back to the boundary.
+      (set-marker hermes--stream-end boundary))))
+
+(defun hermes--update-tool-views (tools)
+  "Render TOOLS as Org blocks after the text region."
+  (let ((block (hermes--format-tools-block tools)))
+    ;; Remove any existing tool blocks first.
+    (when (markerp hermes--stream-tools-marker)
+      (let* ((beg (marker-position hermes--stream-tools-marker))
+             (end (or (and (markerp hermes--stream-end)
+                           (marker-position hermes--stream-end))
+                      (point-max))))
+        (when (> end beg)
+          (delete-region beg end)))
+      (set-marker hermes--stream-tools-marker nil)
+      (setq hermes--stream-tools-marker nil))
+    ;; Insert new tool blocks if any.
+    (when (> (length block) 0)
+      (let ((boundary (marker-position hermes--stream-end)))
+        (goto-char (point-max))
+        (insert block)
+        (setq hermes--stream-tools-marker (copy-marker boundary))
+        (set-marker-insertion-type hermes--stream-tools-marker nil)
+        ;; Keep stream-end at the text boundary.
+        (set-marker hermes--stream-end boundary)))))
 
 ;;; Header line
 

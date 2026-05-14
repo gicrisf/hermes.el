@@ -74,17 +74,17 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 | 6 | `message.complete` | **Handled** | `turnController.recordMessageComplete()` — closes reasoning, dedupes inline diffs, archives todos, builds final segments, archives spawn tree, appends transcript, rings bell, updates usage, resets turn state | Emacs: commits `hermes-stream` → `hermes-message`, appends to messages vector, clears stream. No diff dedupe, no todo archive, no spawn-tree persistence, no usage merge. |
 | 7 | `thinking.delta` | **Handled** | Sets status, forwards to `recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-thinking`; renderer inserts/updates `#+begin_example Thinking` block before text region. |
 | 8 | `reasoning.delta` | **Handled** | `turnController.recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-reasoning`; renderer inserts/updates `#+begin_example Reasoning` block before text region. |
-| 9 | `reasoning.available` | **Declared but no-op** | `turnController.recordReasoningAvailable()` — initializes reasoning block before deltas | Emacs: **no reducer case**. Event is received but does not update state. Thinking/reasoning blocks render via `thinking.delta`/`reasoning.delta` reducers only. |
+| 9 | `reasoning.available` | **Handled** | `turnController.recordReasoningAvailable()` — initializes reasoning block before deltas | Emacs: reducer initializes `stream.reasoning` so the renderer can insert the block before deltas arrive. |
 | 10 | `status.update` | **Handled** | Sets status text; if `kind` is compressing/goal, emits system line; else pushes activity item (capped at 8), restores default after 4000ms | Emacs: sets `status-text` and `status-kind` in ephemeral UI state. No activity feed, no auto-restore. |
 | 11 | `tool.generating` | **Handled** | Pushes transient trail line "drafting X…" into `turnTrail` | Emacs: adds tool to `stream.tools` with status `generating`. Renderer inserts `*** tool (running…)` sub-headline after text region. |
-| 12 | `tool.start` | **Missing** | Flushes streaming segment, closes reasoning, records todos, adds tool to `activeTools`, updates tool-token accumulator | Emacs: **no reducer case, no renderer case**. Status stays `generating` until `tool.complete`. |
+| 12 | `tool.start` | **Handled** | Flushes streaming segment, closes reasoning, records todos, adds tool to `activeTools`, updates tool-token accumulator | Emacs: reducer transitions tool status `generating` → `running`, stores `context`. Renderer rewrites tool block with running status + context drawer. |
 | 13 | `tool.progress` | **Partial** | Updates `activeTool.context`, throttles UI refresh to `STREAM_BATCH_MS` | Emacs: stores preview in ephemeral `tool-previews` alist. **Renderer never reads it** — dead state. |
 | 14 | `tool.complete` | **Handled** | Removes from `activeTools`, builds final trail line, flushes into segments, handles `inline_diff`, handles `todos`, updates `turnTrail` | Emacs: updates tool status/output/error/duration in `stream.tools`. Renderer rewrites tool sub-headline with final status + output/error. **Ignores `inline_diff` and `todos`**. Tool text is **not** interleaved into `stream-text` anymore (refactored 2026-05-14). |
 | 15 | `approval.request` | **Handled** | Patches `overlayStore.approval`, sets status="approval needed" | Emacs: sets `pending` to `hermes-pending` with kind `approval`. `hermes-prompts.el` handles the minibuffer prompt with canonical choices `once`/`session`/`always`/`deny` (fixed 2026-05-14). |
 | 16 | `clarify.request` | **Handled** | Patches `overlayStore.clarify`, sets status="waiting for input…" | Emacs: sets `pending` with kind `clarify`. Minibuffer handler dispatches `clarify.respond`. |
 | 17 | `sudo.request` | **Handled** | Patches `overlayStore.sudo`, sets status="sudo password needed" | Emacs: sets `pending` with kind `sudo`. Minibuffer handler dispatches `sudo.respond`. |
 | 18 | `secret.request` | **Handled** | Patches `overlayStore.secret`, sets status="secret input needed" | Emacs: sets `pending` with kind `secret`. Minibuffer handler dispatches `secret.respond`. |
-| 19 | `error` | **Handled** | `turnController.recordError()` — resets turn state, pushes activity, checks for "No provider" to show setup overlay, logs to system | Emacs: appends system message. **Does not reset stream or turn state**. Queue drain may deadlock. |
+| 19 | `error` | **Handled** | `turnController.recordError()` — resets turn state, pushes activity, checks for "No provider" to show setup overlay, logs to system | Emacs: commits in-flight stream as partial assistant message, appends error system message, clears stream. UI reducer clears `tool-previews` and `status-text`. |
 | 20 | `gateway.stderr` | **Missing** | Pushes stderr line as activity item in turn feed (clipped to 120 chars) | Emacs: only surfaces via `hermes-rpc-stderr-functions` hook (default: `*hermes-log*`). Never in chat buffer. |
 | 21 | `gateway.start_timeout` | **Missing** | Sets error status, pushes error activity, surfaces up to 8 stderr tail lines | Emacs: no handler. |
 | 22 | `gateway.protocol_error` | **Missing** | Sets warning status, pushes one-time "protocol noise" activity, shows truncated preview | Emacs: parse failures go to `hermes-rpc-protocol-error-functions` with `message` call only. |
@@ -722,21 +722,21 @@ Emacs only has **queue** mode:
    - Removed ambiguous `all` param
    - Quick-keys: `?o` (once), `?s` (session), `?a` (always), `?n` (deny)
 
-### Phase 1 — Critical Fixes (Tool Start + Error Reset + Reasoning.available)
+### Phase 1 — Critical Fixes (Tool Start + Error Reset + Reasoning.available) ✅ Completed
 
 **Files:** `hermes-events.el`, `hermes-state.el`, `hermes-render.el`
 
-1. **Add `tool.start` event handling**
-   - Add `"tool.start"` to `hermes-events-incoming`
-   - Add reducer case: transition tool status `generating` → `running`, capture context/todos
-   - Add renderer case: rewrite tool subtree with running status + context drawer
+1. **Add `tool.start` event handling** ✅
+   - Added `"tool.start"` to `hermes-events-incoming`
+   - Added reducer case: transition tool status `generating` → `running`, capture context
+   - Renderer rewrites tool subtree with running status + context drawer
 
-2. **Add `reasoning.available` reducer**
-   - Initialize reasoning block when `reasoning.available` arrives before `reasoning.delta`
+2. **Add `reasoning.available` reducer** ✅
+   - Initializes reasoning block when `reasoning.available` arrives before `reasoning.delta`
 
-3. **Fix `error` turn reset**
-   - In persistent reducer: when `"error"` arrives, if `stream` is non-nil, commit or discard it and reset queue drain
-   - In UI reducer: clear `tool-previews`, reset `status-text`
+3. **Fix `error` turn reset** ✅
+   - Persistent reducer: when `"error"` arrives, commits in-flight stream as partial assistant message, appends error system message, clears stream
+   - UI reducer: clears `tool-previews`, resets `status-text`
 
 ### Phase 2 — Tool Rendering Polish
 

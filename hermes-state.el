@@ -26,6 +26,7 @@
 (cl-defstruct (hermes-tool (:copier hermes-tool-copy))
   id name
   status      ; 'generating | 'running | 'complete | 'error
+  context     ; tool args preview from tool.start
   output error duration)
 
 (cl-defstruct (hermes-message (:copier hermes-message-copy))
@@ -220,17 +221,28 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                    (setf (hermes-stream-thinking ns)
                          (concat (hermes-stream-thinking old-stream)
                                  chunk)))))))
-      ("reasoning.delta"
-       (let ((old-stream (or (hermes-state-stream state)
-                             (make-hermes-stream :text "" :thinking ""
-                                                 :reasoning "" :tools [])))
-             (chunk (or (hermes--get p "text") "")))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-stream s)
-                 (hermes--with-copy old-stream hermes-stream-copy ns
-                   (setf (hermes-stream-reasoning ns)
-                         (concat (hermes-stream-reasoning old-stream)
-                                 chunk)))))))
+       ("reasoning.available"
+        ;; Initialize reasoning text before deltas arrive.
+        (let ((old-stream (or (hermes-state-stream state)
+                              (make-hermes-stream :text "" :thinking ""
+                                                  :reasoning "" :tools [])))
+              (text (or (hermes--get p "text") "")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-stream s)
+                  (hermes--with-copy old-stream hermes-stream-copy ns
+                    (when (string-empty-p (hermes-stream-reasoning old-stream))
+                      (setf (hermes-stream-reasoning ns) text)))))))
+       ("reasoning.delta"
+        (let ((old-stream (or (hermes-state-stream state)
+                              (make-hermes-stream :text "" :thinking ""
+                                                  :reasoning "" :tools [])))
+              (chunk (or (hermes--get p "text") "")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-stream s)
+                  (hermes--with-copy old-stream hermes-stream-copy ns
+                    (setf (hermes-stream-reasoning ns)
+                          (concat (hermes-stream-reasoning old-stream)
+                                  chunk)))))))
        ("message.complete"
         ;; Commit stream → messages.
         (let ((str (hermes-state-stream state)))
@@ -249,32 +261,57 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                       (hermes--vector-append (hermes-state-messages state) msg)
                       (hermes-state-stream s) nil))))))
       ;;; --- Tools ---------------------------------------------------------
-       ("tool.generating"
-        ;; tool.generating means a tool has been selected and is about to run.
-        ;; Add it to stream.tools if not already present.  Drop if no stream
-        ;; (edge case #2: turnController.ts:620-645).
-        (let ((str (hermes-state-stream state))
-              (tid (or (hermes--get p "tool_id")
-                       (hermes--get p "id")
-                       (hermes--get p "name")))
-              (tname (hermes--get p "name")))
-          (if (or (null str) (null tid))
-              state
-            (let* ((tools (hermes-stream-tools str))
-                   (already (cl-some (lambda (tl)
-                                       (equal tid (hermes-tool-id tl)))
-                                     (append tools nil))))
-              (if already
-                  state
-                (let ((tool (make-hermes-tool :id tid :name tname
-                                              :status 'generating)))
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-tools ns)
-                                  (hermes--vector-append tools tool))
-                            ns)))))))))
-       ("tool.complete"
+        ("tool.generating"
+         ;; tool.generating means a tool has been selected and is about to run.
+         ;; Add it to stream.tools if not already present.  Drop if no stream
+         ;; (edge case #2: turnController.ts:620-645).
+         (let ((str (hermes-state-stream state))
+               (tid (or (hermes--get p "tool_id")
+                        (hermes--get p "id")
+                        (hermes--get p "name")))
+               (tname (hermes--get p "name")))
+           (if (or (null str) (null tid))
+               state
+             (let* ((tools (hermes-stream-tools str))
+                    (already (cl-some (lambda (tl)
+                                        (equal tid (hermes-tool-id tl)))
+                                      (append tools nil))))
+               (if already
+                   state
+                 (let ((tool (make-hermes-tool :id tid :name tname
+                                               :status 'generating)))
+                   (hermes--with-copy state hermes-state-copy s
+                     (setf (hermes-state-stream s)
+                           (hermes--with-copy str hermes-stream-copy ns
+                             (setf (hermes-stream-tools ns)
+                                   (hermes--vector-append tools tool))
+                             ns)))))))))
+        ("tool.start"
+         ;; tool.start means execution has actually begun.
+         ;; Transition the matching tool from generating → running.
+         (let ((str (hermes-state-stream state))
+               (tid (hermes--get p "tool_id"))
+               (ctx (hermes--get p "context")))
+           (if (or (null str) (null tid))
+               state
+             (let* ((tools (hermes-stream-tools str))
+                    (idx (cl-position-if
+                          (lambda (tl) (equal tid (hermes-tool-id tl)))
+                          tools)))
+               (if (null idx)
+                   state
+                 (let* ((old-tool (aref tools idx))
+                        (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                                   (setf (hermes-tool-status nt) 'running
+                                         (hermes-tool-context nt) ctx)))
+                        (new-tools (copy-sequence tools)))
+                   (aset new-tools idx new-tool)
+                   (hermes--with-copy state hermes-state-copy s
+                     (setf (hermes-state-stream s)
+                           (hermes--with-copy str hermes-stream-copy ns
+                             (setf (hermes-stream-tools ns) new-tools)
+                             ns)))))))))
+        ("tool.complete"
         (let* ((str (hermes-state-stream state))
               (tid (or (hermes--get p "tool_id")
                        (hermes--get p "id")
@@ -352,16 +389,39 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
            (hermes--with-copy state hermes-state-copy s
              (setf (hermes-state-pending s) nil))
          state))
-      ;;; --- Errors --------------------------------------------------------
-      ("error"
-       (let ((text (ansi-color-apply
-                    (or (hermes--get p "message") "(unknown error)"))))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message :kind 'system :text text
-                                       :timestamp (current-time)))))))
+       ;;; --- Errors --------------------------------------------------------
+       ("error"
+        ;; Commit any in-flight stream so the partial response is not lost,
+        ;; then append the error as a system message.  This mirrors the TUI's
+        ;; recordError() → idle() path which resets turn state.
+        (let ((text (ansi-color-apply
+                     (or (hermes--get p "message") "(unknown error)")))
+              (str (hermes-state-stream state)))
+          (if (null str)
+              ;; No stream in flight — just append the error.
+              (hermes--with-copy state hermes-state-copy s
+                (setf (hermes-state-messages s)
+                      (hermes--vector-append
+                       (hermes-state-messages state)
+                       (make-hermes-message :kind 'system :text text
+                                            :timestamp (current-time)))))
+            ;; Stream is live: commit it as a partial assistant message,
+            ;; then append the error.
+            (let ((msg (make-hermes-message
+                        :kind 'assistant
+                        :text (hermes-stream-text str)
+                        :thinking (hermes-stream-thinking str)
+                        :reasoning (hermes-stream-reasoning str)
+                        :tools (hermes-stream-tools str)
+                        :usage nil
+                        :timestamp (current-time))))
+              (hermes--with-copy state hermes-state-copy s
+                (setf (hermes-state-messages s)
+                      (hermes--vector-append
+                       (hermes--vector-append (hermes-state-messages state) msg)
+                       (make-hermes-message :kind 'system :text text
+                                            :timestamp (current-time)))
+                      (hermes-state-stream s) nil))))))
       ;;; --- Pass-through (no-op for M2) -----------------------------------
       (_ state))))
 
@@ -384,30 +444,39 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
        (hermes--with-copy state hermes-ui-state-copy s
          (setf (hermes-ui-state-status-text s) nil
                (hermes-ui-state-tool-previews s) nil)))
-      ("tool.generating"
-       (let ((name (hermes--get p "name")))
-         (hermes--with-copy state hermes-ui-state-copy s
-           (setf (hermes-ui-state-status-text s)
-                 (format "Running %s…" (or name "tool"))))))
-      ("tool.progress"
-       (let ((tid (hermes--get p "tool_id"))
-             (preview (hermes--get p "preview")))
-         (if (null tid)
-             state
-           (hermes--with-copy state hermes-ui-state-copy s
-             (setf (hermes-ui-state-tool-previews s)
-                   (cons (cons tid preview)
-                         (assoc-delete-all
-                          tid (hermes-ui-state-tool-previews state))))))))
-      ("tool.complete"
-       (let ((tid (hermes--get p "tool_id")))
-         (if (null tid)
-             state
-           (hermes--with-copy state hermes-ui-state-copy s
-             (setf (hermes-ui-state-tool-previews s)
-                   (assoc-delete-all
-                    tid (hermes-ui-state-tool-previews state)))))))
-      (_ state))))
+       ("tool.generating"
+        (let ((name (hermes--get p "name")))
+          (hermes--with-copy state hermes-ui-state-copy s
+            (setf (hermes-ui-state-status-text s)
+                  (format "Running %s…" (or name "tool"))))))
+       ("tool.start"
+        (let ((name (hermes--get p "name")))
+          (hermes--with-copy state hermes-ui-state-copy s
+            (setf (hermes-ui-state-status-text s)
+                  (format "Running %s…" (or name "tool"))))))
+       ("tool.progress"
+        (let ((tid (hermes--get p "tool_id"))
+              (preview (hermes--get p "preview")))
+          (if (null tid)
+              state
+            (hermes--with-copy state hermes-ui-state-copy s
+              (setf (hermes-ui-state-tool-previews s)
+                    (cons (cons tid preview)
+                          (assoc-delete-all
+                           tid (hermes-ui-state-tool-previews state))))))))
+       ("tool.complete"
+        (let ((tid (hermes--get p "tool_id")))
+          (if (null tid)
+              state
+            (hermes--with-copy state hermes-ui-state-copy s
+              (setf (hermes-ui-state-tool-previews s)
+                    (assoc-delete-all
+                     tid (hermes-ui-state-tool-previews state)))))))
+       ("error"
+        (hermes--with-copy state hermes-ui-state-copy s
+          (setf (hermes-ui-state-status-text s) nil
+                (hermes-ui-state-tool-previews s) nil)))
+       (_ state))))
 
 (provide 'hermes-state)
 ;;; hermes-state.el ends here

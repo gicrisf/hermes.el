@@ -1,0 +1,2577 @@
+╭─── Claude Code v2.1.123 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│               Welcome back Giovanni!               │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Internal fixes          │
+│   Opus 4.7 · Claude Pro ·                          │ [VSCode] Fixed extensi… │
+│   giovanni.crisalfi@protonmail.com's Organization  │ Added `CLAUDE_CODE_ENA… │
+│               ~/Projects/emacs-hermes              │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+❯ read the plan please                                                          
+
+  Read 1 file (ctrl+o to expand)
+
+● I've read the plan. It's a design doc for an Emacs ↔ Hermes TUI integration —
+  Emacs as a custom TUI speaking JSON-RPC 2.0 over stdio to Hermes's Python
+  backend, built around an Elm-style reducer architecture with an Org-mode
+  conversation buffer.
+
+  Key pieces:
+  - Approach: Emacs spawns python -m tui_gateway.entry, uses built-in
+  make-process + json-parse-string (no external deps)
+  - Architecture: single state plist, tagged-plist messages, reduce(state, msg) 
+  → new-state, diff-based renderer
+  - UI: Org buffer with foldable tool subtrees, stable-prefix/unstable-suffix
+  streaming
+  - Input: queue while busy, slash commands bypass queue, blocking prompts for
+  approval/clarify/secret
+  - 8 open questions at the end (streaming cadence, tool folding UX,
+  markdown→Org, multi-session UI, gateway lifecycle, config loading, approval
+  UX, interrupts)
+
+  Want me to start on any particular piece, or work through the open questions?
+
+✻ Worked for 11s
+
+❯ /model                                                                        
+  ⎿  Set model to Opus 4.7
+
+❯ This is just a draft based on an idea. I would like you to check each part    
+  through deepwiki. If you need to check the code directly, I just cloned here  
+  the whole hermes-agent repo. It's not a submodule, just a clone that works as 
+   reference for you                                                            
+
+  Listed 1 directory (ctrl+o to expand)
+
+  Listed 1 directory (ctrl+o to expand)
+
+● 3 Explore agents finished (ctrl+o to expand)
+   ├ Explore tui_gateway protocol · 0 tool uses
+   │ ⎿  Done
+   ├ Explore ui-tui reference impl · 0 tool uses
+   │ ⎿  Done
+   └ Verify MCP and ACP alternatives · 0 tool uses
+     ⎿  Done
+
+● Verification is in. The draft is largely correct in shape but has several
+  name/payload errors and missing pieces. Let me write a refined plan.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Plan written. The biggest takeaways: the draft's RPC method names need dotted
+  form (prompt.submit, approval.respond, etc.), the event envelope is wrapped
+  (params.type), tool.start is actually tool.generating, markdown is raw (not
+  HTML), and ACP actually does run the full loop — the missing piece is just an
+  Emacs ACP client.
+  ⎿  Tool use rejected
+
+● On the installation:
+  - For designing/writing the Elisp: source is enough — we already have the wire
+   protocol pinned down to file:line.
+  - For M1 verification onwards: you need a runnable gateway. The cleanest path
+  is pip install -e ./hermes-agent (or uv pip install -e .) in a venv so python 
+  -m tui_gateway.entry resolves with its deps. No need for a global install. Do
+  this before you start M1 testing, not now.
+
+  On reducer vs plumbing:
+  I'd discuss the reducer now, before writing M1. The plumbing (process spawn,
+  line buffer, id map) is ~80 lines of fairly mechanical glue — the decisions
+  are in the state shape, and those decisions ripple into both the renderer and
+  the input layer. Three things in particular benefit from being settled up
+  front:
+
+  1. State shape per session vs. global — plist or cl-defstruct? Mutable
+  buffer-local var or immutable + swap? The latter makes the diff renderer easy
+  but costs allocations on every delta.
+  2. Streaming text storage — keep the in-flight assistant text as a separate
+  slot (:stream) and only fold into :messages on message.complete, OR always
+  append to the last message and mark a :complete flag? The official TUI does
+  the former; it's cleaner for the stable/unstable split.
+  3. Tool entries — flat :active-tools list keyed by tool_id, or nested inside
+  the parent assistant message? Nesting matches the Org rendering, but means the
+   reducer mutates a message that's already in :messages.
+
+  Want to work through those three now, or do you have a different cut of the
+  reducer you want to start from?
+
+✻ Crunched for 3m 5s
+
+❯ Ok, let's discuss state shape. About the state shape, I think it would be     
+  better with a defstruct. Always go for immutable + swap: I want to keep the   
+  architecture purely functional in an Elm/TEA style. We can optimize the       
+  allocations by only updating deltas, in reality, instead of having a total    
+  reallocation everytime, but that will be done in a second phase as            
+  optimization. I'm thinking to an approach like zustand in js/react to emulate 
+   the clojure atoms. About the streaming, I would like to adhere as much as    
+  possible to what the official TUI does. Also, the state should be as closer   
+  as possible to the one we render in org, but we can talk about it             
+
+● Good calls all around. Here's a concrete state shape that follows TEA +
+  mirrors the official TUI's MessageLine[] + bufRef split, and maps 1:1 to the
+  Org buffer.
+
+  Proposed shape
+
+  (cl-defstruct hermes-state
+    connection      ; 'disconnected | 'connecting | 'connected
+    session-id      ; string or nil
+    session-info    ; plist: model, cwd, tools, skills, lazy
+    messages        ; vector of hermes-message — COMMITTED only
+    stream          ; hermes-stream or nil — the in-flight turn
+    pending         ; hermes-pending or nil — approval/clarify/secret/sudo
+    slash-catalog   ; result of commands.catalog
+    queue           ; list of queued user inputs
+    history         ; ring of past inputs
+    skin)           ; plist from gateway.ready
+
+  (cl-defstruct hermes-message
+    kind            ; 'user | 'assistant | 'system
+    text            ; raw markdown (assistant) / plain (user)
+    tools           ; vector of hermes-tool — the "trail" for this turn
+    usage           ; plist or nil
+    timestamp)
+
+  (cl-defstruct hermes-tool
+    id              ; tool_id from gateway
+    name            ; "bash", "read", ...
+    status          ; 'generating | 'running | 'complete | 'error
+    preview         ; latest progress text (during run)
+    output          ; final output (on complete)
+    error           ; string or nil
+    duration        ; seconds (on complete)
+    details-mode)   ; 'hidden | 'collapsed | 'expanded
+
+  (cl-defstruct hermes-stream
+    text            ; accumulated raw-markdown delta buffer (the "bufRef")
+    thinking        ; accumulated thinking.delta
+    reasoning       ; accumulated reasoning.delta
+    tools)          ; tools attached to THIS in-flight turn
+
+  (cl-defstruct hermes-pending
+    kind            ; 'approval | 'clarify | 'secret | 'sudo
+    request-id
+    payload)
+
+  Why this matches both your goals:
+
+  1. Mirrors the TUI: stream.text is the equivalent of turnController.bufRef. On
+   message.complete the reducer commits a fresh hermes-message (with text = 
+  stream.text, tools = stream.tools) into messages and sets stream back to nil.
+  That's exactly what the official TUI does (turnController.ts:525-537).
+  2. Maps to Org without translation: each hermes-message is one top-level
+  headline (* user / * assistant); each tools[i] is a nested ** tool: name (Xs)
+  subtree; the in-flight stream renders as a sentinel "** [streaming]" headline
+  at the end that gets replaced on every delta and removed/promoted on commit.
+  No intermediate representation.
+  3. Tools-during-streaming live on the stream, not on the previous message —
+  mirroring streamingAssistant tools={activeTools}
+  (ui-tui/src/streamingAssistant.tsx:50-61).
+
+  The store / dispatch layer
+
+  Buffer-local atom (one per session buffer):
+
+  (defvar-local hermes--state nil)
+
+  (defun hermes-dispatch (msg)
+    (let* ((old hermes--state)
+           (new (hermes--reduce old msg)))
+      (unless (eq old new)
+        (setq hermes--state new)
+        (run-hook-with-args 'hermes-state-change-hook old new))))
+
+  The process filter routes events to the right buffer by params.session_id,
+  then calls hermes-dispatch in that buffer. The renderer is a single hook
+  function (hermes--render old new) that diffs and emits Org edits.
+
+  For the verbose copy-* + setf dance, a tiny macro keeps reducer cases
+  readable:
+
+  (defmacro hermes--update (state &rest slot-vals)
+    "Return a copy of STATE with SLOT-VALS applied."
+    ...)
+
+  So message.delta becomes:
+  ('message.delta
+   (let ((s (or (hermes-state-stream state) (make-hermes-stream :text ""))))
+     (hermes--update state
+       :stream (hermes--update s :text (concat (hermes-stream-text s) text)))))
+
+  Three decisions to lock before I update the plan
+
+  (a) messages storage: vector vs list. Vector gives O(1) index access for the
+  renderer's "did message[N] change?" diff. List is cheaper to extend with cons.
+   We almost always append (never insert), and the renderer benefits from
+  indexed diffing → vector + vconcat to append. OK?
+
+  (b) Where do completed tools live after their turn commits? Two options:
+  - (b1) Inside the parent hermes-message.tools — natural for Org rendering, but
+   every tool update during streaming creates a copy of the message that
+  contains it. Solvable by keeping in-flight tools on stream only and freezing
+  into the message on commit.
+  - (b2) Flat global vector with parent-message-id — easier to update
+  mid-stream, but the renderer has to join. Doesn't match the org tree.
+  I'd go (b1) with tools-while-streaming on stream.tools (already in the shape
+  above). Agree?
+
+  (c) tool.progress updates: do they live in :preview only (overwrite each time)
+   or as an append-only log? Official TUI shows only the latest preview
+  (MessageLine re-renders tools prop on each progress). Overwrite. Agree?
+
+  Once you OK these (or override), I'll fold the state shape +
+  reducer-cases-per-event into the plan file and exit plan mode.
+
+✻ Baked for 48s
+
+❯ (a) fine with vector; (b) can you help me imagining this? I'm not             
+  understanding well. I can tell that I'm fine keeping a part of the state for  
+  stream-only stuff to simplify state updates on active elements. (c) following 
+   the same logic, I'm fine on keeping a conceptually different "atom" for      
+  anything related to animations and aesthetic. Basically, if we don't need to  
+  persist them in org, we can keep stuff lighter.                               
+
+● (b) A concrete timeline
+
+  Imagine the user types "list files" and the assistant runs one bash. Here's
+  how state evolves under (b1) — tools-on-stream — moment by moment:
+
+  t0  user types "list files"
+      → reducer commits user msg:
+        messages = [user "list files"]
+        stream   = nil
+
+  t1  message.start
+        stream = #(stream :text "" :tools [])
+
+  t2  message.delta {text: "Sure, let me "}
+        stream.text = "Sure, let me "
+
+  t3  message.delta {text: "check.\n\n"}
+        stream.text = "Sure, let me check.\n\n"
+
+  t4  tool.generating {tool_id: "t1", name: "bash"}
+        stream.tools = [#(tool :id "t1" :name "bash" :status generating)]
+
+  t5  tool.complete {tool_id: "t1", output: "file1\nfile2"}
+        stream.tools[0] now has :status complete :output "..."
+
+  t6  message.delta {text: "Here you go."}
+        stream.text = "Sure, let me check.\n\nHere you go."
+
+  t7  message.complete
+      → reducer COMMITS the stream:
+        messages = [user "list files",
+                    assistant "Sure, let me check.\n\nHere you go."
+                              tools=[bash(complete)]]
+        stream   = nil
+
+  The key property: a tool is never in two places at once. While its turn is
+  live, it lives on stream.tools (mutable through copy-and-swap). On
+  message.complete, the whole stream — text + tools — freezes into one new
+  hermes-message and gets pushed onto messages. After that, the tool entry is
+  immutable; it never gets re-rendered unless the user folds/unfolds the subtree
+   (which Org handles natively, no state change).
+
+  The renderer benefits: completed messages only need re-rendering when messages
+   actually grows (cheap vector-append diff). The in-flight section gets
+  rewritten on every delta but only touches the trailing buffer region.
+
+  Contrast with (b2) — a global flat tools vector with parent-pointers: every
+  progress event would have to scan/update the right tools entry, and the
+  renderer would have to join tools to messages by id on every redraw. Doesn't
+  match the Org tree, doesn't simplify anything.
+
+  Does that picture make sense?
+
+  (c) Two-atom architecture
+
+  Your instinct is exactly right and worth formalizing. Let me split:
+
+  (cl-defstruct hermes-state            ; persistent — diffed into org
+    connection session-id session-info
+    messages stream pending slash-catalog queue history skin)
+
+  (cl-defstruct hermes-ui-state         ; ephemeral — never touches org
+    status-text                         ; "Reasoning..." / "Running bash..."
+    status-kind                         ; from status.update event
+    spinner-frame                       ; 0..n, advanced by a timer
+    tool-previews)                      ; alist tool-id → latest preview string
+
+  Two separate atoms, two separate dispatchers, two separate hooks. The
+  ephemeral one drives the mode-line / header-line / posframe; it can fire 10×
+  per second for spinners without ever invoking the Org renderer.
+
+  Falls out cleanly:
+  - tool.progress.preview → hermes-ui-state.tool-previews (never persisted)
+  - tool.complete.output → hermes-tool.output on the persistent atom (committed
+  into Org)
+  - status.update → hermes-ui-state.status-text
+  - thinking.delta / reasoning.delta — open question: do you want these in the
+  Org buffer or only in a transient overlay? The official TUI shows them
+  in-buffer but de-emphasized. If you want them in Org, they belong on stream.
+  If only as live indicator, on ui-state. Lean?
+
+  And as a happy side effect, hermes-tool loses preview and details-mode —
+  fold/unfold state is just Org's own org-cycle state, which is already
+  buffer-local. Less for us to track.
+
+  Want me to fold the timeline + the two-atom split into the plan file, then we
+  move on to the reducer cases (one per event type)?
+
+✻ Crunched for 41s
+
+❯ yes, absolutely, I agree with everything                                      
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Plan file updated with the two-atom split, the timeline, and the event→atom
+  routing table.
+
+  Now the reducer cases. There are ~16 incoming events. Most are mechanical
+  (delta append, status set), but a few have real choices:
+
+  Hairy ones worth discussing:
+
+  1. message.start when stream is non-nil — can it happen? (Yes, in theory, if a
+   turn restarts mid-flight.) Do we discard the in-flight stream silently, or
+  commit what we have first?
+  2. tool.complete when stream is nil — shouldn't happen, but if it does (e.g.
+  event arrives after message.complete), do we drop it on the floor or
+  synthesize a system message?
+  3. Approval/clarify/secret/sudo when pending is already non-nil — queue the
+  second one, or refuse? Gateway shouldn't send two at once but the protocol
+  doesn't forbid it.
+  4. session.info mid-conversation — gateway can re-emit it on /model changes
+  etc. Merge into existing session-info, or replace?
+  5. The committed user message — does the reducer commit it on prompt.submit
+  (optimistic) or wait for the gateway to echo it? The official TUI is
+  optimistic (useSubmission.ts). Mirror that?
+
+  Boring ones I'll just write directly: gateway.ready, message.delta,
+  thinking.delta, reasoning.delta, status.update, tool.generating,
+  tool.progress, error, skin.changed, reasoning.available.
+
+  Want to walk through the five tricky ones, or just pick defaults
+  (commit-then-restart / drop / refuse / merge / optimistic) and move on?
+✻ Crunched for 36s
+
+❯ pick defaults from official TUI and move on                                   
+
+● Explore(Find TUI defaults for 5 edge cases)
+  ⎿  Done (18 tool uses · 67.1k tokens · 34s)
+  (ctrl+o to expand)
+
+● All five answered from the official TUI. Defaults locked:
+
+  1. message.start mid-stream → silently discard in-flight
+  (turnController.ts:746-757)
+  2. tool.* with no stream → drop on the floor (turnController.ts:620-645)
+  3. Second blocking prompt → replace wholesale, single overlay slot
+  (createGatewayEventHandler.ts:519-547, overlayStore.ts:29)
+  4. session.info re-emit → merge with spread
+  (createGatewayEventHandler.ts:279-292)
+  5. User message → optimistic commit on send, no echo wait
+  (useSubmission.ts:87-149)
+
+  Folding into the plan now.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Plan now has the state shape, atom split, event routing, turn timeline, and
+  edge-case defaults all locked.
+
+  We've decided on plumbing → state shape → reducer behavior. What's left before
+   exiting plan mode:
+
+  1. Renderer strategy — the diff function: how it walks (old, new) and emits
+  Org edits. The interesting choices are around the streaming segment (full
+  rewrite vs. stable/unstable split — official TUI's streamingMarkdown.tsx:107
+  does the latter at \n\n outside fences).
+  2. Input/queue layer — composer keymap, queue drain trigger, slash-command
+  dispatch, history ring.
+  3. Pending prompt UX — minibuffer (read-multiple-choice / read-passwd) vs
+  posframe overlay. I'd lean minibuffer for v1 (zero deps, blocks input
+  cleanly).
+  4. File layout / module split — already sketched in M1-M5 but worth a sanity
+  check.
+
+  Pick the next topic, or want me to fold sensible defaults for all four and
+  exit plan mode?
+
+✻ Baked for 59s
+
+❯ 3. definitely minibuffer -- the others need discussion. Let's talk about the  
+  renderer                                                                      
+
+● Renderer is the most code-heavy module. Let me sketch the architecture, then
+  surface the real decisions.
+
+  Shape
+
+  Two render hooks, one per atom:
+
+  (add-hook 'hermes-state-change-hook    #'hermes--render)
+  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui)
+
+  hermes--render(old, new) is pure dispatch — it inspects which slots changed
+  and calls a sub-renderer per slot:
+
+  (defun hermes--render (old new)
+    (with-silent-modifications
+      (save-excursion
+        ;; messages grew → append the new tail message(s)
+        (when (> (length (hermes-state-messages new))
+                 (length (hermes-state-messages old)))
+          (hermes--render-new-messages old new))
+        ;; stream lifecycle
+        (let ((os (hermes-state-stream old))
+              (ns (hermes-state-stream new)))
+          (cond ((and (null os) ns)   (hermes--stream-begin ns))
+                ((and os (null ns))   (hermes--stream-commit))   ; just drop
+  markers
+                ((not (eq os ns))     (hermes--stream-update os ns))))
+        ;; pending prompt → trigger minibuffer (in a timer, not here)
+        (unless (eq (hermes-state-pending old) (hermes-state-pending new))
+          (hermes--maybe-trigger-pending new))
+        ;; session-info → header-line
+        (unless (eq (hermes-state-session-info old) (hermes-state-session-info
+  new))
+          (hermes--render-header new)))))
+
+  Each sub-renderer touches only its region, located via persistent markers (not
+   text-property scanning).
+
+  Streaming: stable/unstable split, mirroring the TUI
+
+  The official TUI's streamingMarkdown.tsx:107 splits at the last \n\n that's
+  outside a fenced code or math block. We mirror that. Two buffer-local markers
+  bound the in-flight region:
+
+  (defvar-local hermes--stream-stable-end nil)  ; everything before this is
+  frozen
+  (defvar-local hermes--stream-end nil)         ; end of unstable tail
+
+  On every message.delta:
+  1. Compute new stable boundary in stream.text (last \n\n outside ``` fences).
+  2. If it advanced: insert the newly-stable substring at --stream-stable-end,
+  advance the marker.
+  3. Replace the region [--stream-stable-end, --stream-end) with the new
+  unstable suffix.
+
+  On message.complete: drop the markers. The streaming region already has the
+  final format, no rewrite needed. Streaming and committed rendering use the 
+  same format on purpose — commit becomes a no-op buffer-wise.
+
+  The decisions I want your call on
+
+  (R1) Tool placement: trail vs interleaved
+
+  The original draft (emacs-hermes.md:127-143) showed tools interleaved with
+  assistant text — paragraph, bash subtree, paragraph, read subtree. But the
+  official TUI doesn't do that: tools are a "trail" — a single kind: 'trail'
+  system message rendered after the assistant text (messageLine.tsx:67-90). They
+   appear as a contiguous block of tool entries below the assistant prose.
+
+  State-shape-wise: hermes-message.tools is a flat vector with no positional
+  info between tools and text. So we literally cannot interleave without
+  changing the state model to something like :body [(text "...") (tool ...) 
+  (text "...")].
+
+  I'd go trail (TUI-faithful, simpler state, matches tool.start not carrying any
+   position info from the gateway anyway). Your draft says interleave — was that
+   intentional, or just an artifact of sketching?
+
+  (R2) Read-only conversation history?
+
+  The Org buffer renders the conversation. Two stances:
+  - Read-only history + editable input area at bottom (comint/SLIME style): user
+   types at the end, can't accidentally edit past messages, can still copy/yank.
+  - Fully editable Org buffer: user can mess with anything, including past
+  messages. Bad for a live conversation but very Emacs-y.
+
+  I'd lean read-only history with a separate input area. But this couples
+  renderer to the input layer, so we should decide together.
+
+  (R3) Markdown rendering inside Org
+
+  We accumulate raw markdown into the buffer (decided earlier). Three
+  sub-options for how it lives in Org:
+  - Plain text (markdown chars visible as-is — **bold** shows as **bold**)
+  - Convert to Org syntax on commit (markdown→org converter; cheap for inline,
+  hard for tables/code)
+  - Wrap in a markdown-mode overlay via polymode or a minor mode that fontifies
+  markdown inside an Org region
+
+  The TUI tokenizes markdown for ANSI display — that doesn't translate. Plain 
+  text for v1 is honest and zero-effort; we can layer fontification later.
+  Agree?
+
+  (R4) Point preservation during streaming
+
+  If the user is scrolled up reading earlier messages while a turn streams
+  below, we must not move point. save-excursion handles position; but the buffer
+   grows, so the window-start may drift. Standard fix: only auto-follow the tail
+   if point is already at point-max (the "tail-mode" trick from
+  comint-scroll-to-bottom-on-output). Sound right?
+
+  (R5) Markers vs text properties for locating regions
+
+  We need to find: "the tool subtree for tool_id=t1", "the assistant headline at
+   index N", "the streaming region". Two options:
+  - Markers: per-tool, per-message; cheap to update, but proliferate (~N markers
+   per session).
+  - Text properties + scanning: text-property-any + org-find-property; no
+  bookkeeping, but O(N) per lookup.
+
+  Default: markers for streaming region, text-properties (:tool_id Org property)
+   for committed tools. Lookups for committed tools are rare (only when status
+  updates arrive after commit — which the TUI doesn't handle anyway, per
+  edge-case #2). Agree?
+
+  Pick on the five and I'll fold into the plan.
+
+✻ Churned for 1m 1s
+
+❯ 1. Trail is fine, seems simpler. I was just sketching but I prefer trailing.  
+  2. The org buffer is a simple org buffer: I was thinking about it as an       
+  editable buffer to be honest. It is also true that we can start with a        
+  read-only buffer and extending it in the future if necessary. Right now, I    
+  can imagine that the user could have two org buffer. One for notes and one    
+  for convo. The conversation should show a way to be referred from other org   
+  files. This way, we shouldn't ever feel the need to edit the conversation     
+  buffer. A lot could be done. So, read-only is fine. (3) I would like to       
+  convert on commit. Why is it hard for tables and code? Any code block could   
+  be turned in a begin_src/end_src and every table can be org-ified with ease   
+  with elisp function, isn't it?. Or maybe you mean that table and code are     
+  hard because they come "in pieces" so we can't easily convert without having  
+  the whole picture? (4) Totally agree: go with the drift only if we are at     
+  point-max. Sounds totally right. (5) I would say "markers" too but if we can  
+  recycle the org-find logic for both this problem AND for offering external    
+  org-buffers a reference to cite the content... I would discuss this. But I'm  
+  leaning towards markers, still                                                
+
+● Good — let me fold renderer decisions into the plan, then we tackle
+  input/queue (the last big topic).
+
+  On (3), exactly — the streaming-in-pieces problem is the real one, but the
+  stable/unstable split solves it for us: by definition the stable boundary sits
+   outside any fenced code/math block, so we only convert frozen content. Tables
+   don't get the same protection (the boundary detector doesn't know about
+  pipes), so a streaming table stays in the unstable region as plain markdown
+  until done. Fine for v1.
+
+  On (5), markers and :ID: properties are not mutually exclusive — I think we
+  actually want both. Markers for the transient streaming region (small N, dies
+  on commit); org-id-get-create on every committed message + tool subtree,
+  giving you free citability from external org files ([[id:abc123][see the bash 
+  run]]). That feature you described — notes buffer citing into the convo —
+  falls right out.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Renderer locked. Last big topic before exit: input layer. Three pieces tangle
+  together:
+
+  (I1) Where does the user type?
+
+  Now that the conversation buffer is read-only, the composer needs a home.
+  Three patterns:
+
+  - (a) Comint-style bottom prompt — single buffer, read-only history above,
+  editable input region after a Hermes> prompt at end. Submits on RET, M-RET for
+   newline. SLIME-style. Tightest UX, most code.
+  - (b) Separate composer buffer below — *hermes-input* window in a side window
+  or below. Submits send to conversation buffer. Looser, simpler.
+  - (c) Minibuffer prompt — read-string each time. Lispy, zero buffer overhead,
+  but can't compose multi-line, can't show queue.
+
+  I'd lean (b) for v1 — clean separation, decent UX, much less code than (a).
+  (a) is the long-term target.
+
+  (I2) Queue semantics
+
+  When the user submits while a turn is live (stream non-nil), the input gets
+  queued. Drain on message.complete: pop the head and dispatch as prompt.submit.
+   Slash commands bypass the queue entirely (commands.catalog lookup →
+  slash.exec immediately, even mid-turn).
+
+  The queue lives on hermes-state.queue (already in the shape). Visible? I'd
+  render it as a footer/header-line indicator: Queue: 2 messages rather than
+  inline in the buffer. Sound right?
+
+  (I3) Slash commands
+
+  Tab-completion against the cached commands.catalog. The catalog is fetched
+  once on connect and cached on hermes-state.slash-catalog. The composer detects
+   a leading /, switches completion-at-point-functions to a hermes-specific one.
+   Easy.
+
+  But: some slash commands take arguments (/model gpt-5, /branch <name>). Do we
+  send slash.exec {command: "/model gpt-5"} as one string, or use
+  command.dispatch {name: "model", arg: "gpt-5"}? Looking at the gateway: both
+  exist. slash.exec is the all-purpose one (long-handler, dispatched async);
+  command.dispatch is structured. The TUI probably uses slash.exec since that
+  matches what the user typed. Want me to verify or just go with slash.exec?
+
+  Pick on (I1), (I2), and (I3), then I write the input layer into the plan and
+  exit.
+
+✻ Churned for 1m 4s
+
+❯ (1) I prefer minibuffer for v1. (2) Fine for queue semantics (3) please       
+  verify                                                                        
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Verified. The TUI uses both:
+
+  - Default path: slash.exec with {command: "<full text minus leading />", 
+  session_id} (createSlashHandler.ts:77).
+  - Fallback path: command.dispatch with {name, arg, session_id}
+  (createSlashHandler.ts:90) — used when slash.exec rejects, mainly for skill
+  commands. Test at createSlashHandler.test.ts:548 confirms: server returns
+  "skill command: use command.dispatch", client retries with command.dispatch.
+  - Special cases: a handful of commands have dedicated RPCs (e.g. /title →
+  session.title, createSlashHandler.test.ts:681).
+
+  For v1: slash.exec only, log/surface the error if a skill command rejects. Add
+   command.dispatch fallback in v2. Special-case RPCs out of scope until needed.
+
+  Folding input layer into the plan and exiting.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/this-is-just-a-silly-hanrahan.md · /plan to 
+     edit
+     emacs-hermes: verified design plan
+
+     Context
+
+     The user has a draft design (emacs-hermes.md) for an Emacs client to the
+     Hermes agent. I verified each claim against the cloned hermes-agent/ source
+     (authoritative over deepwiki). The shape of the draft is sound — JSON-RPC
+     over
+     stdio, Elm-style reducer, Org buffer — but several event names, RPC method
+     names, and payload fields are wrong in the draft, and a few protocol
+     details
+     are missing. This plan records the corrections and locks the design before
+     implementation begins.
+
+     Verification summary (vs. hermes-agent/)
+
+     Confirmed
+
+     - Entry point: python -m tui_gateway.entry (tui_gateway/entry.py:148,227).
+     - Wire framing: bare NDJSON, no length prefix
+     (tui_gateway/transport.py:137: json.dumps(...) + "\n").
+     - All frames are JSON-RPC 2.0 ({"jsonrpc": "2.0", ...}).
+     - Approach 2 (MCP) is messaging-only — the 10 tools in mcp_serve.py:450-859
+     are conversation/message bridges, no agent.run_conversation().
+     - Approach 3 (ACP) does run the full loop (acp_adapter/server.py:1249)
+     but targets Zed/Cursor/JetBrains — no Emacs ACP client exists. Inverting
+     the
+     draft's claim "exposes editor-oriented toolset (no loop)" — the loop is
+     there; the missing piece is the Emacs client.
+     - One gateway process, many sessions, shared (tui_gateway/server.py:118
+     global _sessions: dict). Answers draft open-question #5.
+     - Official TUI is Ink (React-in-terminal), not Textual
+     (ui-tui/src/entry.tsx:82). StreamingMd stable/unstable strategy splits
+     at the last \n\n outside fenced code/math
+     (ui-tui/src/streamingMarkdown.tsx:107).
+
+     Corrections to the draft
+
+     Event/method names use dots, not dashes. Every outgoing method in the
+     draft is wrong: user-input → prompt.submit, approval-respond →
+     approval.respond, clarify-respond → clarify.respond, secret-respond →
+     secret.respond, sudo-respond → sudo.respond, slash-exec →
+     slash.exec, session-create → session.create, session-resume →
+     session.resume.
+
+     Event envelope is wrapped, not bare. Server emits
+     {"jsonrpc":"2.0","method":"event","params":{"type":"<name>","session_id":"<
+     sid>","payload":{...}}}
+     (tui_gateway/server.py:382-386). The reducer should dispatch on
+     params.type, not on a top-level type field.
+
+     tool.start does not exist. The real event is tool.generating
+     (server.py:1599). Other tool events are tool.progress
+     ({name, preview}) and tool.complete ({name, output, error?, exit_code?}).
+
+     Missing events the draft does not list but must handle:
+     error ({message}, server.py:3012), skin.changed, reasoning.available,
+     browser.progress, voice.status, voice.transcript. Voice/browser can be
+     no-ops for v1.
+
+     gateway.stderr and gateway.protocol_error are NOT gateway events —
+     they are TUI-side conventions. Emacs can synthesize them similarly by
+     reading
+     the subprocess stderr and catching JSON parse errors in the process filter.
+
+     Missing outgoing RPCs: session.close, session.interrupt (for Ctrl-C —
+     answers draft open-question #8), command.dispatch, commands.catalog
+     (returns {pairs, sub, canon, categories, skill_count, warning} —
+     server.py:4272-4368; this is how the draft's slash-commands cache is
+     populated).
+
+     approval.respond payload is {session_id, choice, all?} not boolean
+     allow. choice carries allow/deny/all semantics.
+
+     clarify.respond uses answer, not choice index.
+
+     Markdown rendering: gateway sends raw markdown in text, plus an
+     optional rendered (legacy Rich ANSI — ignore it). The Emacs client should
+     accumulate the raw markdown text
+     (ui-tui/src/turnController.ts:525,533-537).
+     This resolves draft open-question #3: it's not HTML; do not need an
+     #+begin_export block.
+
+     Request/response IDs and async dispatch: every request carries id;
+     responses echo it (server.py:427). Eight long-running methods
+     (cli.exec, slash.exec, shell.exec, session.resume, session.branch,
+     session.compress, skills.manage, browser.manage) are dispatched to a
+     thread pool — the worker writes the response asynchronously
+     (server.py:146-156). Emacs RPC layer must support pending request map keyed
+     by id rather than expecting synchronous request/response interleaving.
+
+     Blocking prompts (clarify.request, sudo.request, secret.request)
+     block a gateway thread on threading.Event until the TUI sends the matching
+     .respond with the same request_id (server.py:723). The draft is right
+     to keep request_id in the pending state.
+
+     Session running flag: session["running"] prevents concurrent
+     prompt.submit (server.py:3003-3004). The Emacs queue logic must mirror
+     this — never send a second prompt.submit while the previous turn is live.
+
+     State architecture (locked)
+
+     Two atoms per session buffer — a clean split between persistent state
+     (diffed into the Org buffer) and ephemeral UI state (drives mode-line /
+     overlays / spinners, never touches Org). Both are cl-defstructs mutated
+     through copy-and-swap; renderers subscribe via hooks.
+
+     (cl-defstruct hermes-state            ; persistent — mirrored in Org
+       connection                          ; 'disconnected | 'connecting |
+     'connected
+       session-id session-info             ; session.info payload
+       messages                            ; vector of hermes-message (COMMITTED
+      only)
+       stream                              ; hermes-stream or nil (in-flight
+     turn)
+       pending                             ; hermes-pending or nil
+       slash-catalog queue history skin)
+
+     (cl-defstruct hermes-message          ; one Org top-level headline
+       kind                                ; 'user | 'assistant | 'system
+       text                                ; raw markdown
+       tools                               ; vector of hermes-tool — the trail
+       usage timestamp)
+
+     (cl-defstruct hermes-tool             ; one Org subtree under its message
+       id name
+       status                              ; 'generating | 'running | 'complete
+     | 'error
+       output error duration)
+     ;; Note: NO preview, NO details-mode. Preview is ephemeral (ui-state).
+     ;; Fold/unfold is org-cycle's job, buffer-local, not in our state.
+
+     (cl-defstruct hermes-stream           ; the in-flight turn — TUI's "bufRef"
+       text thinking reasoning             ; accumulated deltas
+       tools)                              ; tools attached to this live turn
+
+     (cl-defstruct hermes-pending
+       kind                                ; 'approval | 'clarify | 'secret |
+     'sudo
+       request-id payload)
+
+     (cl-defstruct hermes-ui-state         ; ephemeral — never persisted
+       status-text status-kind             ; from status.update
+       spinner-frame                       ; advanced by timer
+       tool-previews)                      ; alist tool-id → latest preview
+
+     Buffer-local atoms + zustand-style dispatcher:
+
+     (defvar-local hermes--state nil)
+     (defvar-local hermes--ui-state nil)
+
+     (defun hermes-dispatch (msg)
+       (let* ((old hermes--state)
+              (new (hermes--reduce old msg)))
+         (unless (eq old new)
+           (setq hermes--state new)
+           (run-hook-with-args 'hermes-state-change-hook old new))))
+
+     (defun hermes-ui-dispatch (msg)
+       (let* ((old hermes--ui-state)
+              (new (hermes--ui-reduce old msg)))
+         (unless (eq old new)
+           (setq hermes--ui-state new)
+           (run-hook-with-args 'hermes-ui-state-change-hook old new))))
+
+     The process filter routes events to the right buffer by params.session_id,
+     then to the right dispatcher: persistent vs ephemeral. Some events fan out
+     to
+     both (e.g. tool.progress updates ui-state.tool-previews only;
+     tool.complete clears the preview AND commits the tool's final state to
+     stream.tools).
+
+     Event → atom routing
+
+     ┌──────────────────┬──────────────────────────┬───────────────────────────┐
+     │      Event       │       Persistent         │        Ephemeral          │
+     │                  │      (hermes-state)      │     (hermes-ui-state)     │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ gateway.ready    │ skin,                    │ —                         │
+     │                  │ connection=connected     │                           │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ session.info     │ session-id, session-info │ —                         │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ message.start    │ new empty stream         │ status-text="Responding…" │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ message.delta    │ append to stream.text    │ —                         │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ message.complete │ commit stream →          │ status-text=nil           │
+     │                  │ messages; stream=nil     │                           │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ thinking.delta   │ append to                │ —                         │
+     │                  │ stream.thinking          │                           │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ reasoning.delta  │ append to                │ —                         │
+     │                  │ stream.reasoning         │                           │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ status.update    │ —                        │ status-text, status-kind  │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ tool.generating  │ add to stream.tools      │ status-text="Running …"   │
+     │                  │ (generating)             │                           │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ tool.progress    │ —                        │ tool-previews[id]=preview │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ tool.complete    │ update stream.tools[id]  │ clear tool-previews[id]   │
+     │                  │ → complete               │                           │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ approval.request │ pending = approval       │ —                         │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ clarify.request  │ pending = clarify        │ —                         │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ sudo.request     │ pending = sudo           │ —                         │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ secret.request   │ pending = secret         │ —                         │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ *.respond (out)  │ clear pending            │ —                         │
+     ├──────────────────┼──────────────────────────┼───────────────────────────┤
+     │ error            │ append system message    │ —                         │
+     └──────────────────┴──────────────────────────┴───────────────────────────┘
+
+     Thinking/reasoning are persisted on stream (matching the official TUI),
+     rendered as de-emphasized Org blocks inside the assistant section.
+
+     Reducer edge-case defaults (from official TUI)
+
+     Case: message.start while stream non-nil
+     Decision: silently discard in-flight, start fresh
+     TUI source: turnController.ts:746-757
+     ────────────────────────────────────────
+     Case: tool.progress / tool.complete with stream nil
+     Decision: drop on the floor
+     TUI source: turnController.ts:620-645
+     ────────────────────────────────────────
+     Case: Second blocking prompt arrives while pending set
+     Decision: replace wholesale (single slot)
+     TUI source: createGatewayEventHandler.ts:519-547
+     ────────────────────────────────────────
+     Case: session.info re-emit
+     Decision: merge fields (spread over existing)
+     TUI source: createGatewayEventHandler.ts:279-292
+     ────────────────────────────────────────
+     Case: User message on prompt.submit
+     Decision: optimistic — commit to messages immediately, do not wait for echo
+     TUI source: useSubmission.ts:87-149
+
+     Turn lifecycle (worked example)
+
+     User types "list files"; assistant runs one bash; replies.
+
+     t0  user input             messages=[user]              stream=nil
+     t1  message.start                                       stream=#(text=""
+     tools=[])
+     t2  message.delta "Sure, " stream.text="Sure, "
+     t3  message.delta "let me check.\n\n"
+                                stream.text="Sure, let me check.\n\n"
+     t4  tool.generating bash   stream.tools=[#(id=t1 status=generating)]
+     t5  tool.progress "ls /tmp"
+     ui.tool-previews={t1:"ls /tmp"}
+     t6  tool.complete output   stream.tools[0]=complete    ui.tool-previews={}
+     t7  message.delta "Here."  stream.text=".. Here."
+     t8  message.complete       messages=[user, assistant   stream=nil
+                                  #(text=".." tools=[bash(complete)])]
+
+     Key invariant: a tool is never in two places at once. Live → stream.tools.
+     Committed → frozen inside its parent hermes-message.tools. After commit it
+     never changes; fold state lives in Org.
+
+     Decisions for open questions
+
+     1. Streaming cadence: render every message.delta, mirror the official
+     stable-prefix memoization. Split point: last \n\n outside fenced
+     code/math.
+     2. Tool folding: inline Org subtrees; DetailsMode maps to
+     org-cycle states (hidden = :noexport: tag + folded, collapsed = folded
+     subtree, expanded = open).
+     3. Markdown→Org: display raw markdown as-is inside a #+begin_src markdown
+     block (or plain text); do NOT try to convert. Rationale: the
+     official TUI doesn't render to Org either — it tokenizes for ANSI. A v2
+     could add a markdown→org converter.
+     4. Multi-session UI: one Org buffer per session, hermes-tui-sessions
+     sidebar with tabulated-list-mode for switching. Deferred to v2.
+     5. Gateway lifecycle: one shared gateway process (matches server design).
+     6. Config: let the gateway load ~/.hermes/config.yaml; Emacs reads
+     session.info for cwd/model/tools.
+     7. Approval UX: dedicated overlay window using posframe if available,
+     otherwise a read-multiple-choice minibuffer prompt. Inline editable
+     region is a non-starter (no good way to suspend input cleanly).
+     8. Interrupt: C-c C-k in the conversation buffer sends
+     session.interrupt. Mark frozen text with *[interrupted]* per official
+     TUI.
+
+     Renderer (locked)
+
+     Two render hooks, one per atom:
+
+     (add-hook 'hermes-state-change-hook    #'hermes--render)
+     (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui)
+
+     hermes--render(old, new) is pure dispatch — inspects which slots changed
+     and calls a sub-renderer per slot. Each sub-renderer touches only its
+     region.
+     Wrap edits in with-silent-modifications + save-excursion to avoid marking
+     the buffer dirty and to preserve point.
+
+     (defun hermes--render (old new)
+       (with-silent-modifications
+         (save-excursion
+           (when (> (length (hermes-state-messages new))
+                    (length (hermes-state-messages old)))
+             (hermes--render-new-messages old new))
+           (let ((os (hermes-state-stream old))
+                 (ns (hermes-state-stream new)))
+             (cond ((and (null os) ns) (hermes--stream-begin ns))
+                   ((and os (null ns)) (hermes--stream-commit))
+                   ((not (eq os ns))   (hermes--stream-update os ns))))
+           (unless (eq (hermes-state-pending old) (hermes-state-pending new))
+             (hermes--maybe-trigger-pending new))
+           (unless (eq (hermes-state-session-info old)
+                       (hermes-state-session-info new))
+             (hermes--render-header new)))))
+
+     Streaming: stable/unstable split (mirror streamingMarkdown.tsx:107)
+
+     Two buffer-local markers delimit the in-flight region:
+
+     (defvar-local hermes--stream-stable-end nil)
+     (defvar-local hermes--stream-end nil)
+
+     On every stream change:
+     1. Compute the new stable boundary in stream.text — last \n\n outside
+     fenced code/math blocks.
+     2. If it advanced: convert the newly-stable substring from markdown to Org
+     syntax, insert at --stream-stable-end, advance the marker.
+     3. Replace the region [--stream-stable-end, --stream-end) with the new
+     unstable suffix rendered as plain text (markdown chars visible during the
+     brief unstable phase).
+
+     On message.complete: call org-id-get-create on the assistant headline and
+     each tool subtree (so external Org buffers can [[id:...]] cite into the
+     conversation), then drop the markers. No buffer rewrite — streaming and
+     committed use the same Org format.
+
+     Markdown → Org conversion (on stable-advance and on commit)
+
+     Single-pass regex transforms over a frozen text chunk. Operates only on the
+     newly-stable substring, never on the unstable tail.
+
+     ┌───────────────┬──────────────────────────────┬─────────────────────────┐
+     │   Markdown    │             Org              │          Notes          │
+     ├───────────────┼──────────────────────────────┼─────────────────────────┤
+     │ ````          │ #+begin_src                  │ Fence info string → src │
+     │ lang\n…\n ``` │ lang\n…\n#+end_src           │  lang. Empty info →     │
+     │               │                              │ example.                │
+     ├───────────────┼──────────────────────────────┼─────────────────────────┤
+     │               │ demoted under assistant      │                         │
+     │ # Title       │ headline (assistant is *, so │                         │
+     │               │  # → **, ## → ***, etc.)     │                         │
+     ├───────────────┼──────────────────────────────┼─────────────────────────┤
+     │ **bold**      │ *bold*                       │                         │
+     ├───────────────┼──────────────────────────────┼─────────────────────────┤
+     │ *em* / _em_   │ /em/                         │ Skip if inside word     │
+     │               │                              │ boundaries.             │
+     ├───────────────┼──────────────────────────────┼─────────────────────────┤
+     │ `code`        │ ~code~                       │                         │
+     ├───────────────┼──────────────────────────────┼─────────────────────────┤
+     │ [label](url)  │ [[url][label]]               │                         │
+     ├───────────────┼──────────────────────────────┼─────────────────────────┤
+     │               │                              │ Separator row |---|---| │
+     │ | a | b |     │ | a | b | (mostly identical) │  → |---+---|. Tables    │
+     │               │                              │ stay in unstable region │
+     │               │                              │  until done.            │
+     └───────────────┴──────────────────────────────┴─────────────────────────┘
+
+     Conversion is a v1 best-effort. Anything we miss falls through as plain
+     text.
+     Helper module: hermes-md.el.
+
+     Tools render as a trail below the assistant text
+
+     Tools live in hermes-message.tools as a flat vector — no positional info.
+     Render order: assistant prose first, then all tools as ** subtrees beneath
+     it, matching the official TUI's kind: 'trail' (messageLine.tsx:67-90).
+
+     * assistant
+       :PROPERTIES:
+       :ID:       <uuid>
+       :END:
+     Sure, let me check.
+
+     Here you go.
+
+     ** bash (2.3s)
+     :hermes-tool:
+        :PROPERTIES:
+        :ID:        <uuid>
+        :tool_id:   t1
+        :status:    complete
+        :duration:  2.3
+        :END:
+        #+begin_src bash :output verbatim
+        file1
+        file2
+        #+end_src
+
+     Location strategy: markers + org-id
+
+     What: Streaming region
+     How: buffer-local markers (--stream-stable-end, --stream-end)
+     When: created on message.start; dropped on message.complete
+     ────────────────────────────────────────
+     What: In-flight tool subtrees
+     How: buffer-local alist tool_id → marker
+     When: created on tool.generating; dropped on message.complete
+     ────────────────────────────────────────
+     What: Committed messages/tools
+     How: org-id-get-create → :ID: Org property
+     When: written once on commit; located via org-id-find
+     ────────────────────────────────────────
+     What: Tool lookup by gateway id
+     How: :tool_id: Org property
+     When: used only by tool.complete while stream is live; after commit, no
+     further
+       updates per edge-case #2
+
+     Side benefit: every committed message and tool has a stable :ID:, so an
+     external Org notes buffer can cite into the conversation with
+     [[id:...]] links from day one.
+
+     Buffer policy
+
+     - Conversation buffer is read-only history. Input happens elsewhere
+     (input layer — TBD). Future versions may relax this; for v1, read-only
+     prevents accidental edits to messages that have already been sent.
+     - Tail-follow auto-scroll only when point is at point-max. Mirror
+     comint-scroll-to-bottom-on-output: if the user has scrolled up to read,
+     do not move the window; if point is at end, follow the stream.
+
+     Input layer (locked)
+
+     Composer: minibuffer for v1
+
+     M-x hermes-send (bound to a key in hermes-mode-map, e.g. C-c C-i)
+     prompts via read-string with history bound to hermes-state.history
+     (persisted via savehist-mode if available). No persistent input region in
+     the conversation buffer; no separate composer window. Minimal code, zero
+     window-layout decisions. The comint-style bottom prompt is the v2 target.
+
+     Multi-line input: use read-string for v1 single-line; C-c C-l can pop a
+     *hermes-compose* temp buffer for multi-line composition when needed
+     (org-edit-src-code-style flow). Defer to when actually needed.
+
+     Queue
+
+     Lives on hermes-state.queue (already in the state shape) as a list of
+     strings, appended on submit, drained head-first on message.complete.
+
+     submit "foo" while stream=nil       → dispatch prompt.submit "foo"
+     submit "bar" while stream non-nil   → push to queue
+     submit "baz" while stream non-nil   → push to queue
+     message.complete                    → pop "bar", dispatch prompt.submit
+     "bar"
+     message.complete                    → pop "baz", dispatch prompt.submit
+     "baz"
+
+     Queue state surfaced in the header-line of the conversation buffer:
+     Hermes [model] · queue: 2 · running — not rendered inline. Cleared
+     indicator when empty.
+
+     Slash commands bypass the queue entirely. Even if stream is non-nil,
+     slash commands dispatch immediately. The gateway's session-running flag
+     guards against bad outcomes (server.py:3003); slash.exec is a long
+     handler dispatched async (server.py:146), so it doesn't compete with the
+     streaming turn.
+
+     Slash command dispatch
+
+     - Catalog fetched once via commands.catalog RPC after gateway.ready,
+     cached on hermes-state.slash-catalog. Refresh on /reload or similar.
+     - Detection: any input starting with / is a slash command.
+     - Completion: completion-at-point function reads slash-catalog.pairs
+     for completions. Bound in the minibuffer keymap used by hermes-send.
+     - Dispatch: gw.request("slash.exec", {command: text-minus-slash, 
+     session_id}).
+     This matches createSlashHandler.ts:77.
+     - Fallback for skill commands (deferred to v2): if slash.exec returns
+     an error with a hint to use command.dispatch, retry with
+     command.dispatch {name, arg, session_id} per createSlashHandler.ts:90
+     and createSlashHandler.test.ts:548. For v1: surface the error.
+     - Special-case RPCs (e.g. /title → session.title): out of scope for
+     v1.
+
+     Pending prompts (approval/clarify/secret/sudo)
+
+     When hermes-state.pending becomes non-nil, the renderer schedules (via
+     run-at-time 0) a minibuffer interaction in the right session buffer's
+     context, then dispatches the response RPC:
+
+     ┌────────────┬─────────────────────────────────────────┬──────────────────┐
+     │  Pending   │              Emacs prompt               │   Response RPC   │
+     │    kind    │                                         │                  │
+     ├────────────┼─────────────────────────────────────────┼──────────────────┤
+     │ approval   │ read-multiple-choice (allow / deny /    │ approval.respond │
+     │            │ all)                                    │                  │
+     ├────────────┼─────────────────────────────────────────┼──────────────────┤
+     │ clarify    │ completing-read over choices (free text │ clarify.respond  │
+     │            │  on Esc)                                │                  │
+     ├────────────┼─────────────────────────────────────────┼──────────────────┤
+     │ secret     │ read-passwd                             │ secret.respond   │
+     ├────────────┼─────────────────────────────────────────┼──────────────────┤
+     │ sudo       │ read-passwd                             │ sudo.respond     │
+     └────────────┴─────────────────────────────────────────┴──────────────────┘
+
+     request_id from the original event is echoed back. C-g during the prompt
+     sends session.interrupt and clears pending.
+
+     Interrupt
+
+     C-c C-k in the conversation buffer dispatches session.interrupt. The
+     gateway will surface frozen text in subsequent events; the reducer marks
+     the
+     in-flight stream with an *[interrupted]* line on the next render (per
+     turnController.ts:184-227).
+
+     Plan: incremental milestones
+
+     M1 — RPC plumbing (no UI)
+
+     Files (new):
+     - hermes-rpc.el — make-process to python -m tui_gateway.entry,
+     newline-buffered filter, JSON-RPC envelope, pending-id map, sentinel.
+     - hermes-events.el — event registry, payload schemas as defconsts.
+
+     Reuses:
+     - json-parse-string, json-serialize (built-in, Emacs 27+).
+     - make-process with :filter and :sentinel.
+
+     Done when: M-x hermes-rpc-test spawns gateway, receives
+     gateway.ready, sends session.create, gets session.info, sends
+     prompt.submit "hi", prints all events to *hermes-log*.
+
+     M2 — State + reducer + minimal renderer
+
+     Files (new):
+     - hermes-state.el — single plist per session, pure hermes--reduce.
+     - hermes-render.el — diff old/new state, append/replace text in Org buffer.
+     - hermes-mode.el — derived from org-mode; defines keymap.
+
+     Done when: a conversation works end-to-end with plain text streaming.
+     No tool rendering, no approvals yet.
+
+     M3 — Tools, approvals, clarify/secret/sudo
+
+     Files (extended):
+     - hermes-render.el — tool subtrees with properties drawer, DetailsMode.
+     - hermes-prompts.el — approval/clarify/secret/sudo handlers using
+     read-multiple-choice / read-passwd.
+
+     Done when: a bash tool call renders as a foldable subtree with stdout
+     inside #+begin_src, and an approval prompt blocks correctly.
+
+     M4 — Queue, slash commands, interrupt
+
+     Files (extended):
+     - hermes-input.el — input queue, drain on message.complete,
+     commands.catalog cache, slash dispatcher, C-c C-k → session.interrupt.
+
+     Done when: typing while busy queues correctly; /help works; Ctrl-C
+     freezes mid-stream.
+
+     M5 — Multi-session, polish
+
+     - hermes-sessions.el — sidebar, switch, close.
+     - hermes-skin.el — apply gateway.ready skin colors to faces.
+
+     Critical files to read first (in hermes-agent/)
+
+     - tui_gateway/entry.py — entry/loop
+     - tui_gateway/transport.py:137 — framing
+     - tui_gateway/server.py:118,382-431,1597-1660,2117,3003-3035,4272-4368 —
+     sessions, event wrapper, tool events, prompt requests, slash catalog
+     - ui-tui/src/gatewayClient.ts:295-449 — reference dispatch loop
+     - ui-tui/src/streamingMarkdown.tsx:107-162 — stable/unstable strategy
+     - ui-tui/src/turnController.ts:184-227,525-537 — interrupt + delta
+     accumulate
+     - ui-tui/src/prompts.tsx:14-226 — approval/clarify modal behavior
+     - ui-tui/src/useQueue.ts:15-76 — queue semantics
+
+     Verification (end-to-end)
+
+     1. After M1: *hermes-log* shows a full session ready → prompt → complete
+     cycle. Compare frame-by-frame to ui-tui running against the same
+     gateway: identical event sequence.
+     2. After M2: type "summarize this file" against a fixture; assistant text
+     streams into Org buffer matching the official TUI's output verbatim.
+     3. After M3: run a prompt that triggers bash; verify subtree fold/expand
+     and approval prompt round-trip.
+     4. After M4: paste 3 lines of input mid-stream; verify only the first goes
+     as prompt.submit, remaining drain after message.complete. Send
+     C-c C-k; verify session.interrupt RPC and frozen-state marker.
+     5. Regression: kill the gateway subprocess; sentinel must show
+     "disconnected"
+     and offer reconnect, not silently hang.
+
+● Plan approved. Starting with M1 — the RPC plumbing.
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Writing M1 — RPC plumbing. Starting with the events module (small, all
+  consts), then the RPC layer.
+
+● Write(hermes-events.el)
+  ⎿  Wrote 96 lines to hermes-events.el
+         teway -*- lexical-binding: t; -*-d method registry for Hermes ga
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       5 ;; Package-Requires: ((emacs "27.1"))
+       6 
+       7 ;;; Commentary:
+       9 ;; Names of every gateway event the TUI may receive, and every J
+         SON-RPC
+      10 ;; method the TUI may call.  Kept as defconsts so the reducer, r
+         enderer,
+     … +103 lines (ctrl+o to expand)
+
+● Write(hermes-rpc.el)
+  ⎿  Wrote 270 lines to hermes-rpc.el
+          gateway -*- lexical-binding: t; -*- transport to the Hermes TUI
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       4 ;; Keywords: tools, ai
+       5 ;; Package-Requires: ((emacs "27.1"))
+       7 ;;; Commentary:
+       8 
+       9 ;; Spawns `python -m tui_gateway.entry' as a subprocess and spea
+         ks
+      10 ;; newline-delimited JSON-RPC 2.0 over stdio.
+     … +286 lines (ctrl+o to expand)
+
+● Found two bugs in the stderr handling — let me fix them.
+● Update(hermes-rpc.el)
+  ⎿  Added 3 lines
+      55  (defvar hermes-rpc--process nil
+      56    "The single gateway subprocess, or nil when disconnected.")
+      57  
+      58 +(defvar hermes-rpc--stderr-buffer nil                          
+      59 +  "Buffer collecting the gateway's stderr output.")            
+      60 +                                                               
+      61  (defvar hermes-rpc--stdout-buffer ""
+      62    "Pending stdout bytes that have not yet been split on newline
+          .")
+      63  
+
+● Update(hermes-rpc.el)
+  ⎿  Added 8 lines, removed 6 lines
+      105                  :coding 'utf-8
+      106                  :noquery t
+      107                  :filter #'hermes-rpc--filter
+      108 -                :sentinel #'hermes-rpc--sentinel)))           
+      109 -    (with-current-buffer stderr-buf                           
+      110 -      (setq-local hermes-rpc--stderr-pos (point-min)))        
+      111 -    (set-process-filter (get-buffer-process stderr-buf) ; nil;
+          - we read on demand                                            
+      112 -                        nil)                                  
+      113 -    (setq hermes-rpc--process proc)                           
+      108 +                :sentinel #'hermes-rpc--sentinel))            
+      109 +         ;; `:stderr BUFFER' creates an internal pipe-process;
+          + attach a                                                     
+      110 +         ;; filter to surface lines in real time.             
+      111 +         (stderr-pipe (get-buffer-process stderr-buf)))       
+      112 +    (when stderr-pipe                                         
+      113 +      (set-process-filter stderr-pipe #'hermes-rpc--stderr-fil
+          +ter))                                                         
+      114 +    (setq hermes-rpc--stderr-buffer stderr-buf                
+      115 +          hermes-rpc--process proc)                           
+      116      (run-hook-with-args 'hermes-rpc-connection-functions 'conn
+           ecting)
+      117      proc))
+      118  
+
+● Update(hermes-rpc.el)
+  ⎿  Added 17 lines, removed 16 lines
+      206  
+      207  ;;;; Sentinel and stderr
+      208  
+      209 +(defvar hermes-rpc--stderr-tail ""                            
+      210 +  "Pending stderr bytes that have not yet been split on newlin
+          +e.")                                                          
+      211 +                                                              
+      212 +(defun hermes-rpc--stderr-filter (_proc chunk)                
+      213 +  "Stderr filter: split CHUNK on newline, run each line throug
+          +h the hook."                                                  
+      214 +  (setq hermes-rpc--stderr-tail (concat hermes-rpc--stderr-tai
+          +l chunk))                                                     
+      215 +  (let ((lines (split-string hermes-rpc--stderr-tail "\n")))  
+      216 +    (setq hermes-rpc--stderr-tail (car (last lines)))         
+      217 +    (dolist (line (butlast lines))                            
+      218 +      (unless (string-empty-p line)                           
+      219 +        (run-hook-with-args 'hermes-rpc-stderr-functions line)
+          +))))                                                          
+      220 +                                                              
+      221  (defun hermes-rpc--sentinel (proc event)
+      210 -  "Handle subprocess lifecycle: drain stderr, signal disconnec
+          -tion."                                                        
+      222 +  "Handle subprocess lifecycle: signal disconnection."        
+      223    (when (memq (process-status proc) '(exit signal closed))
+      212 -    (hermes-rpc--drain-stderr proc)                           
+      224 +    (unless (string-empty-p hermes-rpc--stderr-tail)          
+      225 +      (run-hook-with-args 'hermes-rpc-stderr-functions        
+      226 +                          hermes-rpc--stderr-tail)            
+      227 +      (setq hermes-rpc--stderr-tail ""))                      
+      228      (setq hermes-rpc--process nil)
+      229      (run-hook-with-args 'hermes-rpc-connection-functions 'disc
+           onnected)
+      230      (message "hermes-rpc: gateway %s" (string-trim event))))
+      231  
+      217 -(defun hermes-rpc--drain-stderr (proc)                        
+      218 -  "Flush any pending stderr lines from PROC into the stderr ho
+          -ok."                                                          
+      219 -  (let ((buf (process-buffer (get-buffer-process              
+      220 -                              (process-get proc :stderr-buffer
+          -)))))                                                         
+      221 -    (when (buffer-live-p buf)                                 
+      222 -      (with-current-buffer buf                                
+      223 -        (goto-char (point-min))                               
+      224 -        (while (not (eobp))                                   
+      225 -          (let ((line (buffer-substring-no-properties         
+      226 -                       (point) (line-end-position))))         
+      227 -            (unless (string-empty-p line)                     
+      228 -              (run-hook-with-args 'hermes-rpc-stderr-functions
+          - line)))                                                      
+      229 -          (forward-line 1))))))                               
+      230 -                                                              
+      232  ;;;; Smoke test
+      233  
+      234  ;;;###autoload
+
+● Let me byte-compile to catch warnings.
+
+● Bash(cd /home/ann/Projects/emacs-hermes && emacs -Q --batch -L . -f
+      batch-byte-compile hermes-events.el hermes-rpc.el 2>&1)
+  ⎿  Error: Exit code 1
+
+     In toplevel form:
+     hermes-rpc.el: Error: Invalid read syntax: ")", 273, 28
+
+  Read 1 file (ctrl+o to expand)
+
+● The test function has a paren mismatch from nested callbacks. Let me flatten
+  it.
+
+● Update(hermes-rpc.el)
+  ⎿  Added 42 lines, removed 36 lines
+      231  
+      232  ;;;; Smoke test
+      233  
+      234 +(defun hermes-rpc--test-log (fmt &rest args)                  
+      235 +  "Append a formatted line to *hermes-log*."                  
+      236 +  (let ((buf (get-buffer-create "*hermes-log*")))             
+      237 +    (with-current-buffer buf                                  
+      238 +      (unless (derived-mode-p 'special-mode) (special-mode))  
+      239 +      (let ((inhibit-read-only t))                            
+      240 +        (goto-char (point-max))                               
+      241 +        (insert (apply #'format fmt args) "\n")))))           
+      242 +                                                              
+      243 +(defun hermes-rpc--test-on-prompt (result error)              
+      244 +  (hermes-rpc--test-log "[ok] prompt.submit → r=%S e=%S" resul
+          +t error))                                                     
+      245 +                                                              
+      246 +(defun hermes-rpc--test-on-session (result _error)            
+      247 +  (let ((sid (and result (gethash "session_id" result))))     
+      248 +    (hermes-rpc--test-log "[ok] session.create → %s" sid)     
+      249 +    (when sid                                                 
+      250 +      (hermes-rpc-request "prompt.submit"                     
+      251 +                          (list :session_id sid :text "say hi 
+          +in five words")                                               
+      252 +                          #'hermes-rpc--test-on-prompt))))    
+      253 +                                                              
+      254 +(defun hermes-rpc--test-on-event (type sid payload)           
+      255 +  (hermes-rpc--test-log "[event] %-22s sid=%s payload=%S" type
+          + sid payload)                                                 
+      256 +  (when (equal type "gateway.ready")                          
+      257 +    (hermes-rpc-request "session.create" '(:cols 80)          
+      258 +                        #'hermes-rpc--test-on-session)))      
+      259 +                                                              
+      260  ;;;###autoload
+      261  (defun hermes-rpc-test ()
+      262    "Spawn the gateway, dump every event to *hermes-log*, send a
+            tiny prompt."
+      263    (interactive)
+      238 -  (let ((log (get-buffer-create "*hermes-log*")))             
+      239 -    (with-current-buffer log                                  
+      240 -      (erase-buffer)                                          
+      241 -      (special-mode))                                         
+      242 -    (cl-flet ((logmsg (fmt &rest args)                        
+      243 -                (with-current-buffer log                      
+      244 -                  (let ((inhibit-read-only t))                
+      245 -                    (goto-char (point-max))                   
+      246 -                    (insert (apply #'format fmt args) "\n"))))
+          -)                                                             
+      247 -      (setq hermes-rpc-event-functions nil                    
+      248 -            hermes-rpc-stderr-functions nil                   
+      249 -            hermes-rpc-connection-functions nil               
+      250 -            hermes-rpc-protocol-error-functions nil)          
+      251 -      (add-hook 'hermes-rpc-connection-functions              
+      252 -                (lambda (state) (logmsg "[conn] %s" state)))  
+      253 -      (add-hook 'hermes-rpc-stderr-functions                  
+      254 -                (lambda (line) (logmsg "[stderr] %s" line)))  
+      255 -      (add-hook 'hermes-rpc-protocol-error-functions          
+      256 -                (lambda (preview) (logmsg "[bad-json] %s" prev
+          -iew)))                                                        
+      257 -      (add-hook 'hermes-rpc-event-functions                   
+      258 -                (lambda (type sid payload)                    
+      259 -                  (logmsg "[event] %-22s sid=%s payload=%S" ty
+          -pe sid payload)                                               
+      260 -                  (when (equal type "gateway.ready")          
+      261 -                    (hermes-rpc-request                       
+      262 -                     "session.create" '(:cols 80)             
+      263 -                     (lambda (result _err)                    
+      264 -                       (let ((sid (and result (gethash "sessio
+          -n_id" result))))                                              
+      265 -                         (logmsg "[ok] session.create → %s" si
+          -d)                                                            
+      266 -                         (when sid                            
+      267 -                           (hermes-rpc-request                
+      268 -                            "prompt.submit"                   
+      269 -                            (list :session_id sid :text "say h
+          -i in five words")                                             
+      270 -                            (lambda (r e)                     
+      271 -                              (logmsg "[ok] prompt.submit → r=
+          -%S e=%S" r e)))))))))))                                       
+      272 -      (hermes-rpc-start)                                      
+      273 -      (pop-to-buffer log))))                                  
+      264 +  (with-current-buffer (get-buffer-create "*hermes-log*")     
+      265 +    (let ((inhibit-read-only t)) (erase-buffer))              
+      266 +    (unless (derived-mode-p 'special-mode) (special-mode)))   
+      267 +  (setq hermes-rpc-event-functions nil                        
+      268 +        hermes-rpc-stderr-functions nil                       
+      269 +        hermes-rpc-connection-functions nil                   
+      270 +        hermes-rpc-protocol-error-functions nil)              
+      271 +  (add-hook 'hermes-rpc-connection-functions                  
+      272 +            (lambda (state) (hermes-rpc--test-log "[conn] %s" 
+          +state)))                                                      
+      273 +  (add-hook 'hermes-rpc-stderr-functions                      
+      274 +            (lambda (line) (hermes-rpc--test-log "[stderr] %s"
+          + line)))                                                      
+      275 +  (add-hook 'hermes-rpc-protocol-error-functions              
+      276 +            (lambda (preview) (hermes-rpc--test-log "[bad-json
+          +] %s" preview)))                                              
+      277 +  (add-hook 'hermes-rpc-event-functions #'hermes-rpc--test-on-
+          +event)                                                        
+      278 +  (hermes-rpc-start)                                          
+      279 +  (pop-to-buffer "*hermes-log*"))                             
+      280  
+      281  (provide 'hermes-rpc)
+      282  ;;; hermes-rpc.el ends here
+
+● Bash(cd /home/ann/Projects/emacs-hermes && emacs -Q --batch -L . -f
+      batch-byte-compile hermes-events.el hermes-rpc.el 2>&1)
+  ⎿  (No output)
+
+● Clean compile. M1 is done — both files in place, no warnings.
+
+  Files written:
+  - hermes-events.el — incoming-event and outgoing-method registries verified
+  against tui_gateway/server.py
+  - hermes-rpc.el — process spawn, NDJSON framing, request/response routing with
+   async-safe pending-id map, separate stderr filter, four hooks (event, stderr,
+   protocol-error, connection), and M-x hermes-rpc-test smoke test
+
+  To verify M1 manually:
+  1. Install hermes in a venv: cd hermes-agent && uv pip install -e . (or pip 
+  install -e .)
+  2. Make sure the venv's python is on PATH, or (setq hermes-rpc-python 
+  "/path/to/venv/bin/python")
+  3. In Emacs: M-x load-file RET hermes-rpc.el RET, then M-x hermes-rpc-test
+  4. *hermes-log* should show: [conn] connecting, [event] gateway.ready ...,
+  [event] session.info ..., [event] message.start, several message.delta,
+  message.complete.
+
+  If the env or python setup needs help, say the word. Otherwise: ready for M2
+  (state + reducer + minimal renderer) when you are.
+
+✻ Cogitated for 3m 10s
+
+※ recap: Building an Emacs client for the Hermes agent in Elm-style architecture; just finished M1 (RPC plumbing over JSON-RPC stdio) and it byte-compiles cleanly. Next: install hermes in a venv and run M-x hermes-rpc-test to verify the gateway round-trip. (disable recaps in /config)
+
+❯ /skills 
+  ⎿  Skills dialog dismissed
+
+❯ M1 verified end-to-end:                                                       
+  [conn] connecting                                                             
+  [event] gateway.ready          sid=nil                                        
+  [ok] session.create -> #<session_id "c648152c" ...>                           
+  [ok] prompt.submit -> r={status: streaming}                                   
+  [event] session.info           sid=c648152c                                   
+  [event] message.start          sid=c648152c                                   
+  [event] thinking.delta         sid=c648152c  (×2)                             
+  [event] reasoning.delta        sid=c648152c                                   
+  [event] message.delta          sid=c648152c                                   
+  [event] reasoning.available    sid=c648152c                                   
+  [event] message.complete       sid=c648152c                                   
+  [conn] disconnected                                                           
+  All flows correct — gateway.ready → session.create → prompt.submit → full     
+  event stream → clean shutdown. No JSON parse errors. Stderr pipe works        
+  (reports the harmless websockets import warning).                             
+  Env is set up: .venv/ with hermes-agent installed, shell.nix with Emacs 30.2  
+  + eldev, .gitignore, .dir-locals.el, empty test/ dir.                         
+  Ready for M2. -- Keep in mind I also added Eldev/nix-shell to let you run the 
+   compilation and the ERT tests (todo) easily.                                 
+
+● Nice, M1 verified. Let me check the env setup, then write M2.
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Bash(nix-shell --run "eldev compile" 2>&1 | tail -20)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     Nothing to do
+
+● Good, env works. Writing M2: state + reducer + minimal renderer (plain text
+  streaming, no tools, no approvals).
+
+● Write(hermes-state.el)
+  ⎿  Wrote 251 lines to hermes-state.el
+          lexical-binding: t; -*-TEA-style state + reducer for Hermes -*-
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       5 ;; Package-Requires: ((emacs "27.1"))
+       6 
+       7 ;;; Commentary:
+       9 ;; Two buffer-local atoms per session: `hermes--state' (persiste
+         nt, mirrored
+      10 ;; in the Org buffer) and `hermes--ui-state' (ephemeral).  Mutat
+         ions go
+     … +273 lines (ctrl+o to expand)
+
+● Write(hermes-render.el)
+  ⎿  Wrote 195 lines to hermes-render.el
+         buffer -*- lexical-binding: t; -*-d renderer for the Hermes Org 
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       5 ;; Package-Requires: ((emacs "27.1"))
+       6 
+       7 ;;; Commentary:
+       9 ;; Two render hooks, one per atom.  `hermes--render' inspects wh
+         ich slots
+      10 ;; changed and dispatches to a sub-renderer.  Each sub-renderer 
+         touches
+     … +211 lines (ctrl+o to expand)
+
+● Write(hermes-mode.el)
+  ⎿  Wrote 134 lines to hermes-mode.el
+         point -*- lexical-binding: t; -*-d major mode and session entry 
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       5 ;; Package-Requires: ((emacs "27.1") (org "9.0"))
+       6 
+       7 ;;; Commentary:
+       9 ;; `hermes-mode' is the major mode for a conversation buffer.  I
+         t derives
+      10 ;; from `org-mode' so headlines, folding, properties and links w
+         ork for
+     … +135 lines (ctrl+o to expand)
+
+● Update(Eldev)
+  ⎿  File must be read first
+
+  Read 1 file (ctrl+o to expand)
+● Update(Eldev)
+  ⎿  Added 6 lines, removed 1 line
+       2  
+       3  (eldev-use-package-archive 'gnu)
+       4  
+       5 -(setf eldev-main-fileset '("hermes-rpc.el"))                   
+       5 +(setf eldev-main-fileset                                       
+       6 +      '("hermes-events.el"                                     
+       7 +        "hermes-rpc.el"                                        
+       8 +        "hermes-state.el"                                      
+       9 +        "hermes-render.el"                                     
+      10 +        "hermes-mode.el"))                                     
+
+● Bash(rm -f *.elc && nix-shell --run "eldev compile" 2>&1 | tail -40)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     ELC      hermes-events.el
+     … +11 lines (ctrl+o to expand)
+
+● Update(hermes-render.el)
+  ⎿  Added 3 lines
+      23  
+      24  ;;;; Buffer-local markers for the in-flight region
+      25  
+      26 +(defvar-local hermes--ui-line ""                               
+      27 +  "Right-hand status text driven by the ephemeral state.")     
+      28 +                                                               
+      29  (defvar-local hermes--stream-stable-end nil
+      30    "Marker: end of the stable (frozen) part of the in-flight ass
+          istant message.")
+      31  
+
+● Update(hermes-render.el)
+  ⎿  Added 2 lines, removed 5 lines
+      172  
+      173  ;;;; Header line
+      174  
+      175 -(defvar-local hermes--ui-line ""                              
+      176 -  "Right-hand status text driven by the ephemeral state.")    
+      177 -                                                              
+      178 -(defun hermes--render-header (state)                          
+      179 -  "Set `header-line-format' from STATE."                      
+      175 +(defun hermes--render-header (_state)                         
+      176 +  "Set `header-line-format'.  Reads `hermes--state' live via :
+          +eval."                                                        
+      177    (setq header-line-format
+      178          (list
+      179           " Hermes"
+
+● Bash(rm -f *.elc && nix-shell --run "eldev compile" 2>&1 | tail -20)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     ELC      hermes-events.el
+     … +4 lines (ctrl+o to expand)
+
+● Clean compile, no warnings. Quick sanity test of the reducer in isolation:
+
+● Bash(nix-shell --run "emacs -Q --batch -L . -l hermes-state -eval '
+      (let* ((s0 (make-hermes-state :connection (quote disconnected)))…)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     conn=connected sid=abc msgs=2 stream=nil
+     msg0=user msg1.text="Hello world"
+
+● Reducer flow works: gateway.ready → session.info → user-submit → message.start
+   → 2× delta → complete, ending with 2 committed messages (user "hi", assistant
+   "Hello world") and a cleared stream.
+
+  M2 done:
+  - hermes-state.el — defstructs, two atoms, pure reducers (persistent + UI),
+  follows all five edge-case defaults from the TUI (silent discard on
+  message.start, merge session.info, optimistic user commit, etc.)
+  - hermes-render.el — diff dispatch, stable/unstable streaming with fence-aware
+   boundary detection, header-line with connection indicator + model
+  - hermes-mode.el — org-mode-derived major mode, event routing by session_id,
+  M-x hermes to spawn + create session + open buffer, C-c C-i / M-x hermes-send
+  to submit
+
+  To verify end-to-end interactively (whenever you're ready):
+  1. M-x hermes — spawns gateway, creates session, opens *hermes:<sid>* buffer
+  2. C-c C-i → type "say hi in five words" → RET
+  3. Should see * user\nsay hi in five words\n* assistant\n<streaming text 
+  appears here> with header line showing Hermes · ● · <model>
+
+  What's deliberately deferred from M2 → M3+: tool subtrees,
+  approval/clarify/secret/sudo prompts, markdown→Org conversion (text appears as
+   raw markdown for now), input queue, slash commands, interrupt, multi-session
+  sidebar.
+
+  Ready for you to test, or want me to write ERT tests for the reducer in test/
+  first?
+
+✻ Cooked for 3m 8s
+
+❯ write ERT tests for the reducer                                               
+
+● Write(test/hermes-state-test.el)
+  ⎿  Wrote 193 lines to test/hermes-state-test.el
+         al-binding: t; -*-est.el --- ERT tests for the reducer -*- lexic
+       2 
+       3 (require 'ert)
+       4 (require 'hermes-state)
+       5 
+       7 ;;;; Helpers
+       8 (defun hermes-test--ht (&rest kvs)
+       9   "Build a hash-table from KVS, a flat plist-style list of \"key
+         \" \"value\"."
+      10   (let ((h (make-hash-table :test 'equal)))
+     … +212 lines (ctrl+o to expand)
+
+● Bash(nix-shell --run "eldev test" 2>&1 | tail -30)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     Running 18 tests (2026-05-12 23:07:42+0200, selector ‘t’)
+     … +21 lines (ctrl+o to expand)
+
+● 18/18 green.
+
+  Coverage:
+  - Initial state + connection transitions (connecting/connected/disconnected)
+  - gateway.ready sets connection + skin
+  - session.info stores id + info, merges on re-emit (locks edge-case #4)
+  - :user-submit optimistic commit
+  - message.start creates empty stream
+  - message.start silently discards in-flight (locks edge-case #1)
+  - message.delta accumulation (single + multi)
+  - thinking.delta / reasoning.delta accumulation
+  - message.complete commits stream → messages and clears
+  - message.complete without stream is a no-op (edge-case)
+  - error event → system message
+  - Purity: old state never mutated, unchanged → eq returned for unknown events
+  - Full end-to-end fold (gateway.ready → session.info → submit → start → 2×
+  delta → complete)
+  - UI reducer: status.update, message.start/complete status-text
+
+  M2 is locked. Want me to push on to M3 (tools +
+  approvals/clarify/secret/sudo), or pause for you to do an interactive smoke
+  test first?
+
+✻ Cooked for 49s
+
+※ recap: Building an Emacs client for the Hermes agent in Elm/TEA style; M1 (RPC) and M2 (state, reducer, renderer, mode) are done with 18 passing reducer tests. Next: an interactive smoke test of `M-x hermes`, or move on to M3 (tools and approval prompts). (disable recaps in /config)
+
+❯ It works wonderfully (as you can see in M2-check, if you want). We can        
+  proceed with phase 3                                                          
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Onward to M3. Three pieces: tool rendering, blocking prompts, and the reducer
+  additions to feed them.
+
+● Update(hermes-state.el)
+  ⎿  Added 82 lines
+      215                 (setf (hermes-state-messages s)
+      216                       (hermes--vector-append (hermes-state-mess
+           ages state) msg)
+      217                       (hermes-state-stream s) nil))))))
+      218 +      ;;; --- Tools ------------------------------------------
+          +---------------                                               
+      219 +      ("tool.generating"                                      
+      220 +       ;; tool.generating means a tool has been selected and i
+          +s about to run.                                               
+      221 +       ;; Add it to stream.tools if not already present.  Drop
+          + if no stream                                                 
+      222 +       ;; (edge case #2: turnController.ts:620-645).          
+      223 +       (let ((str (hermes-state-stream state))                
+      224 +             (tid (hermes--get p "tool_id"))                  
+      225 +             (tname (hermes--get p "name")))                  
+      226 +         (if (or (null str) (null tid))                       
+      227 +             state                                            
+      228 +           (let* ((tools (hermes-stream-tools str))           
+      229 +                  (already (cl-some (lambda (t)               
+      230 +                                      (equal tid (hermes-tool-
+          +id t)))                                                       
+      231 +                                    (append tools nil))))     
+      232 +             (if already                                      
+      233 +                 state                                        
+      234 +               (let ((tool (make-hermes-tool :id tid :name tna
+          +me                                                            
+      235 +                                             :status 'generati
+          +ng)))                                                         
+      236 +                 (hermes--with-copy state hermes-state-copy s 
+      237 +                   (setf (hermes-state-stream s)              
+      238 +                         (hermes--with-copy str hermes-stream-
+          +copy ns                                                       
+      239 +                           (setf (hermes-stream-tools ns)     
+      240 +                                 (hermes--vector-append tools 
+          +tool)))))))))))                                               
+      241 +      ("tool.complete"                                        
+      242 +       (let ((str (hermes-state-stream state))                
+      243 +             (tid (hermes--get p "tool_id"))                  
+      244 +             (output (hermes--get p "output"))                
+      245 +             (err    (hermes--get p "error"))                 
+      246 +             (dur    (hermes--get p "duration_s")))           
+      247 +         (if (or (null str) (null tid))                       
+      248 +             state                                            
+      249 +           (let* ((tools (hermes-stream-tools str))           
+      250 +                  (idx (cl-position-if                        
+      251 +                        (lambda (t) (equal tid (hermes-tool-id
+          + t)))                                                         
+      252 +                        tools)))                              
+      253 +             (if (null idx)                                   
+      254 +                 state                                        
+      255 +               (let* ((old-tool (aref tools idx))             
+      256 +                      (new-tool (hermes--with-copy old-tool he
+          +rmes-tool-copy nt                                             
+      257 +                                  (setf (hermes-tool-status nt
+          +)                                                             
+      258 +                                        (if err 'error 'comple
+          +te)                                                           
+      259 +                                        (hermes-tool-output nt
+          +) output                                                      
+      260 +                                        (hermes-tool-error nt)
+          + err                                                          
+      261 +                                        (hermes-tool-duration 
+          +nt) dur)))                                                    
+      262 +                      (new-tools (copy-sequence tools)))      
+      263 +                 (aset new-tools idx new-tool)                
+      264 +                 (hermes--with-copy state hermes-state-copy s 
+      265 +                   (setf (hermes-state-stream s)              
+      266 +                         (hermes--with-copy str hermes-stream-
+          +copy ns                                                       
+      267 +                           (setf (hermes-stream-tools ns) new-
+          +tools))))))))))                                               
+      268 +      ;;; --- Blocking prompts -------------------------------
+          +---------------                                               
+      269 +      ;; All four: replace wholesale; only one pending slot   
+      270 +      ;; (createGatewayEventHandler.ts:519-547).              
+      271 +      ("approval.request"                                     
+      272 +       (hermes--with-copy state hermes-state-copy s           
+      273 +         (setf (hermes-state-pending s)                       
+      274 +               (make-hermes-pending :kind 'approval           
+      275 +                                    :request-id (hermes--get p
+          + "request_id")                                                
+      276 +                                    :payload p))))            
+      277 +      ("clarify.request"                                      
+      278 +       (hermes--with-copy state hermes-state-copy s           
+      279 +         (setf (hermes-state-pending s)                       
+      280 +               (make-hermes-pending :kind 'clarify            
+      281 +                                    :request-id (hermes--get p
+          + "request_id")                                                
+      282 +                                    :payload p))))            
+      283 +      ("sudo.request"                                         
+      284 +       (hermes--with-copy state hermes-state-copy s           
+      285 +         (setf (hermes-state-pending s)                       
+      286 +               (make-hermes-pending :kind 'sudo               
+      287 +                                    :request-id (hermes--get p
+          + "request_id")                                                
+      288 +                                    :payload p))))            
+      289 +      ("secret.request"                                       
+      290 +       (hermes--with-copy state hermes-state-copy s           
+      291 +         (setf (hermes-state-pending s)                       
+      292 +               (make-hermes-pending :kind 'secret             
+      293 +                                    :request-id (hermes--get p
+          + "request_id")                                                
+      294 +                                    :payload p))))            
+      295 +      (:pending-clear                                         
+      296 +       (if (hermes-state-pending state)                       
+      297 +           (hermes--with-copy state hermes-state-copy s       
+      298 +             (setf (hermes-state-pending s) nil))             
+      299 +         state))                                              
+      300        ;;; --- Errors -----------------------------------------
+           ---------------
+      301        ("error"
+      302         (let ((text (or (hermes--get p "message") "(unknown err
+           or)")))
+
+● Now the UI reducer for tool previews and status text:
+
+● Update(hermes-state.el)
+  ⎿  Added 25 lines, removed 1 line
+      326           (setf (hermes-ui-state-status-text s) "Responding…"))
+           )
+      327        ("message.complete"
+      328         (hermes--with-copy state hermes-ui-state-copy s
+      329 -         (setf (hermes-ui-state-status-text s) nil)))         
+      329 +         (setf (hermes-ui-state-status-text s) nil            
+      330 +               (hermes-ui-state-tool-previews s) nil)))       
+      331 +      ("tool.generating"                                      
+      332 +       (let ((name (hermes--get p "name")))                   
+      333 +         (hermes--with-copy state hermes-ui-state-copy s      
+      334 +           (setf (hermes-ui-state-status-text s)              
+      335 +                 (format "Running %s…" (or name "tool"))))))  
+      336 +      ("tool.progress"                                        
+      337 +       (let ((tid (hermes--get p "tool_id"))                  
+      338 +             (preview (hermes--get p "preview")))             
+      339 +         (if (null tid)                                       
+      340 +             state                                            
+      341 +           (hermes--with-copy state hermes-ui-state-copy s    
+      342 +             (setf (hermes-ui-state-tool-previews s)          
+      343 +                   (cons (cons tid preview)                   
+      344 +                         (assoc-delete-all                    
+      345 +                          tid (hermes-ui-state-tool-previews s
+          +tate))))))))                                                  
+      346 +      ("tool.complete"                                        
+      347 +       (let ((tid (hermes--get p "tool_id")))                 
+      348 +         (if (null tid)                                       
+      349 +             state                                            
+      350 +           (hermes--with-copy state hermes-ui-state-copy s    
+      351 +             (setf (hermes-ui-state-tool-previews s)          
+      352 +                   (assoc-delete-all                          
+      353 +                    tid (hermes-ui-state-tool-previews state))
+          +)))))                                                         
+      354        (_ state))))
+      355  
+      356  (provide 'hermes-state)
+
+● Now the renderer: tool subtrees during streaming.
+
+● Update(hermes-render.el)
+  ⎿  Added 9 lines, removed 1 line
+      30    "Marker: end of the stable (frozen) part of the in-flight ass
+          istant message.")
+      31  
+      32  (defvar-local hermes--stream-end nil
+      33 -  "Marker: end of the unstable suffix.  Points at buffer end wh
+         -ile streaming.")                                               
+      33 +  "Marker: end of the unstable suffix.                         
+      34 +Text inserts happen between `hermes--stream-stable-end' and thi
+         +s marker;                                                      
+      35 +tool subtrees accumulate AFTER this marker.")                  
+      36  
+      37 +(defvar-local hermes--stream-tool-markers nil                  
+      38 +  "Alist of tool-id (string) → marker at the tool's headline st
+         +art.")                                                         
+      39 +                                                               
+      40 +(defvar-local hermes--stream-headline-marker nil               
+      41 +  "Marker at the start of the in-flight `* assistant' headline.
+         +")                                                             
+      42 +                                                               
+      43  ;;;; Top-level dispatch
+      44  
+      45  (defun hermes--render (old new)
+
+● Update(hermes-render.el)
+  ⎿  Added 7 lines, removed 2 lines
+      101    "Insert a `* assistant' headline and prepare the in-flight m
+           arkers."
+      102    (goto-char (point-max))
+      103    (unless (bolp) (insert "\n"))
+      104 +  (setq hermes--stream-headline-marker (point-marker))        
+      105 +  (set-marker-insertion-type hermes--stream-headline-marker ni
+          +l)                                                            
+      106    (insert "* assistant\n")
+      107    (setq hermes--stream-stable-end (point-marker)
+      106 -        hermes--stream-end        (point-marker))             
+      107 -  ;; Both markers must advance when text is inserted at their 
+          -position.                                                     
+      108 +        hermes--stream-end        (point-marker)              
+      109 +        hermes--stream-tool-markers nil)                      
+      110 +  ;; stable-end stays put on insert (we want appended chars to
+          + go AFTER it                                                  
+      111 +  ;; only when we explicitly advance it); stream-end follows i
+          +nsertions so                                                  
+      112 +  ;; it always points at end-of-text.                         
+      113    (set-marker-insertion-type hermes--stream-stable-end nil)
+      114    (set-marker-insertion-type hermes--stream-end       t))
+      115  
+● Update(hermes-render.el)
+  ⎿  Added 24 lines, removed 6 lines
+      114    (set-marker-insertion-type hermes--stream-end       t))
+      115  
+      116  (defun hermes--stream-commit ()
+      117 -  "Stream finished: drop markers; the buffer text is already c
+          -orrect."                                                      
+      118 -  (when (markerp hermes--stream-stable-end)                   
+      119 -    (set-marker hermes--stream-stable-end nil))               
+      120 -  (when (markerp hermes--stream-end)                          
+      121 -    (set-marker hermes--stream-end nil))                      
+      117 +  "Stream finished: stamp Org :ID:s on the trail, drop markers
+          +."                                                            
+      118 +  ;; Walk every in-flight tool subtree and stamp it with an :I
+          +D:.                                                           
+      119 +  (dolist (cell hermes--stream-tool-markers)                  
+      120 +    (let ((m (cdr cell)))                                     
+      121 +      (when (and (markerp m) (marker-position m))             
+      122 +        (save-excursion                                       
+      123 +          (goto-char m)                                       
+      124 +          (ignore-errors (org-id-get-create))))))             
+      125 +  ;; Stamp the assistant headline itself so external Org buffe
+          +rs can cite it.                                               
+      126 +  (when (and (markerp hermes--stream-headline-marker)         
+      127 +             (marker-position hermes--stream-headline-marker))
+      128 +    (save-excursion                                           
+      129 +      (goto-char hermes--stream-headline-marker)              
+      130 +      (ignore-errors (org-id-get-create))))                   
+      131 +  ;; Drop the markers; the buffer text is already correct.    
+      132 +  (dolist (m (list hermes--stream-stable-end                  
+      133 +                   hermes--stream-end                         
+      134 +                   hermes--stream-headline-marker))           
+      135 +    (when (markerp m) (set-marker m nil)))                    
+      136 +  (dolist (cell hermes--stream-tool-markers)                  
+      137 +    (when (markerp (cdr cell)) (set-marker (cdr cell) nil)))  
+      138    (setq hermes--stream-stable-end nil
+      123 -        hermes--stream-end nil))                              
+      139 +        hermes--stream-end nil                                
+      140 +        hermes--stream-headline-marker nil                    
+      141 +        hermes--stream-tool-markers nil))                     
+      142  
+      143  (defun hermes--stream-update (old-stream new-stream)
+      144    "Reflect OLD-STREAM → NEW-STREAM into the buffer."
+
+● Update(hermes-render.el)
+  ⎿  Added 5 lines, removed 1 line
+      149    (let* ((old-text (and old-stream (hermes-stream-text old-str
+           eam)))
+      150           (new-text (hermes-stream-text new-stream)))
+      151      (unless (equal old-text new-text)
+      152 -      (hermes--rewrite-stream new-text))))                    
+      152 +      (hermes--rewrite-stream new-text)))                     
+      153 +  (let ((old-tools (and old-stream (hermes-stream-tools old-st
+          +ream)))                                                       
+      154 +        (new-tools (hermes-stream-tools new-stream)))         
+      155 +    (unless (eq old-tools new-tools)                          
+      156 +      (hermes--render-stream-tools old-tools new-tools))))    
+      157  
+      158  (defun hermes--rewrite-stream (text)
+      159    "Place TEXT into the in-flight region using a stable/unstabl
+           e split.
+
+● Now the tool subtree rendering:
+
+● Update(hermes-render.el)
+  ⎿  Added 79 lines
+      205         (t (setq i (1+ i)))))
+      206      last-boundary))
+      207  
+      208 +;;;; Tool subtrees                                            
+      209 +                                                              
+      210 +(defun hermes--render-stream-tools (old-tools new-tools)      
+      211 +  "Sync OLD-TOOLS → NEW-TOOLS by inserting or rewriting subtre
+          +es at point-max."                                             
+      212 +  ;; Pass 1: any new tool not present before → insert a subtre
+          +e at point-max.                                               
+      213 +  (let ((old-ids (mapcar #'hermes-tool-id (append old-tools ni
+          +l))))                                                         
+      214 +    (dotimes (i (length new-tools))                           
+      215 +      (let ((tool (aref new-tools i)))                        
+      216 +        (unless (member (hermes-tool-id tool) old-ids)        
+      217 +          (hermes--insert-tool-subtree tool)))))              
+      218 +  ;; Pass 2: any tool whose status/output changed → rewrite su
+          +btree in place.                                               
+      219 +  (let ((n (min (length old-tools) (length new-tools))))      
+      220 +    (dotimes (i n)                                            
+      221 +      (let ((old (aref old-tools i))                          
+      222 +            (new (aref new-tools i)))                         
+      223 +        (unless (eq old new)                                  
+      224 +          (hermes--rewrite-tool-subtree new))))))             
+      225 +                                                              
+      226 +(defun hermes--insert-tool-subtree (tool)                     
+      227 +  "Append the subtree for TOOL at point-max, recording a marke
+          +r."                                                           
+      228 +  (goto-char (point-max))                                     
+      229 +  (unless (bolp) (insert "\n"))                               
+      230 +  (let ((start (point-marker)))                               
+      231 +    (set-marker-insertion-type start nil)                     
+      232 +    (insert (hermes--format-tool-subtree tool))               
+      233 +    (push (cons (hermes-tool-id tool) start) hermes--stream-to
+          +ol-markers)))                                                 
+      234 +                                                              
+      235 +(defun hermes--rewrite-tool-subtree (tool)                    
+      236 +  "Locate TOOL's subtree via its marker and replace its conten
+          +ts."                                                          
+      237 +  (let ((m (alist-get (hermes-tool-id tool)                   
+      238 +                      hermes--stream-tool-markers nil nil #'eq
+          +ual)))                                                        
+      239 +    (when (and (markerp m) (marker-position m))               
+      240 +      (save-excursion                                         
+      241 +        (goto-char m)                                         
+      242 +        (let ((beg (point))                                   
+      243 +              (end (save-excursion                            
+      244 +                     (forward-line 1)                         
+      245 +                     (let ((next (save-excursion              
+      246 +                                   (re-search-forward "^\\* " 
+          +nil t))))                                                     
+      247 +                       (if next                               
+      248 +                           (progn (forward-line -1)           
+      249 +                                  (line-beginning-position 2))
+      250 +                         (point-max))))))                     
+      251 +          ;; Find the start of the next sibling `**' or higher
+          + to bound.                                                    
+      252 +          (setq end (save-excursion                           
+      253 +                      (goto-char beg)                         
+      254 +                      (forward-line 1)                        
+      255 +                      (if (re-search-forward "^\\*\\{1,2\\} " 
+          +nil t)                                                        
+      256 +                          (line-beginning-position)           
+      257 +                        (point-max))))                        
+      258 +          (delete-region beg end)                             
+      259 +          (insert (hermes--format-tool-subtree tool)))))))    
+      260 +                                                              
+      261 +(defun hermes--format-tool-subtree (tool)                     
+      262 +  "Return the Org text for TOOL's subtree (headline + drawer +
+          + output)."                                                    
+      263 +  (let* ((name (or (hermes-tool-name tool) "tool"))           
+      264 +         (status (hermes-tool-status tool))                   
+      265 +         (dur (hermes-tool-duration tool))                    
+      266 +         (status-label (pcase status                          
+      267 +                         ('generating "running…")             
+      268 +                         ('running    "running…")             
+      269 +                         ('complete   (if dur (format "%.1fs" 
+          +dur) "done"))                                                 
+      270 +                         ('error      "error")                
+      271 +                         (_           (format "%s" status)))) 
+      272 +         (output (hermes-tool-output tool))                   
+      273 +         (err    (hermes-tool-error tool)))                   
+      274 +    (concat                                                   
+      275 +     (format "** %s (%s)                                      
+          +        :hermes-tool:\n"                                      
+      276 +             name status-label)                               
+      277 +     ":PROPERTIES:\n"                                         
+      278 +     (format ":tool_id:  %s\n" (hermes-tool-id tool))         
+      279 +     (format ":status:   %s\n" status)                        
+      280 +     (when dur (format ":duration: %s\n" dur))                
+      281 +     ":END:\n"                                                
+      282 +     (cond                                                    
+      283 +      (err    (format "#+begin_example\n%s\n#+end_example\n" e
+          +rr))                                                          
+      284 +      (output (format "#+begin_example\n%s\n#+end_example\n" o
+          +utput))                                                       
+      285 +      (t      "")))))                                         
+      286 +                                                              
+      287  ;;;; Header line
+      288  
+      289  (defun hermes--render-header (_state)
+
+● Now the prompts module:
+
+● Write(hermes-prompts.el)
+  ⎿  Wrote 116 lines to hermes-prompts.el
+         fy/secret/sudo -*- lexical-binding: t; -*-ers for approval/clari
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       5 ;; Package-Requires: ((emacs "27.1"))
+       6 
+       7 ;;; Commentary:
+       9 ;; Watches the persistent state's `pending' slot.  When it becom
+         es non-nil,
+      10 ;; schedules a minibuffer interaction (via `run-at-time' 0 so th
+         e renderer
+     … +118 lines (ctrl+o to expand)
+
+● Wire prompts into the major mode and add interrupt:
+
+● Update(hermes-mode.el)
+  ⎿  Added 1 line
+      21  (require 'hermes-events)
+      22  (require 'hermes-state)
+      23  (require 'hermes-render)
+      24 +(require 'hermes-prompts)                                      
+      25  
+      26  ;;;; Routing: filter event → buffer
+      27  
+
+● Update(hermes-mode.el)
+  ⎿  Added 1 line
+      75  (defvar hermes-mode-map
+      76    (let ((m (make-sparse-keymap)))
+      77      (define-key m (kbd "C-c C-i") #'hermes-send)
+      78 +    (define-key m (kbd "C-c C-k") #'hermes-interrupt)          
+      79      m)
+      80    "Keymap for `hermes-mode'.")
+      81  
+
+● Update(hermes-mode.el)
+  ⎿  Added 3 lines, removed 2 lines
+      84    (setq-local org-startup-folded nil)
+      85    (setq buffer-read-only t)
+      86    (hermes-state-init)
+      87 -  (add-hook 'hermes-state-change-hook    #'hermes--render    ni
+         -l t)                                                           
+      88 -  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui ni
+         -l t)                                                           
+      87 +  (add-hook 'hermes-state-change-hook    #'hermes--render      
+         +  nil t)                                                       
+      88 +  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch
+         +  nil t)                                                       
+      89 +  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui   
+         +  nil t)                                                       
+      90    ;; Initial header line.
+      91    (with-silent-modifications
+      92      (hermes--render-header hermes--state)))
+
+● Update(hermes-mode.el)
+  ⎿  Added 12 lines
+      133                          (lambda (_r e)
+      134                            (when e (message "hermes: prompt.sub
+           mit error: %S" e))))))
+      135  
+      136 +(defun hermes-interrupt ()                                    
+      137 +  "Send `session.interrupt' for the current session."         
+      138 +  (interactive)                                               
+      139 +  (unless (derived-mode-p 'hermes-mode)                       
+      140 +    (user-error "Not in a Hermes buffer"))                    
+      141 +  (let ((sid (hermes-state-session-id hermes--state)))        
+      142 +    (unless sid (user-error "No session id in this buffer"))  
+      143 +    (hermes-rpc-request "session.interrupt"                   
+      144 +                        (list :session_id sid)                
+      145 +                        (lambda (_r e)                        
+      146 +                          (when e (message "hermes: interrupt 
+          +error: %S" e))))))                                            
+      147 +                                                              
+      148  (provide 'hermes-mode)
+      149  ;;; hermes-mode.el ends here
+
+● Update(Eldev)
+  ⎿  Added 1 line
+       7          "hermes-rpc.el"
+       8          "hermes-state.el"
+       9          "hermes-render.el"
+      10 +        "hermes-prompts.el"                                    
+      11          "hermes-mode.el"))
+
+● Bash(rm -f *.elc test/*.elc && nix-shell --run "eldev compile" 2>&1 | tail
+      -30)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     ELC      hermes-events.el
+     … +7 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(hermes-state.el)
+  ⎿  Added 2 lines, removed 2 lines
+      226           (if (or (null str) (null tid))
+      227               state
+      228             (let* ((tools (hermes-stream-tools str))
+      229 -                  (already (cl-some (lambda (t)               
+      230 -                                      (equal tid (hermes-tool-
+          -id t)))                                                       
+      229 +                  (already (cl-some (lambda (tl)              
+      230 +                                      (equal tid (hermes-tool-
+          +id tl)))                                                      
+      231                                      (append tools nil))))
+      232               (if already
+      233                   state
+
+● Update(hermes-state.el)
+  ⎿  Added 1 line, removed 1 line
+      248               state
+      249             (let* ((tools (hermes-stream-tools str))
+      250                    (idx (cl-position-if
+      251 -                        (lambda (t) (equal tid (hermes-tool-id
+          - t)))                                                         
+      251 +                        (lambda (tl) (equal tid (hermes-tool-i
+          +d tl)))                                                       
+      252                          tools)))
+      253               (if (null idx)
+      254                   state
+
+● Bash(rm -f *.elc test/*.elc && nix-shell --run "eldev compile" 2>&1 | tail
+      -30)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     ELC      hermes-events.el
+     … +5 lines (ctrl+o to expand)
+
+● Clean. Now extend the test suite for the M3 reducer additions:
+
+● Update(test/hermes-state-test.el)
+  ⎿  Added 164 lines
+      189      (should (equal "Responding…" (hermes-ui-state-status-text 
+           s1)))
+      190      (should (null (hermes-ui-state-status-text s2)))))
+      191  
+      192 +;;;; Tools                                                    
+      193 +                                                              
+      194 +(ert-deftest hermes-state-test/tool-generating-adds-to-stream 
+          +()                                                            
+      195 +  (let* ((s (hermes-test--reduce*                             
+      196 +             nil                                              
+      197 +             (cons "message.start" nil)                       
+      198 +             (cons "tool.generating"                          
+      199 +                   (hermes-test--ht "tool_id" "t1" "name" "bas
+          +h"))))                                                        
+      200 +         (tools (hermes-stream-tools (hermes-state-stream s)))
+          +)                                                             
+      201 +    (should (= 1 (length tools)))                             
+      202 +    (should (equal "t1"   (hermes-tool-id (aref tools 0))))   
+      203 +    (should (equal "bash" (hermes-tool-name (aref tools 0)))) 
+      204 +    (should (eq 'generating (hermes-tool-status (aref tools 0)
+          +)))))                                                         
+      205 +                                                              
+      206 +(ert-deftest hermes-state-test/tool-generating-without-stream-
+          +dropped ()                                                    
+      207 +  ;; Edge case #2: tool events with no stream are dropped (tur
+          +nController.ts:620).                                          
+      208 +  (let* ((s0 (hermes--reduce nil '(:connected)))              
+      209 +         (s1 (hermes--reduce s0 (cons "tool.generating"       
+      210 +                                      (hermes-test--ht "tool_i
+          +d" "t1"                                                       
+      211 +                                                       "name" 
+          +"bash")))))                                                   
+      212 +    (should (eq s0 s1))))                                     
+      213 +                                                              
+      214 +(ert-deftest hermes-state-test/tool-generating-deduplicates ()
+      215 +  (let* ((s (hermes-test--reduce*                             
+      216 +             nil                                              
+      217 +             (cons "message.start" nil)                       
+      218 +             (cons "tool.generating"                          
+      219 +                   (hermes-test--ht "tool_id" "t1" "name" "bas
+          +h"))                                                          
+      220 +             (cons "tool.generating"                          
+      221 +                   (hermes-test--ht "tool_id" "t1" "name" "bas
+          +h"))))                                                        
+      222 +         (tools (hermes-stream-tools (hermes-state-stream s)))
+          +)                                                             
+      223 +    (should (= 1 (length tools)))))                           
+      224 +                                                              
+      225 +(ert-deftest hermes-state-test/tool-complete-updates-status ()
+      226 +  (let* ((s (hermes-test--reduce*                             
+      227 +             nil                                              
+      228 +             (cons "message.start" nil)                       
+      229 +             (cons "tool.generating"                          
+      230 +                   (hermes-test--ht "tool_id" "t1" "name" "bas
+          +h"))                                                          
+      231 +             (cons "tool.complete"                            
+      232 +                   (hermes-test--ht "tool_id" "t1"            
+      233 +                                    "output" "file1\nfile2"   
+      234 +                                    "duration_s" 2.3))))      
+      235 +         (tool (aref (hermes-stream-tools (hermes-state-stream
+          + s)) 0)))                                                     
+      236 +    (should (eq 'complete (hermes-tool-status tool)))         
+      237 +    (should (equal "file1\nfile2" (hermes-tool-output tool))) 
+      238 +    (should (equal 2.3 (hermes-tool-duration tool)))))        
+      239 +                                                              
+      240 +(ert-deftest hermes-state-test/tool-complete-with-error-marks-
+          +error ()                                                      
+      241 +  (let* ((s (hermes-test--reduce*                             
+      242 +             nil                                              
+      243 +             (cons "message.start" nil)                       
+      244 +             (cons "tool.generating"                          
+      245 +                   (hermes-test--ht "tool_id" "t1" "name" "bas
+          +h"))                                                          
+      246 +             (cons "tool.complete"                            
+      247 +                   (hermes-test--ht "tool_id" "t1" "error" "ka
+          +boom"))))                                                     
+      248 +         (tool (aref (hermes-stream-tools (hermes-state-stream
+          + s)) 0)))                                                     
+      249 +    (should (eq 'error (hermes-tool-status tool)))            
+      250 +    (should (equal "kaboom" (hermes-tool-error tool)))))      
+      251 +                                                              
+      252 +(ert-deftest hermes-state-test/tool-complete-without-matching-
+          +tool-noop ()                                                  
+      253 +  (let* ((s0 (hermes--reduce nil (cons "message.start" nil))) 
+      254 +         (s1 (hermes--reduce s0 (cons "tool.complete"         
+      255 +                                      (hermes-test--ht "tool_i
+          +d" "ghost"                                                    
+      256 +                                                       "output
+          +" "?")))))                                                    
+      257 +    (should (eq s0 s1))))                                     
+      258 +                                                              
+      259 +(ert-deftest hermes-state-test/tools-commit-with-message ()   
+      260 +  (let* ((s (hermes-test--reduce*                             
+      261 +             nil                                              
+      262 +             (cons "message.start" nil)                       
+      263 +             (cons "message.delta" (hermes-test--ht "text" "ok
+          +"))                                                           
+      264 +             (cons "tool.generating"                          
+      265 +                   (hermes-test--ht "tool_id" "t1" "name" "bas
+          +h"))                                                          
+      266 +             (cons "tool.complete"                            
+      267 +                   (hermes-test--ht "tool_id" "t1" "output" "d
+          +one"))                                                        
+      268 +             (cons "message.complete" nil)))                  
+      269 +         (msg (hermes-test--last-msg s)))                     
+      270 +    (should (null (hermes-state-stream s)))                   
+      271 +    (should (eq 'assistant (hermes-message-kind msg)))        
+      272 +    (should (= 1 (length (hermes-message-tools msg))))        
+      273 +    (should (eq 'complete (hermes-tool-status (aref (hermes-me
+          +ssage-tools msg) 0))))))                                      
+      274 +                                                              
+      275 +;;;; Blocking prompts                                         
+      276 +                                                              
+      277 +(ert-deftest hermes-state-test/approval-request-sets-pending (
+          +)                                                             
+      278 +  (let* ((s (hermes--reduce nil                               
+      279 +                            (cons "approval.request"          
+      280 +                                  (hermes-test--ht "request_id
+          +" "r1"                                                        
+      281 +                                                   "command" "
+          +ls"))))                                                       
+      282 +         (pend (hermes-state-pending s)))                     
+      283 +    (should (hermes-pending-p pend))                          
+      284 +    (should (eq 'approval (hermes-pending-kind pend)))        
+      285 +    (should (equal "r1" (hermes-pending-request-id pend)))))  
+      286 +                                                              
+      287 +(ert-deftest hermes-state-test/second-pending-replaces-first (
+          +)                                                             
+      288 +  ;; Edge case #3: single overlay slot (createGatewayEventHand
+          +ler.ts:519).                                                  
+      289 +  (let* ((s1 (hermes--reduce nil                              
+      290 +                             (cons "approval.request"         
+      291 +                                   (hermes-test--ht "request_i
+          +d" "r1"))))                                                   
+      292 +         (s2 (hermes--reduce s1                               
+      293 +                             (cons "clarify.request"          
+      294 +                                   (hermes-test--ht "request_i
+          +d" "r2"                                                       
+      295 +                                                    "question"
+          + "?"))))                                                      
+      296 +         (pend (hermes-state-pending s2)))                    
+      297 +    (should (eq 'clarify (hermes-pending-kind pend)))         
+      298 +    (should (equal "r2" (hermes-pending-request-id pend)))))  
+      299 +                                                              
+      300 +(ert-deftest hermes-state-test/pending-clear-resets-slot ()   
+      301 +  (let* ((s1 (hermes--reduce nil                              
+      302 +                             (cons "approval.request"         
+      303 +                                   (hermes-test--ht "request_i
+          +d" "r1"))))                                                   
+      304 +         (s2 (hermes--reduce s1 '(:pending-clear))))          
+      305 +    (should (null (hermes-state-pending s2)))))               
+      306 +                                                              
+      307 +(ert-deftest hermes-state-test/pending-clear-when-empty-is-noo
+          +p ()                                                          
+      308 +  (let* ((s0 (hermes--reduce nil '(:connected)))              
+      309 +         (s1 (hermes--reduce s0 '(:pending-clear))))          
+      310 +    (should (eq s0 s1))))                                     
+      311 +                                                              
+      312 +(ert-deftest hermes-state-test/sudo-and-secret-request-set-pen
+          +ding ()                                                       
+      313 +  (let* ((s1 (hermes--reduce nil                              
+      314 +                             (cons "sudo.request"             
+      315 +                                   (hermes-test--ht "request_i
+          +d" "s1"))))                                                   
+      316 +         (s2 (hermes--reduce nil                              
+      317 +                             (cons "secret.request"           
+      318 +                                   (hermes-test--ht "request_i
+          +d" "s2"                                                       
+      319 +                                                    "env_var" 
+          +"OPENAI_KEY")))))                                             
+      320 +    (should (eq 'sudo   (hermes-pending-kind (hermes-state-pen
+          +ding s1))))                                                   
+      321 +    (should (eq 'secret (hermes-pending-kind (hermes-state-pen
+          +ding s2))))))                                                 
+      322 +                                                              
+      323 +;;;; UI reducer for tools                                     
+      324 +                                                              
+      325 +(ert-deftest hermes-state-test/ui-tool-progress-updates-previe
+          +w ()                                                          
+      326 +  (let* ((s1 (hermes--ui-reduce nil                           
+      327 +                                (cons "tool.progress"         
+      328 +                                      (hermes-test--ht "tool_i
+          +d" "t1"                                                       
+      329 +                                                       "previe
+          +w" "ls /tmp"))))                                              
+      330 +         (s2 (hermes--ui-reduce s1                            
+      331 +                                (cons "tool.progress"         
+      332 +                                      (hermes-test--ht "tool_i
+          +d" "t1"                                                       
+      333 +                                                       "previe
+          +w" "ls /var")))))                                             
+      334 +    (should (equal "ls /var"                                  
+      335 +                   (alist-get "t1" (hermes-ui-state-tool-previ
+          +ews s2)                                                       
+      336 +                              nil nil #'equal)))))            
+      337 +                                                              
+      338 +(ert-deftest hermes-state-test/ui-tool-complete-clears-preview
+          + ()                                                           
+      339 +  (let* ((s1 (hermes--ui-reduce nil                           
+      340 +                                (cons "tool.progress"         
+      341 +                                      (hermes-test--ht "tool_i
+          +d" "t1"                                                       
+      342 +                                                       "previe
+          +w" "ls"))))                                                   
+      343 +         (s2 (hermes--ui-reduce s1                            
+      344 +                                (cons "tool.complete"         
+      345 +                                      (hermes-test--ht "tool_i
+          +d" "t1")))))                                                  
+      346 +    (should (null (alist-get "t1" (hermes-ui-state-tool-previe
+          +ws s2)                                                        
+      347 +                             nil nil #'equal)))))             
+      348 +                                                              
+      349 +(ert-deftest hermes-state-test/ui-tool-generating-sets-status 
+          +()                                                            
+      350 +  (let ((s (hermes--ui-reduce nil                             
+      351 +                              (cons "tool.generating"         
+      352 +                                    (hermes-test--ht "tool_id"
+          + "t1"                                                         
+      353 +                                                     "name" "b
+          +ash")))))                                                     
+      354 +    (should (equal "Running bash…" (hermes-ui-state-status-tex
+          +t s)))))                                                      
+      355 +                                                              
+      356  (provide 'hermes-state-test)
+      357  ;;; hermes-state-test.el ends here
+
+● Bash(nix-shell --run "eldev test" 2>&1 | tail -40)
+  ⎿  emacs-hermes development shell
+     Run 'eldev test' to run tests
+     Running 33 tests (2026-05-12 23:49:24+0200, selector ‘t’)
+     … +39 lines (ctrl+o to expand)
+
+● 33/33 green. M3 complete.
+
+  What landed:
+
+  Reducer (hermes-state.el):
+  - tool.generating → appends to stream.tools (deduplicates by id, drops if no
+  stream — edge case #2)
+  - tool.complete → updates by id, marks error status if error field present
+  - approval.request / clarify.request / sudo.request / secret.request → set
+  pending (single slot, edge case #3)
+  - :pending-clear internal action
+
+  UI reducer:
+  - tool.progress → upsert preview in tool-previews alist
+  - tool.complete → drops the preview entry
+  - tool.generating → sets status-text to "Running …"
+
+  Renderer (hermes-render.el):
+  - Per-tool subtree as ** under the assistant headline, with :tool_id: and
+  :status: properties + #+begin_example output block
+  - Tools insert at point-max on first appearance, rewritten in place on status
+  change (subtree replace by marker → next ^\*\{1,2\}  boundary)
+  - On message.complete, org-id-get-create stamps :ID: on the assistant headline
+   AND every tool subtree so external Org buffers can [[id:…]] cite them; then
+  all markers dropped
+
+  Prompts (hermes-prompts.el):
+  - Hook watches pending slot, schedules via run-at-time 0, guards re-entrancy
+  with hermes--pending-active
+  - approval → read-multiple-choice (yes/all/no) → approval.respond {choice, 
+  all}
+  - clarify → completing-read over choices (free text if none) → clarify.respond
+   {answer}
+  - sudo → read-passwd → sudo.respond {password}
+  - secret → read-passwd (uses env_var as hint) → secret.respond {value}
+  - On exit, always :pending-clear via unwind-protect
+
+  Mode (hermes-mode.el):
+  - C-c C-k → hermes-interrupt → session.interrupt
+  - hermes-prompts-watch wired into hermes-state-change-hook
+
+  Test coverage added: 15 new tests for tools, prompts (state), and UI tools,
+  all green.
+
+  Ready for an interactive smoke test whenever you want to drive a tool through.
+   Next up (M4) would be: input queue, slash-command catalog + completion,
+  history ring. Or pause for testing first?
+
+✻ Baked for 3m 38s
+
+❯ /status 
+  ⎿  Status dialog dismissed
+❯ /usage 
+  ⎿  Status dialog dismissed
+
+※ recap: Building emacs-hermes, an Emacs client for the Hermes agent via JSON-RPC stdio. M1–M3 done and tested (33 ERT green): RPC, state/reducer, renderer, tool subtrees, blocking prompts, interrupt. Next: interactive smoke test of M3, then M4 (input queue + slash commands). (disable recaps in /config)
+
+❯ perfect. smoke tests works fine                                               
+
+● Great. Ready for M4 (input queue + slash commands + history) when you are — or
+   pause here for now?
+
+✻ Churned for 6s

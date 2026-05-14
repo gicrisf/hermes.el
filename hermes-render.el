@@ -41,7 +41,12 @@ tool subtrees accumulate AFTER this marker.")
   "Alist of tool-id (string) → marker at the tool's headline start.")
 
 (defvar-local hermes--stream-headline-marker nil
-  "Marker at the start of the in-flight `* assistant' headline.")
+  "Marker at the start of the in-flight `** assistant' headline.")
+
+(defvar-local hermes--stream-content-start nil
+  "Marker: position where stream body text begins (right after the
+assistant property drawer).  Used to compute the `already' offset so
+the property drawer is not counted as stream text.")
 
 ;;;; Top-level dispatch
 
@@ -91,25 +96,47 @@ tool subtrees accumulate AFTER this marker.")
 (defun hermes--render-committed-message (msg)
   "Append MSG to the buffer.  Skip assistant messages — those are streamed."
   (pcase (hermes-message-kind msg)
-    ('user      (hermes--insert-headline "user"   'hermes-user-face
-                                         (hermes-message-text msg)))
-    ('system    (hermes--insert-headline "system" 'hermes-system-face
-                                         (hermes-message-text msg)))
-    ('assistant
-     ;; Streaming already rendered the text; we only need to make sure the
-     ;; sentinel markers are gone (stream-commit handles that).
-     nil)))
+    ('user      (hermes--insert-turn-headline 'user   'hermes-user-face
+                                              (hermes-message-text msg)))
+    ('system    (hermes--insert-turn-headline 'system 'hermes-system-face
+                                              (hermes-message-text msg)))
+    ('assistant nil)))
 
-(defun hermes--insert-headline (kind face text)
-  "Insert a `* KIND' headline (tinted with FACE) followed by TEXT at `point-max'."
+(defun hermes--insert-turn-headline (kind face text)
+  "Insert a level-1 heading for a new turn (user or system message).
+
+The heading line shows the first line of TEXT, truncated to a
+readable prefix.  The full TEXT goes in the body.  A property
+drawer with HERMES_SESSION, HERMES_MODEL, HERMES_TIMESTAMP, and
+an Org :ID: is stamped."
   (goto-char (point-max))
   (unless (bolp) (insert "\n"))
-  (let ((hb (point)))
-    (insert (format "* %s\n" kind))
-    (hermes--face-overlay hb (1- (point)) face))
-  (when (and text (not (string-empty-p text)))
-    (insert text)
-    (unless (eq (char-before) ?\n) (insert "\n"))))
+  (let* ((prefix   (hermes--first-line (or text "")))
+         (tag      (symbol-name kind))
+         (heading  (format "* %s: %s" tag prefix))
+         (sid      (or (hermes-state-session-id hermes--state) ""))
+         (info     (hermes-state-session-info hermes--state))
+         (model    (and (hash-table-p info) (gethash "model" info)))
+         (hb       (point)))
+    (insert (format "%s %s\n" heading (hermes--tag-spacer heading)))
+    (hermes--face-overlay hb (1- (point)) face)
+    (hermes--insert-properties
+     `(("HERMES_SESSION" . ,sid)
+       ("HERMES_MODEL" . ,model)
+       ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
+    (when (derived-mode-p 'org-mode)
+      (goto-char hb)
+      (ignore-errors (org-id-get-create))
+      (goto-char (point-max)))
+    (when (and text (not (string-empty-p text)))
+      (insert text)
+      (unless (eq (char-before) ?\n) (insert "\n")))))
+
+(defun hermes--tag-spacer (heading)
+  "Return enough spaces to right-align a :HERMES: tag at column 80."
+  (let* ((width (string-width heading))
+         (pad   (- 77 width)))
+    (if (> pad 0) (make-string pad ?\s) " ")))
 
 (defun hermes--face-overlay (beg end face)
   "Put a face overlay over the headline region [BEG, END)."
@@ -117,35 +144,63 @@ tool subtrees accumulate AFTER this marker.")
     (overlay-put ov 'face face)
     (overlay-put ov 'hermes-headline t)))
 
+;;; Shell helpers
+
+(defun hermes--first-line (text)
+  "Return TEXT up to (but not including) the first newline."
+  (let ((pos (cl-position ?\n text)))
+    (if pos (substring text 0 pos) text)))
+
+(defun hermes--now-iso ()
+  "Return current time as an ISO-8601 string."
+  (format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+
+(defun hermes--insert-properties (alist)
+  "Insert a :PROPERTIES: drawer from ALIST ((prop . value) …) at point."
+  (insert ":PROPERTIES:\n")
+  (dolist (cell alist)
+    (let ((prop (car cell))
+          (val  (cdr cell)))
+      (insert (format ":%s: %s\n" prop (or val "")))))
+  (insert ":END:\n"))
+
 ;;;; Stream lifecycle
 
 (defun hermes--stream-begin ()
-  "Insert a `* assistant' headline and prepare the in-flight markers."
+  "Insert a `** assistant' headline with a property drawer and prepare markers."
   (goto-char (point-max))
   (unless (bolp) (insert "\n"))
   (setq hermes--stream-headline-marker (point-marker))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
-  (let ((hb (point)))
-    (insert "* assistant\n")
+  (let ((hb (point))
+        (heading "** assistant")
+        (spacer  (make-string (- 74 (length "** assistant")) ?\s)))
+    (insert (format "%s %s :hermes:\n" heading spacer))
     (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face))
-  (setq hermes--stream-stable-end (point-marker)
-        hermes--stream-end        (point-marker)
-        hermes--stream-tool-markers nil)
-  ;; stable-end stays put on insert (we want appended chars to go AFTER it
-  ;; only when we explicitly advance it); stream-end follows insertions so
-  ;; it always points at end-of-text.
-  (set-marker-insertion-type hermes--stream-stable-end nil)
-  (set-marker-insertion-type hermes--stream-end       t))
+  (hermes--insert-properties
+   `(("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
+  (when (derived-mode-p 'org-mode)
+    (save-excursion
+      (goto-char hermes--stream-headline-marker)
+      (ignore-errors (org-id-get-create))))
+  (setq hermes--stream-content-start (point-marker)
+        hermes--stream-stable-end    (point-marker)
+        hermes--stream-end           (point-marker)
+        hermes--stream-tool-markers  nil)
+  (set-marker-insertion-type hermes--stream-content-start nil)
+  (set-marker-insertion-type hermes--stream-stable-end    nil)
+  (set-marker-insertion-type hermes--stream-end           t))
 
 (defun hermes--stream-commit ()
   "Stream finished: stamp Org :ID:s on the trail, drop markers."
   ;; Walk every in-flight tool subtree and stamp it with an :ID:.
-  (dolist (cell hermes--stream-tool-markers)
-    (let ((m (cdr cell)))
-      (when (and (markerp m) (marker-position m))
-        (save-excursion
-          (goto-char m)
-          (ignore-errors (org-id-get-create))))))
+  (when (derived-mode-p 'org-mode)
+    (dolist (cell hermes--stream-tool-markers)
+      (let ((m (cdr cell)))
+        (when (and (markerp m) (marker-position m))
+          (save-excursion
+            (goto-char m)
+            (ignore-errors (org-id-get-create)))))))
   ;; Convert any residual unstable tail from markdown to Org.
   (when (and (markerp hermes--stream-stable-end)
              (markerp hermes--stream-end)
@@ -157,20 +212,23 @@ tool subtrees accumulate AFTER this marker.")
         (goto-char beg)
         (insert (hermes-md-to-org (delete-and-extract-region beg end))))))
   ;; Stamp the assistant headline itself so external Org buffers can cite it.
-  (when (and (markerp hermes--stream-headline-marker)
+  (when (and (derived-mode-p 'org-mode)
+             (markerp hermes--stream-headline-marker)
              (marker-position hermes--stream-headline-marker))
     (save-excursion
       (goto-char hermes--stream-headline-marker)
       (ignore-errors (org-id-get-create))))
   ;; Drop the markers; the buffer text is already correct.
   (dolist (m (list hermes--stream-stable-end
-                   hermes--stream-end
-                   hermes--stream-headline-marker))
+                    hermes--stream-end
+                    hermes--stream-content-start
+                    hermes--stream-headline-marker))
     (when (markerp m) (set-marker m nil)))
   (dolist (cell hermes--stream-tool-markers)
     (when (markerp (cdr cell)) (set-marker (cdr cell) nil)))
   (setq hermes--stream-stable-end nil
         hermes--stream-end nil
+        hermes--stream-content-start nil
         hermes--stream-headline-marker nil
         hermes--stream-tool-markers nil))
 
@@ -193,24 +251,25 @@ tool subtrees accumulate AFTER this marker.")
   "Place TEXT into the in-flight region using a stable/unstable split.
 Stable prefix is converted from markdown and appended at
 `hermes--stream-stable-end' (which then advances).  Unstable suffix
-replaces the region between the stable marker and `hermes--stream-end'."
+replaces only the old unstable characters — tools that sit beyond
+`hermes--stream-end' are left untouched."
   (let* ((boundary (hermes--stable-boundary text))
          (already  (- (marker-position hermes--stream-stable-end)
-                       (save-excursion
-                         (goto-char hermes--stream-stable-end)
-                         (re-search-backward "^\\* assistant\n" nil t)
-                         (match-end 0))))
+                       (marker-position hermes--stream-content-start)))
          (stable   (substring text 0 boundary))
          (unstable (substring text boundary))
-         (new-stable-substring (substring stable already)))
+         (new-stable-substring (substring stable already))
+         (old-unstable-len
+          (- (marker-position hermes--stream-end)
+             (marker-position hermes--stream-stable-end))))
     ;; Append the newly-stable chunk at the stable marker, converting to Org.
     (when (> (length new-stable-substring) 0)
       (goto-char hermes--stream-stable-end)
       (insert (hermes-md-to-org new-stable-substring))
       (set-marker hermes--stream-stable-end (point)))
-    ;; Replace the unstable region.
-    (delete-region hermes--stream-stable-end hermes--stream-end)
+    ;; Delete exactly the old unstable chars; tools after them stay.
     (goto-char hermes--stream-stable-end)
+    (delete-char old-unstable-len)
     (insert unstable)))
 
 (defun hermes--stable-boundary (text)
@@ -242,13 +301,11 @@ Returns 0 if no such boundary exists yet."
 
 (defun hermes--render-stream-tools (old-tools new-tools)
   "Sync OLD-TOOLS → NEW-TOOLS by inserting or rewriting subtrees at point-max."
-  ;; Pass 1: any new tool not present before → insert a subtree at point-max.
   (let ((old-ids (mapcar #'hermes-tool-id (append old-tools nil))))
     (dotimes (i (length new-tools))
       (let ((tool (aref new-tools i)))
         (unless (member (hermes-tool-id tool) old-ids)
           (hermes--insert-tool-subtree tool)))))
-  ;; Pass 2: any tool whose status/output changed → rewrite subtree in place.
   (let ((n (min (length old-tools) (length new-tools))))
     (dotimes (i n)
       (let ((old (aref old-tools i))
@@ -290,7 +347,7 @@ Returns 0 if no such boundary exists yet."
           (setq end (save-excursion
                       (goto-char beg)
                       (forward-line 1)
-                      (if (re-search-forward "^\\*\\{1,2\\} " nil t)
+                       (if (re-search-forward "^\\*\\{1,3\\} " nil t)
                           (line-beginning-position)
                         (point-max))))
           (delete-region beg end)
@@ -310,7 +367,7 @@ Returns 0 if no such boundary exists yet."
          (output (hermes-tool-output tool))
          (err    (hermes-tool-error tool)))
     (concat
-     (format "** %s (%s)                                              :hermes-tool:\n"
+     (format "*** %s (%s)                                              :hermes-tool:\n"
              name status-label)
      ":PROPERTIES:\n"
      (format ":tool_id:  %s\n" (hermes-tool-id tool))

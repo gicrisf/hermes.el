@@ -250,7 +250,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
        ;; Add it to stream.tools if not already present.  Drop if no stream
        ;; (edge case #2: turnController.ts:620-645).
        (let ((str (hermes-state-stream state))
-             (tid (hermes--get p "tool_id"))
+             (tid (or (hermes--get p "tool_id")
+                      (hermes--get p "id")
+                      (hermes--get p "name")))
              (tname (hermes--get p "name")))
          (if (or (null str) (null tid))
              state
@@ -269,7 +271,9 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                                  (hermes--vector-append tools tool)))))))))))
       ("tool.complete"
        (let ((str (hermes-state-stream state))
-             (tid (hermes--get p "tool_id"))
+             (tid (or (hermes--get p "tool_id")
+                      (hermes--get p "id")
+                      (hermes--get p "name")))
              (output (hermes--get p "output"))
              (err    (hermes--get p "error"))
              (dur    (hermes--get p "duration_s")))

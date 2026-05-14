@@ -5,10 +5,13 @@
 
 (defun hermes-render-test--setup ()
   "Initialise an in-flight stream in the current buffer.
-Returns (HEADER-END-POS) — the position right after the `* assistant\\n' line."
-  (insert "* assistant\n")
+Inserts a minimal `** assistant :hermes:' heading and returns the
+position right after the heading line."
+  (insert "** assistant :hermes:\n")
   (setq hermes--stream-headline-marker (copy-marker 1))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
+  (setq hermes--stream-content-start (copy-marker (point)))
+  (set-marker-insertion-type hermes--stream-content-start nil)
   (setq hermes--stream-stable-end (copy-marker (point)))
   (setq hermes--stream-end        (copy-marker (point)))
   (set-marker-insertion-type hermes--stream-stable-end nil)
@@ -17,7 +20,7 @@ Returns (HEADER-END-POS) — the position right after the `* assistant\\n' line.
   (point))
 
 (defun hermes-render-test--body ()
-  "Return the text after the `* assistant\\n' line."
+  "Return the text after the `** assistant :hermes:' heading line."
   (save-excursion
     (goto-char (marker-position hermes--stream-headline-marker))
     (forward-line 1)
@@ -30,7 +33,7 @@ Returns (HEADER-END-POS) — the position right after the `* assistant\\n' line.
     (hermes-render-test--setup)
     (hermes--rewrite-stream "Hi")
     (hermes--rewrite-stream "Hi there")
-    (should (equal "* assistant\nHi there"
+    (should (equal "** assistant :hermes:\nHi there"
                    (buffer-substring-no-properties (point-min) (point-max))))))
 
 (ert-deftest hermes-render-test/stable-advance-preserves-prose ()
@@ -43,7 +46,7 @@ Returns (HEADER-END-POS) — the position right after the `* assistant\\n' line.
     ;; Stable marker advanced past the stable chunk.
     (should (= (marker-position hermes--stream-stable-end)
                (+ (marker-position hermes--stream-headline-marker)
-                  (length "* assistant\nHi there\n\n"))))))
+                  (length "** assistant :hermes:\nHi there\n\n"))))))
 
 (ert-deftest hermes-render-test/multiple-stable-advances ()
   (with-temp-buffer

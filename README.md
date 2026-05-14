@@ -193,3 +193,4 @@ starts, or passed via the `process-environment`.
 | `hermes-dashboard.el` | 345 | Vanilla dashboard |
 | `doom-dashboard-hermes.el` | 442 | Doom-styled dashboard |
 | `doom-hermes.el` | 46 | Doom Evil bindings |
+| `doom-hermes-theme.el` | 130 | Hermes dark theme (gold/teal) |

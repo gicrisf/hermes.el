@@ -1,0 +1,3065 @@
+╭─── Claude Code v2.1.123 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│               Welcome back Giovanni!               │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ What's new              │
+│                        ▘▘ ▝▝                       │ Internal fixes          │
+│   Opus 4.7 · Claude Pro ·                          │ [VSCode] Fixed extensi… │
+│   giovanni.crisalfi@protonmail.com's Organization  │ Added `CLAUDE_CODE_ENA… │
+│               ~/Projects/emacs-hermes              │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+✻ Conversation compacted (ctrl+o for history)
+
+
+❯ /compact                                                                      
+  ⎿  Compacted (ctrl+o to see full summary)
+     Tip: You have access to Opus 1M with 5x more context
+  ⎿  Referenced file hermes-state.el
+  ⎿  Read hermes-input.el (210 lines)
+  ⎿  Read hermes-mode.el (193 lines)
+  ⎿  Read hermes-skin.el (84 lines)
+  ⎿  Read Eldev (21 lines)
+
+❯ Wondering on how to design hermes dashboard. Hermes Dashboard — Design        
+  Alternatives                                                                  
+  Topology: Three approaches for the initial M-x hermes screen                  
+  1. Dedicated dashboard (special-mode), session created on demand              
+  - M-x hermes opens *Hermes* dashboard (logo + session list + commands).       
+  - User presses RET → session.create → conversation buffer.                    
+  - Clean separation: dashboard is a landing page, no session until you ask for 
+   one.                                                                         
+  - Cons: extra keystroke before chatting, deviates from the official TUI's     
+  instant-chat flow.                                                            
+  2. Instant session (like the TUI), no dashboard                               
+  - M-x hermes immediately spawns gateway + session + *hermes:<sid>* buffer.    
+  - What we have right now. Closest to the official React TUI.                  
+  - Cons: no session overview, no landing page, no place to show connection     
+  status before session is ready.                                               
+  3. Hybrid — dashboard with auto-session and embedded composer                 
+  - M-x hermes opens *Hermes* dashboard.                                        
+  - Gateway starts and session.create fires automatically (like the TUI).       
+  - Dashboard shows: logo → connection progression → session info panel (once   
+  ready).                                                                       
+  - A composer area lives on the dashboard so the user can type immediately.    
+  - First prompt auto-creates the real conversation buffer and switches to it.  
+  - Dashboard stays open in the background for session overview.                
+  ---                                                                           
+  Composer UX (for the Hybrid design)                                           
+  A. Prompt line in dashboard, input via minibuffer (C-c C-i / i)               
+  Dashboard renders "Hermes> _" as the last line of text. Pressing RET or i     
+  opens read-string minibuffer. Feels inline because focus transfers            
+  immediately. Zero window management. Cons: not truly embedded, one line at a  
+  time.                                                                         
+  Current code path reused.                                                     
+  B. Dedicated composer side-window at the bottom of the frame                  
+  ┌─────────────────────┐                                                       
+  │  Dashboard  (info)  │                                                       
+  ├─────────────────────┤                                                       
+  │ Hermes> _           │  ← persistent side window                             
+  └─────────────────────┘                                                       
+  Closest to the TUI's persistent input. Requires window-split logic, side      
+  window config, and focus management. More code but more natural feel.         
+  C. Recursive-edit in-buffer composer                                          
+  Dashboard buffer has a writable field at the bottom (via field text property  
+  + inhibit-read-only). Typing inserts directly into the buffer. Requires       
+  careful state management for read-only protection, undo, point motion.        
+  ---                                                                           
+  Logo / Branding                                                               
+  Three-layer priority (like Doom's doom-dashboard-banner-file):                
+  1. User Elisp override: (setq hermes-dashboard-logo "...")                    
+  2. Skin data from gateway.ready (banner_hero / banner_logo, currently empty   
+  in "slate" skin)                                                              
+  3. Built-in 6-line "NOUS HERMES" ASCII art from the official TUI's banner.ts  
+  ---                                                                           
+  Session info panel                                                            
+  Once session.info arrives, show below the logo:                               
+  - Model name                                                                  
+  - Working directory                                                           
+  - Session ID                                                                  
+  - Tools count / Skills count                                                  
+  - System prompt (collapsible)                                                 
+  Modeled after the TUI's SessionPanel component (branding.tsx:99-334).         
+  ---                                                                           
+  Quick actions / Commands section                                              
+  Toggleable section at the bottom showing keybindings:                         
+  - RET — send prompt / new session                                             
+  - i — open minibuffer                                                         
+  - s — session list sidebar                                                    
+  - g — refresh                                                                 
+  - q — quit                                                                    
+  - ? — help                                                                    
+  Based on the TUI's hotkeys.ts.                                                
+  ---                                                                           
+  Session switching                                                             
+  When sessions exist in hermes--session-buffers, the dashboard lists them with 
+   SID / Model / Status / Msgs. RET on a session line switches to that buffer.  
+  Pattern from hermes-sessions.el (which would stay as the sidebar              
+  alternative).                                                                 
+  ---                                                                           
+
+● For an Emacs client, option 3 (hybrid) with composer UX A (minibuffer) is the
+  path of least resistance: you keep the TUI's instant-chat ergonomics (gateway
+  + session fire on entry), the dashboard becomes a passive info panel that the
+  conversation buffer pops over once the first prompt lands, and you reuse the
+  existing hermes-input-send minibuffer flow with zero window-management code.
+  Option B (persistent side-window composer) is the prettiest but it's a real
+  project — focus stealing, display-buffer-alist tuning, read-only juggling at
+  the boundary, and it fights Emacs' "one buffer per task" instinct. Option C
+  (in-buffer field) I'd skip; field/inhibit-read-only/undo interactions on a
+  live-updating buffer are a known pit.
+
+  Main tradeoff: hybrid+A gives you the dashboard's value (logo, session info,
+  connection state, session switcher in one place) without committing to a
+  TUI-shaped layout that Emacs users may actively dislike. If later you find the
+   minibuffer too transient, you already have hermes-compose (C-c C-l) as the
+  multi-line escape hatch — promoting that into a side window is a smaller leap
+  than building B from scratch.
+
+  On the logo three-layer priority: worth checking whether banner_hero /
+  banner_logo are ever populated in shipped skins before designing around them —
+   if they're consistently empty, layer 2 is dead weight and you can collapse to
+   user-override → builtin.
+
+  Want me to sketch the dashboard buffer (special-mode, auto session.create,
+  logo + info panel + session list + i to prompt), or are you still weighing
+  options?
+
+✻ Cogitated for 13s
+
+❯ I agree with you. This was my preference too. Let's go                        
+
+  Read 3 files, listed 1 directory (ctrl+o to expand)
+
+● Let me check the connection hook signature and look at events to know what
+  payloads to expect.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Write(hermes-dashboard.el)
+  ⎿  Wrote 292 lines to hermes-dashboard.el
+         ical-binding: t; -*-.el --- Landing dashboard for Hermes -*- lex
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       5 ;; Package-Requires: ((emacs "27.1"))
+       6 
+       7 ;;; Commentary:
+       9 ;; `*Hermes*' is the landing buffer shown by `M-x hermes'.  It a
+         uto-starts
+      10 ;; the gateway, fires `session.create' in the background, and re
+         nders four
+     … +315 lines (ctrl+o to expand)
+
+● Now wire it into hermes-mode.el: M-x hermes opens the dashboard first, session
+   created in the background, primary sid recorded. Also hook refresh.
+
+● Update(hermes-mode.el)
+  ⎿  Added 1 line
+      26  (require 'hermes-sessions)
+      27  (require 'hermes-skin)
+      28  (require 'hermes-compose)
+      29 +(require 'hermes-dashboard)                                    
+      30  
+      31  ;;;; Routing: filter event → buffer
+      32  
+
+● Update(hermes-mode.el)
+  ⎿  Added 3 lines, removed 1 line
+      83    "Wire RPC hooks once.  Idempotent."
+      84    (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
+      85    (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refr
+          esh-if-open)
+      86 +  (add-hook 'hermes-rpc-event-functions #'hermes-dashboard--ref
+         +resh-if-open)                                                  
+      87    (add-hook 'hermes-rpc-connection-functions #'hermes--route-co
+          nnection)
+      87 -  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions-
+         --refresh-if-open))                                             
+      88 +  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions-
+         +-refresh-if-open)                                              
+      89 +  (add-hook 'hermes-rpc-connection-functions #'hermes-dashboard
+         +--refresh-if-open))                                            
+      90  
+      91  ;;;; Major mode
+      92  
+● Update(hermes-mode.el)
+  ⎿  Added 5 lines, removed 2 lines
+      116  
+      117  ;;;###autoload
+      118  (defun hermes ()
+      119 -  "Start the Hermes gateway (if needed), create a session, ope
+          -n a buffer."                                                  
+      119 +  "Open the Hermes dashboard, start the gateway, and create a 
+          +session.                                                      
+      120 +The conversation buffer is created in the background and regis
+          +tered as the                                                  
+      121 +dashboard's primary session; press `i' on the dashboard to sta
+          +rt chatting."                                                 
+      122    (interactive)
+      123    (hermes--install-hooks)
+      124    (unless (hermes-rpc-live-p)
+      125      (hermes-rpc-start))
+      126 +  (hermes-dashboard-show)                                     
+      127    (hermes-rpc-request
+      128     "session.create" '(:cols 100)
+      129     (lambda (result error)
+     ...
+      141               (hermes-dispatch
+      142                (cons "gateway.ready" hermes--last-gateway-ready
+           )))
+      143             (hermes-input-fetch-catalog))
+      141 -         (pop-to-buffer buf)))))))                            
+      144 +         (hermes-dashboard--note-session sid)))))))           
+      145  
+      146  (defalias 'hermes-send #'hermes-input-send
+      147    "Queue-aware submission entry; see `hermes-input-send'.")
+
+● Now add to Eldev fileset.
+
+● Update(Eldev)
+  ⎿  Added 1 line
+      13          "hermes-md.el"
+      14          "hermes-skin.el"
+      15          "hermes-compose.el"
+      16 +        "hermes-dashboard.el"                                  
+      17          "hermes-mode.el"))
+      18  
+      19  (setf eldev-test-fileset '("test/hermes-state-test.el"
+
+● Now byte-compile and run tests to make sure nothing is broken.
+
+● Bash(eldev compile 2>&1 | tail -50)
+  ⎿  ELC      hermes-dashboard.el
+     ELC      hermes-mode.el
+
+● Clean compile. Run tests.
+
+● Bash(eldev test 2>&1 | tail -30)
+  ⎿     passed  46/64  hermes-state-test/session-info-stores-id-and-info (0
+     .000050 sec)
+        passed  47/64  hermes-state-test/slash-catalog-stores-payload (0.00
+     … +26 lines (ctrl+o to expand)
+
+● The 5 pre-existing red tests remain red (per the summary, these are the
+  user-reverted markdown integration tests). Compile is clean; nothing I added
+  introduced new failures.
+
+  Dashboard is in place at hermes-dashboard.el:1. M-x hermes now opens *Hermes*
+  (logo + connection state + primary session info + session list + key
+  cheatsheet), fires session.create in the background, and registers the new
+  session as the primary. Press i (or RET on empty space) to compose into it;
+  RET on a session row switches to that buffer; n creates another session; s
+  opens the sidebar; g refreshes; q buries.
+
+  A couple of follow-ups worth flagging when you next pick this up:
+  - The "Tools/Skills" counts assume session.info carries tools/skills keys —
+  verify the actual payload shape; the renderer falls back to ? if missing.
+  - Logo skin-layer reads banner_hero/banner_logo from
+  hermes--last-gateway-ready; if the slate skin ships these empty, layer 2 is
+  dead weight and can be removed.
+
+✻ Cogitated for 2m 49s
+
+※ recap: Building a Hermes landing dashboard: `hermes-dashboard.el` is in place, wired into `M-x hermes`, compiles clean, and pre-existing tests still pass. Next: launch Emacs and verify the dashboard renders and `i` composes into the primary session. (disable recaps in /config)
+
+❯ This is the effect when it loads the logo:                                    
+  [#9F1C1C]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣤⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]                                      
+  [#9F1C1C]⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⣿⠟⠻⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]                                        
+  [#C7A96B]⠀⠀⠀⠀⠀⠀⠀⣠⣾⡿⠋⠀⠀⠀⠙⢿⣷⣄⠀⠀⠀⠀⠀⠀⠀[/]                                         
+  [#C7A96B]⠀⠀⠀⠀⠀⢀⣾⡿⠋⠀⠀⢠⡄⠀⠀⠙⢿⣷⡀⠀⠀⠀⠀⠀[/]                                          
+  [#DD4A3A]⠀⠀⠀⠀⣰⣿⠟⠀⠀⠀⣰⣿⣿⣆⠀⠀⠀⠻⣿⣆⠀⠀⠀⠀[/]                                          
+  [#DD4A3A]⠀⠀⠀⢰⣿⠏⠀⠀⢀⣾⡿⠉⢿⣷⡀⠀⠀⠹⣿⡆⠀⠀⠀[/]                                           
+  [#9F1C1C]⠀⠀⠀⣿⡟⠀⠀⣠⣿⠟⠀⠀⠀⠻⣿⣄⠀⠀⢻⣿⠀⠀⠀[/]                                           
+  [#9F1C1C]⠀⠀⠀⣿⡇⠀⠀⠙⠋⠀⠀⚔⠀⠀⠙⠋⠀⠀⢸⣿⠀⠀⠀[/]                                           
+  [#6B1717]⠀⠀⠀⢿⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣼⡿⠀⠀⠀[/]                                           
+  [#6B1717]⠀⠀⠀⠘⢿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⡿⠃⠀⠀⠀[/]                                           
+  [#C7A96B]⠀⠀⠀⠀⠈⠻⣿⣷⣦⣤⣀⣀⣤⣤⣶⣿⠿⠋⠀⠀⠀⠀[/]                                            
+  [#C7A96B]⠀⠀⠀⠀⠀⠀⠀⠉⠛⠿⠿⠿⠿⠛⠉⠀⠀⠀⠀⠀⠀⠀[/]                                            
+  [#DD4A3A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⚔⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]                                             
+  [dim #6B1717]⠀⠀⠀⠀⠀⠀⠀⠀war god online⠀⠀⠀⠀⠀⠀⠀⠀[/]                                
+                                                                                
+    ● session af19d21b ready                                                    
+
+● The skin banner uses Rich-style inline color tags ([#RRGGBB]...[/]); I'm
+  inserting them raw. Let me add a tiny parser and route the logo through it.
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 36 lines
+       77          (and (stringp banner) (not (string-empty-p banner)) ba
+           nner))
+       78        hermes-dashboard--builtin-logo))
+       79  
+       80 +(defun hermes-dashboard--rich-face (spec)                     
+       81 +  "Parse a Rich style SPEC (e.g. \"#9F1C1C\", \"dim #6B1717\",
+          + \"bold\") to a face plist."                                  
+       82 +  (let ((tokens (split-string spec "[ \t]+" t))               
+       83 +        face dim)                                             
+       84 +    (dolist (tok tokens)                                      
+       85 +      (cond                                                   
+       86 +       ((string-match-p "\\`#[0-9A-Fa-f]\\{6\\}\\'" tok)      
+       87 +        (setq face (plist-put face :foreground tok)))         
+       88 +       ((equal tok "dim")       (setq dim t))                 
+       89 +       ((equal tok "bold")      (setq face (plist-put face :we
+          +ight 'bold)))                                                 
+       90 +       ((equal tok "italic")    (setq face (plist-put face :sl
+          +ant 'italic)))                                                
+       91 +       ((equal tok "underline") (setq face (plist-put face :un
+          +derline t)))))                                                
+       92 +    (when (and dim (not (plist-get face :weight)))            
+       93 +      (setq face (plist-put face :weight 'light)))            
+       94 +    face))                                                    
+       95 +                                                              
+       96 +(defun hermes-dashboard--insert-rich (string)                 
+       97 +  "Insert STRING, interpreting Rich `[style]…[/]' tags as face
+          + properties.                                                  
+       98 +Falls back to plain insertion when the string contains no tags
+          +."                                                            
+       99 +  (if (not (string-match-p "\\[[^]]+\\][^[]*\\[/\\]" string)) 
+      100 +      (let ((start (point)))                                  
+      101 +        (insert string)                                       
+      102 +        (add-face-text-property start (point) 'hermes-dashboar
+          +d-logo-face))                                                 
+      103 +    (let ((pos 0)                                             
+      104 +          (re "\\[\\([^]]+\\)\\]\\(\\(?:.\\|\n\\)*?\\)\\[/\\]"
+          +))                                                            
+      105 +      (while (string-match re string pos)                     
+      106 +        (insert (substring string pos (match-beginning 0)))   
+      107 +        (let ((spec (match-string 1 string))                  
+      108 +              (body (match-string 2 string))                  
+      109 +              (start (point)))                                
+      110 +          (insert body)                                       
+      111 +          (let ((f (hermes-dashboard--rich-face spec)))       
+      112 +            (when f (add-face-text-property start (point) f)))
+          +)                                                             
+      113 +        (setq pos (match-end 0)))                             
+      114 +      (insert (substring string pos)))))                      
+      115 +                                                              
+      116  (defun hermes-dashboard--short-sid (sid)
+      117    (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 
+           8) (or sid "?")))
+      118  
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 1 line, removed 4 lines
+      227          (pt (point)))
+      228      (erase-buffer)
+      229      (insert "\n")
+      230 -    (let ((logo-start (point)))                               
+      231 -      (insert (hermes-dashboard--logo))                       
+      232 -      (add-face-text-property logo-start (point)              
+      233 -                              'hermes-dashboard-logo-face))   
+      230 +    (hermes-dashboard--insert-rich (hermes-dashboard--logo))  
+      231      (insert "\n\n")
+      232      (insert (hermes-dashboard--connection-line) "\n\n")
+      233      (hermes-dashboard--insert-session-info)
+
+● Bash(eldev compile 2>&1 | tail -20)
+  ⎿  ELC      hermes-dashboard.el
+     ELC      hermes-mode.el
+
+● Clean. The Rich tags ([#RRGGBB]…[/], [dim #6B1717]…[/], plus
+  bold/italic/underline) are now parsed into face plists; unrecognized tokens
+  silently fall through. Logo without tags still gets the default
+  hermes-dashboard-logo-face. Reload (M-x eval-buffer on hermes-dashboard.el or
+  restart) and reopen M-x hermes to see the colored sigil.
+
+✻ Sautéed for 40s
+
+❯ now it freezes the whole emacs instance                                       
+
+● Two likely culprits: the rich-tag regex's .|\n lazy alternation backtracks
+  badly, and the refresh hook fires on every RPC event (hundreds/sec during
+  streaming) repainting the whole dashboard each time. Fixing both.
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 19 lines, removed 16 lines
+       96  (defun hermes-dashboard--insert-rich (string)
+       97    "Insert STRING, interpreting Rich `[style]…[/]' tags as face
+            properties.
+       98  Falls back to plain insertion when the string contains no tags
+           ."
+       99 -  (if (not (string-match-p "\\[[^]]+\\][^[]*\\[/\\]" string)) 
+      100 -      (let ((start (point)))                                  
+      101 -        (insert string)                                       
+      102 -        (add-face-text-property start (point) 'hermes-dashboar
+          -d-logo-face))                                                 
+      103 -    (let ((pos 0)                                             
+      104 -          (re "\\[\\([^]]+\\)\\]\\(\\(?:.\\|\n\\)*?\\)\\[/\\]"
+          -))                                                            
+      105 -      (while (string-match re string pos)                     
+      106 -        (insert (substring string pos (match-beginning 0)))   
+      107 -        (let ((spec (match-string 1 string))                  
+      108 -              (body (match-string 2 string))                  
+      109 -              (start (point)))                                
+      110 -          (insert body)                                       
+      111 -          (let ((f (hermes-dashboard--rich-face spec)))       
+      112 -            (when f (add-face-text-property start (point) f)))
+          -)                                                             
+      113 -        (setq pos (match-end 0)))                             
+      114 -      (insert (substring string pos)))))                      
+       99 +  ;; Match `[spec]body[/]' where spec has no `]' and body has 
+          +no `['.                                                       
+      100 +  ;; The `[^[]' body class is linear-time (no backtracking) an
+          +d matches                                                     
+      101 +  ;; newlines, unlike `.|\n' which is catastrophically slow in
+          + Emacs.                                                       
+      102 +  (let ((re "\\[\\([^]]+\\)\\]\\([^[]*\\)\\[/\\]"))           
+      103 +    (if (not (string-match-p re string))                      
+      104 +        (let ((start (point)))                                
+      105 +          (insert string)                                     
+      106 +          (add-face-text-property start (point) 'hermes-dashbo
+          +ard-logo-face))                                               
+      107 +      (let ((pos 0))                                          
+      108 +        (while (string-match re string pos)                   
+      109 +          (insert (substring string pos (match-beginning 0))) 
+      110 +          (let ((spec (match-string 1 string))                
+      111 +                (body (match-string 2 string))                
+      112 +                (start (point)))                              
+      113 +            (insert body)                                     
+      114 +            (let ((f (hermes-dashboard--rich-face spec)))     
+      115 +              (when f (add-face-text-property start (point) f)
+          +)))                                                           
+      116 +          (setq pos (match-end 0)))                           
+      117 +        (insert (substring string pos))))))                   
+      118  
+      119  (defun hermes-dashboard--short-sid (sid)
+      120    (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 
+           8) (or sid "?")))
+
+● Now stop refreshing on every event. The dashboard only cares about a few event
+   types.
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 21 lines, removed 6 lines
+      238      (hermes-dashboard--insert-commands)
+      239      (goto-char (min pt (point-max)))))
+      240  
+      241 -(defun hermes-dashboard--refresh-if-open (&rest _ignore)      
+      242 -  "Cheap hook: refresh the dashboard buffer if it exists."    
+      243 -  (let ((buf (get-buffer hermes-dashboard-buffer-name)))      
+      244 -    (when (buffer-live-p buf)                                 
+      245 -      (with-current-buffer buf                                
+      246 -        (hermes-dashboard--refresh)))))                       
+      241 +(defconst hermes-dashboard--refresh-events                    
+      242 +  '("gateway.ready" "skin.changed" "session.info" "session.clo
+          +sed"                                                          
+      243 +    "message.complete" "error")                               
+      244 +  "Event types that should trigger a dashboard repaint.       
+      245 +Streaming events (`message.delta', `tool.progress', …) are exc
+          +luded                                                         
+      246 +because they fire hundreds of times per turn and the dashboard
+          + does                                                         
+      247 +not display any data that changes on a per-delta basis.")     
+      248  
+      249 +(defun hermes-dashboard--refresh-if-open (&optional type &rest
+          + _ignore)                                                     
+      250 +  "Hook entry: repaint the dashboard buffer if it exists.     
+      251 +When called from `hermes-rpc-event-functions' TYPE is the even
+          +t name;                                                       
+      252 +streaming events are filtered out.  When called from          
+      253 +`hermes-rpc-connection-functions' or interactively TYPE is a s
+          +ymbol or                                                      
+      254 +nil and we always refresh."                                   
+      255 +  (when (or (null type)                                       
+      256 +            (symbolp type)                  ; connection-state
+          + hook                                                         
+      257 +            (member type hermes-dashboard--refresh-events))   
+      258 +    (let ((buf (get-buffer hermes-dashboard-buffer-name)))    
+      259 +      (when (buffer-live-p buf)                               
+      260 +        (with-current-buffer buf                              
+      261 +          (hermes-dashboard--refresh))))))                    
+      262 +                                                              
+      263  ;;;; Mode
+      264  
+      265  (defvar hermes-dashboard-mode-map
+
+● Bash(eldev compile 2>&1 | tail -10)  ⎿  ELC      hermes-dashboard.el
+     ELC      hermes-mode.el
+
+● Two changes:
+
+  1. Regex at hermes-dashboard.el:90: replaced \\(\\(?:.\\|\n\\)*?\\) with
+  \\([^[]*\\). The old form backtracks catastrophically on long strings; the new
+   class is linear and still matches newlines.
+  2. Hook filtering at hermes-dashboard.el:190: dashboard refresh now ignores
+  streaming events (message.delta, tool.progress, etc.) and only repaints on
+  gateway.ready, skin.changed, session.info, session.closed, message.complete,
+  error, and any connection-state change. Streaming was the real freeze driver —
+   repainting the whole dashboard per delta on a chatty turn would peg the UI.
+
+  Reload and try again.
+
+✻ Baked for 1m 7s
+
+❯ nothing changed. It was better before trying to parse rich face, basically.   
+  At least it worked                                                            
+
+● Reverting the rich-tag parse; just stripping the tags for now. Keeping the
+  event-hook throttle since it's a separate concern.
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 9 lines, removed 37 lines
+       77          (and (stringp banner) (not (string-empty-p banner)) ba
+           nner))
+       78        hermes-dashboard--builtin-logo))
+       79  
+       80 -(defun hermes-dashboard--rich-face (spec)                     
+       81 -  "Parse a Rich style SPEC (e.g. \"#9F1C1C\", \"dim #6B1717\",
+          - \"bold\") to a face plist."                                  
+       82 -  (let ((tokens (split-string spec "[ \t]+" t))               
+       83 -        face dim)                                             
+       84 -    (dolist (tok tokens)                                      
+       85 -      (cond                                                   
+       86 -       ((string-match-p "\\`#[0-9A-Fa-f]\\{6\\}\\'" tok)      
+       87 -        (setq face (plist-put face :foreground tok)))         
+       88 -       ((equal tok "dim")       (setq dim t))                 
+       89 -       ((equal tok "bold")      (setq face (plist-put face :we
+          -ight 'bold)))                                                 
+       90 -       ((equal tok "italic")    (setq face (plist-put face :sl
+          -ant 'italic)))                                                
+       91 -       ((equal tok "underline") (setq face (plist-put face :un
+          -derline t)))))                                                
+       92 -    (when (and dim (not (plist-get face :weight)))            
+       93 -      (setq face (plist-put face :weight 'light)))            
+       94 -    face))                                                    
+       80 +(defun hermes-dashboard--strip-rich (string)                  
+       81 +  "Return STRING with Rich `[style]…[/]' open/close tags remov
+          +ed."                                                          
+       82 +  (replace-regexp-in-string                                   
+       83 +   "\\[/?[^]]*\\]" "" string))                                
+       84  
+       96 -(defun hermes-dashboard--insert-rich (string)                 
+       97 -  "Insert STRING, interpreting Rich `[style]…[/]' tags as face
+          - properties.                                                  
+       98 -Falls back to plain insertion when the string contains no tags
+          -."                                                            
+       99 -  ;; Match `[spec]body[/]' where spec has no `]' and body has 
+          -no `['.                                                       
+      100 -  ;; The `[^[]' body class is linear-time (no backtracking) an
+          -d matches                                                     
+      101 -  ;; newlines, unlike `.|\n' which is catastrophically slow in
+          - Emacs.                                                       
+      102 -  (let ((re "\\[\\([^]]+\\)\\]\\([^[]*\\)\\[/\\]"))           
+      103 -    (if (not (string-match-p re string))                      
+      104 -        (let ((start (point)))                                
+      105 -          (insert string)                                     
+      106 -          (add-face-text-property start (point) 'hermes-dashbo
+          -ard-logo-face))                                               
+      107 -      (let ((pos 0))                                          
+      108 -        (while (string-match re string pos)                   
+      109 -          (insert (substring string pos (match-beginning 0))) 
+      110 -          (let ((spec (match-string 1 string))                
+      111 -                (body (match-string 2 string))                
+      112 -                (start (point)))                              
+      113 -            (insert body)                                     
+      114 -            (let ((f (hermes-dashboard--rich-face spec)))     
+      115 -              (when f (add-face-text-property start (point) f)
+          -)))                                                           
+      116 -          (setq pos (match-end 0)))                           
+      117 -        (insert (substring string pos))))))                   
+       85 +(defun hermes-dashboard--insert-logo (string)                 
+       86 +  "Insert STRING as the dashboard banner, faced with `hermes-d
+          +ashboard-logo-face'."                                         
+       87 +  (let ((start (point)))                                      
+       88 +    (insert (hermes-dashboard--strip-rich string))            
+       89 +    (add-face-text-property start (point) 'hermes-dashboard-lo
+          +go-face)))                                                    
+       90  
+       91  (defun hermes-dashboard--short-sid (sid)
+       92    (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 
+           8) (or sid "?")))
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 1 line, removed 1 line
+      202          (pt (point)))
+      203      (erase-buffer)
+      204      (insert "\n")
+      205 -    (hermes-dashboard--insert-rich (hermes-dashboard--logo))  
+      205 +    (hermes-dashboard--insert-logo (hermes-dashboard--logo))  
+      206      (insert "\n\n")
+      207      (insert (hermes-dashboard--connection-line) "\n\n")
+      208      (hermes-dashboard--insert-session-info)
+
+● Bash(eldev compile 2>&1 | tail -10)
+  ⎿  ELC      hermes-dashboard.el
+     ELC      hermes-mode.el
+
+● Logo now just strips […]/[/] and renders monochrome via
+  hermes-dashboard-logo-face. No multi-pass parse, no per-tag face properties —
+  just one replace-regexp-in-string then plain insert. The event-hook throttle
+  stays in place.
+
+✻ Sautéed for 36s
+
+※ recap: Building a Hermes dashboard (`*Hermes*` landing buffer with logo, session info, session list, key cheatsheet); just stripped Rich color tags from the skin banner to stop an Emacs freeze. Next: reload and confirm `M-x hermes` opens cleanly. (disable recaps in /config)
+
+❯ now, I'm trying to build an hermes dashboard for doom emacs. I'm trying to    
+  imitate the doom emacs dashboard but it's sluggish. Can you help me? I have   
+  already a dashboard for vanilla emacs and I don't want to touch it, not if    
+  it's not necessary. In the future, maybe, I will create a module for doom     
+  emacs. Right now, it's simpler managing a doom-hermes.el that I load from the 
+   config of my doom, as simply as that. Maybe, we could create                 
+  doom-dashboard-hermes.el for simplicity. I would like that.                   
+
+● Before drafting, two things I want to nail down — the choice between them
+  changes the design substantially.
+
+● User answered Claude's questions:
+  ⎿  · What does "imitate Doom's dashboard" mean to you here? → Standalone 
+     *hermes* buffer, Doom-styled
+     · Should the Doom dashboard reuse the vanilla `hermes-dashboard.el` 
+     plumbing, or be a fully independent file? → Fully independent
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/fluffy-questing-puddle.md · /plan to edit
+     Plan: doom-dashboard-hermes.el
+
+     Context
+
+     hermes-dashboard.el works in vanilla Emacs but feels sluggish under Doom,
+     and the user does not want to risk breaking it while iterating on a
+     Doom-styled landing screen. Goal: ship a separate, independent file the
+     user can drop into their Doom config (doom-dashboard-hermes.el) that
+     renders a Doom-flavored landing buffer for Hermes — centered banner,
+     vertical menu, keyboard-driven, with a compact session list.
+
+     The new file MUST NOT touch the existing hermes-dashboard.el, must not
+     require it, and must not register hooks that would interfere with the
+     vanilla dashboard if both happen to be loaded.
+
+     Why the vanilla dashboard is sluggish (root cause, used to inform the 
+     design)
+
+     - hermes-dashboard--refresh does a full erase-buffer + insert + face
+     propertization on every trigger.
+     - It is wired to hermes-rpc-event-functions AND
+     hermes-rpc-connection-functions. Even with the recent event-type filter,
+     bursts of session.info/message.complete cause back-to-back full repaints.
+     - Layout work (banner split, max-line-width, per-row padding) runs
+     unconditionally.
+
+     The Doom version addresses this by debouncing through a 100ms idle timer,
+     by rendering to a string first and swapping into the buffer in one
+     erase-buffer+insert pair, and by subscribing only to events that change
+     visible fields.
+
+     Design
+
+     File: /home/ann/Projects/emacs-hermes/doom-dashboard-hermes.el (new)
+
+     A standalone Doom-styled landing buffer. requires only the data layers:
+     hermes-rpc, hermes-state, hermes-input. The conversation-buffer creation
+     and primary-session bookkeeping is reused from hermes-mode.el via the
+     public hermes, hermes-input-send, hermes-compose, hermes-sessions entry
+     points and the hermes--session-buffers map (already used by
+     hermes-sessions.el, so the cross-file access is established convention).
+
+     Public API
+
+     ┌──────────────────────────────┬──────────────┬───────────────────────────┐
+     │            Symbol            │     Type     │          Purpose          │
+     ├──────────────────────────────┼──────────────┼───────────────────────────┤
+     │ doom-dashboard-hermes        │ command      │ open the buffer in the    │
+     │                              │              │ current window            │
+     ├──────────────────────────────┼──────────────┼───────────────────────────┤
+     │ doom-dashboard-hermes-mode   │ major mode   │ special-mode derivative;  │
+     │                              │              │ keymap below              │
+     ├──────────────────────────────┼──────────────┼───────────────────────────┤
+     │ doom-dashboard-hermes-banner │ defcustom    │ override the ASCII banner │
+     │                              │ (string)     │                           │
+     ├──────────────────────────────┼──────────────┼───────────────────────────┤
+     │ doom-dashboard-hermes-menu   │ defcustom    │ override menu rows: ((KEY │
+     │                              │ (alist)      │  . (LABEL . COMMAND)))    │
+     └──────────────────────────────┴──────────────┴───────────────────────────┘
+
+     Keymap
+
+     s, RET, i  → doom-dashboard-hermes-start    (pop primary session,
+     hermes-input-send)
+     c          → doom-dashboard-hermes-compose  (pop primary session,
+     hermes-compose)
+     n          → doom-dashboard-hermes-new      (call `hermes` for a new
+     session)
+     l          → hermes-sessions                (open the sidebar)
+     g          → doom-dashboard-hermes-refresh
+     q          → quit-window
+
+     Layout (centered to window-width)
+
+        (vertical padding to vertically center the banner block — like Doom)
+
+                         <BANNER, multiline, centered>
+
+                   ● session af19d21b ready  ·  claude-sonnet-4-6
+
+                         [s]  Start chatting
+                         [c]  Open multiline composer
+                         [n]  New session
+                         [l]  Session list
+                         [q]  Quit
+
+                         1 session live  ·  gateway up
+
+     The session list is a single dim line summarising count + gateway state;
+     the full table stays in hermes-sessions (l). That keeps the dashboard a
+     landing page, not a dashboard-as-monitor.
+
+     Render pipeline (performance-critical)
+
+     1. doom-dashboard-hermes--render builds the full content as a single
+     propertized string in a with-temp-buffer, then in the target buffer does
+     (let ((inhibit-read-only t)) (erase-buffer) (insert s)) — exactly one
+     mutation pair, no per-line insert calls into the live buffer.
+     2. Centering uses (/ (- (window-width) line-width) 2) computed once at the
+     top of the render, not per-line.
+     3. Banner is stripped of Rich […]/[/] markup with one
+     replace-regexp-in-string (same approach as the vanilla file's
+     --strip-rich). No per-tag face parse — single add-face-text-property over
+     the whole banner region.
+     4. Cursor is hidden: (setq-local cursor-type nil) + setq-local 
+     mode-line-format nil.
+
+     Hook strategy (the real perf fix)
+
+     - One debounced refresh function: doom-dashboard-hermes--schedule-refresh
+     cancels any pending run-with-idle-timer and schedules a fresh 0.1s one.
+     Bursts coalesce into a single repaint.
+     - Subscribe to:
+       - hermes-rpc-connection-functions (all states — only fires on
+     connect/disconnect, low rate)
+       - hermes-rpc-event-functions but filtered to gateway.ready, skin.changed,
+      session.info, session.closed, message.complete, error — same allow-list as
+      the vanilla file, but enforced before scheduling.
+     - window-size-change-functions only re-schedules when the dashboard buffer
+     is currently displayed in some window, otherwise no-op.
+     - Hooks are added inside doom-dashboard-hermes-mode and removed in a
+     kill-buffer-hook so disabling Doom never leaves stale subscribers.
+
+     Primary-session tracking
+
+     The vanilla dashboard's hermes-dashboard--primary-sid is a private
+     variable. To avoid coupling, the Doom dashboard derives the "primary"
+     session lazily: the most recently active live buffer in
+     hermes--session-buffers, picked by sorting on each render. If the user
+     wants explicit control later, we expose doom-dashboard-hermes-set-primary —
+      out of scope now.
+
+     Result: no need to monkey-patch hermes to record a sid; the dashboard reads
+      the map and picks whatever is live.
+
+     Banner
+
+     Default banner = builtin "HERMES" block-letter ASCII (copy of vanilla's),
+     since the Rich-marked banner from gateway.ready strips down to nothing
+     useful in monochrome. User can override via doom-dashboard-hermes-banner.
+
+     Doom integration helper
+
+     A small autoload at the bottom of the file:
+
+     ;;;###autoload
+     (defun doom-dashboard-hermes-setup ()
+       "Convenience entry for `~/.doom.d/config.el'.
+     Adds `M-x doom-dashboard-hermes' and binds SPC h h under leader."
+       (when (fboundp 'map!)
+         (map! :leader :desc "Hermes dashboard" "h h" #'doom-dashboard-hermes)))
+
+     map! is autoloaded by Doom; the fboundp guard keeps the file loadable in
+     vanilla Emacs without errors.
+
+     Critical files
+
+     ┌──────────────────────────┬───────────────────────────────────────────────
+     ┐
+     │           Path           │                    Change
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ doom-dashboard-hermes.el │ NEW — the entire dashboard
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ hermes-dashboard.el      │ NO CHANGE
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ hermes-mode.el           │ NO CHANGE
+     │
+     ├──────────────────────────┼───────────────────────────────────────────────
+     ┤
+     │ Eldev                    │ NO CHANGE — Doom-specific, not part of the
+     │
+     │                          │ test fileset
+     │
+     └──────────────────────────┴───────────────────────────────────────────────
+     ┘
+
+     Reused functions (no reimplementation)
+
+     - hermes-rpc-live-p — gateway liveness check (hermes-rpc.el)
+     - hermes-input-send — minibuffer composer (hermes-input.el)
+     - hermes-compose — multiline composer (hermes-compose.el)
+     - hermes-sessions — sessions sidebar (hermes-sessions.el)
+     - hermes — create new session (hermes-mode.el)
+     - hermes--session-buffers — session map (defined hermes-mode.el, already
+     read across files)
+     - hermes-state-session-info, hermes-state-session-id,
+     hermes-state-connection — state accessors (hermes-state.el)
+
+     Verification
+
+     1. Lint/compile: eldev compile should not include doom-dashboard-hermes.el
+     since it's not in the Eldev fileset; do a one-off emacs -Q --batch -L . -f 
+     batch-byte-compile doom-dashboard-hermes.el to confirm a clean compile
+     against the rest of the package. Acceptable warnings: the map! macro
+     reference (intentionally guarded).
+     2. Tests: existing eldev test suite must remain unaffected (same 64 tests,
+     same 5 pre-existing red).
+     3. Manual smoke test in Doom:
+       - M-x doom-dashboard-hermes — buffer appears, banner centered.
+       - No primary session yet → connection line reads "gateway down" or
+     "starting…".
+       - M-x hermes → buffer reflects new session within ~100ms.
+       - During an active streaming turn, the dashboard does not flicker (event
+     filter + debounce should suppress per-delta repaints).
+       - Resize the frame → banner re-centers after a single idle tick, not per
+     resize event.
+       - s opens minibuffer composer; c opens multiline composer; n creates a
+     new session and the count line increments; l opens the sidebar; q buries.
+     4. Doom config snippet the user can paste into ~/.doom.d/config.el:
+     (load! "~/Projects/emacs-hermes/doom-dashboard-hermes")
+     (doom-dashboard-hermes-setup)
+     5. Vanilla regression: open the vanilla hermes-dashboard in the same Emacs
+     session — must still work, hooks must not collide. (Both files install on
+     different namespaces and both filter their own events, so the only shared
+     cost is one extra debounce timer per dashboard.)
+
+     Out of scope (deferred)
+
+     - Promotion to a real Doom module (:ui doom-dashboard-hermes).
+     - Solaire-mode background tinting.
+     - Inline session table (use l for that).
+     - Replacing the vanilla dashboard with the Doom one (we keep both).
+
+● Write(doom-dashboard-hermes.el)
+  ⎿  Wrote 356 lines to doom-dashboard-hermes.el
+         or Hermes -*- lexical-binding: t; -*--styled landing dashboard f
+       2 
+       3 ;; Author: Giovanni Crisalfi
+       5 ;; Package-Requires: ((emacs "27.1"))
+       6 
+       7 ;;; Commentary:
+       9 ;; A standalone landing buffer styled after Doom Emacs's dashboa
+         rd:
+      10 ;; centered banner, vertical keyboard-driven menu, dim status fo
+         oter.
+     … +375 lines (ctrl+o to expand)
+
+● Bash(emacs -Q --batch -L . -f batch-byte-compile doom-dashboard-hermes.el 2>&1
+       | tail -30)
+  ⎿  (No output)
+
+● Clean compile. Confirm test suite is unaffected.
+
+● Bash(eldev test 2>&1 | tail -5)
+  ⎿     FAILED  hermes-render-test/multiple-stable-advances
+        FAILED  hermes-render-test/stable-advance-preserves-prose
+        FAILED  hermes-render-test/stable-chunks-converted-to-org
+     … +2 lines (ctrl+o to expand)
+● Same 5 pre-existing failures; nothing new.
+
+● Created doom-dashboard-hermes.el:1 — fully independent of hermes-dashboard.el.
+   Highlights:
+
+  - Debounced render: 100ms idle timer collapses event bursts into one repaint
+  (doom-dashboard-hermes-debounce if you want to tune it).
+  - Atomic redraw: full content built as one propertized string, then a single
+  erase-buffer+insert.
+  - Event allow-list: only gateway.ready, skin.changed, session.info,
+  session.closed, message.complete, error trigger scheduling. Streaming deltas
+  are dropped at the door.
+  - Primary session: picked lazily as the most-recently-modified live buffer in
+  hermes--session-buffers — no coupling to vanilla.
+  - Resize: re-centers on window-size-change-functions, but only when the buffer
+   is currently displayed.
+  - Hook cleanup: kill-buffer-hook removes hooks and cancels the timer, so
+  disabling the buffer cleans up after itself.
+
+  Drop into Doom:
+
+  (load! "~/Projects/emacs-hermes/doom-dashboard-hermes")
+  (doom-dashboard-hermes-setup)   ; binds SPC h h
+
+  Then M-x doom-dashboard-hermes (or SPC h h). Keys: s/RET/i start chat, c
+  composer, n new session, l sidebar, g refresh, q bury. The vanilla
+  hermes-dashboard.el and its hooks are untouched.
+
+✻ Crunched for 3m 10s
+
+❯ /usage 
+  ⎿  Status dialog dismissed
+
+※ recap: Goal is a Doom-styled Hermes landing dashboard; just shipped `doom-dashboard-hermes.el`, a standalone debounced buffer independent of the vanilla dashboard. Next: load it in your Doom config and run `M-x doom-dashboard-hermes` to smoke-test.
+
+❯ There are a lot of problems. First of all, the two dashboards had the same    
+  name (*hermes*). I tried changing it (as *doom-hermes*), but this doesn't     
+  solve the problem. Multiple dashboard continue existing and only the original 
+   one is able to run a new session. The old one is spawned with the hermes     
+  command. It's not a good design, to be honest                                 
+
+● You're right. The mistake is that I made M-x hermes hard-wired to
+  hermes-dashboard-show, so the vanilla dashboard owns session creation; the
+  Doom dashboard's n key calls hermes and gets the vanilla buffer back. And both
+   dashboards subscribe to global RPC hooks unconditionally, so they coexist
+  forever.
+
+  Cleanup I'd suggest, smallest possible:
+
+  1. Revert hermes in hermes-mode.el to its pre-dashboard behavior — create a
+  session, pop the chat buffer, done. No dashboard reference.
+  2. Add hermes-new-session — same as hermes but takes a callback and doesn't
+  pop, so dashboards can spawn sessions without dragging the user out of their
+  landing screen.
+  3. Make each dashboard opt-in via its own command: M-x hermes-dashboard for
+  vanilla, M-x doom-dashboard-hermes for Doom. Neither is auto-launched.
+  4. Dashboards' n key calls hermes-new-session instead of hermes — no buffer
+  pop, dashboard stays focused, refreshes in place when the new session lands.
+
+  That decouples three things that shouldn't have been tangled: gateway
+  lifecycle, session creation, and which (if any) landing UI you prefer.
+  Tradeoff: M-x hermes becomes lean again, so if you want the vanilla dashboard
+  you have to type hermes-dashboard. I think that's the right default —
+  dashboards are skin, not core.
+
+  Want me to do that? If yes, I'll also leave a one-line note in each dashboard
+  about how to make it the auto-launcher if you wire it from your config.
+
+✻ Baked for 24s
+
+❯ yes! thank you                                                                
+
+  Read 1 file (ctrl+o to expand)
+
+● Now let me make the changes. First hermes-mode.el: extract a non-popping
+  helper and revert hermes to pop the chat buffer.
+
+● Update(hermes-mode.el)
+  ⎿  Added 22 lines, removed 10 lines
+      114  
+      115  ;;;; Public entry points
+      116  
+      117 -;;;###autoload                                                
+      118 -(defun hermes ()                                              
+      119 -  "Open the Hermes dashboard, start the gateway, and create a 
+          -session.                                                      
+      120 -The conversation buffer is created in the background and regis
+          -tered as the                                                  
+      121 -dashboard's primary session; press `i' on the dashboard to sta
+          -rt chatting."                                                 
+      122 -  (interactive)                                               
+      117 +(defun hermes-new-session (&optional callback)                
+      118 +  "Start the gateway (if needed), create a session, and prepar
+          +e its buffer.                                                 
+      119 +The buffer is registered in `hermes--session-buffers' but NOT 
+          +popped to the                                                 
+      120 +user; that's the caller's job.  CALLBACK, if non-nil, is calle
+          +d with the new                                                
+      121 +buffer (or nil on error) once `session.create' resolves.      
+      122 +                                                              
+      123 +This is the building block dashboards use to spawn sessions in
+          + the                                                          
+      124 +background; for the user-facing entry that also pops the buffe
+          +r, see                                                        
+      125 +`hermes'."                                                    
+      126    (hermes--install-hooks)
+      127    (unless (hermes-rpc-live-p)
+      128      (hermes-rpc-start))
+      126 -  (hermes-dashboard-show)                                     
+      129    (hermes-rpc-request
+      130     "session.create" '(:cols 100)
+      131     (lambda (result error)
+      132       (cond
+      131 -      (error (message "hermes: session.create failed: %S" erro
+          -r))                                                           
+      133 +      (error                                                  
+      134 +       (message "hermes: session.create failed: %S" error)    
+      135 +       (when callback (funcall callback nil)))                
+      136        (result
+      137         (let* ((sid (gethash "session_id" result))
+      138                (buf (generate-new-buffer (format "*hermes:%s*" 
+           sid))))
+     ...
+      140           (with-current-buffer buf
+      141             (hermes-mode)
+      142             (setf (hermes-state-session-id hermes--state) sid)
+      139 -           ;; Replay the cached gateway.ready so the buffer le
+          -arns its skin.                                                
+      143             (when hermes--last-gateway-ready
+      144               (hermes-dispatch
+      145                (cons "gateway.ready" hermes--last-gateway-ready
+           )))
+      146             (hermes-input-fetch-catalog))
+      144 -         (hermes-dashboard--note-session sid)))))))           
+      147 +         (when callback (funcall callback buf))))))))         
+      148  
+      149 +;;;###autoload                                                
+      150 +(defun hermes ()                                              
+      151 +  "Start the gateway (if needed), create a session, and pop it
+          +s chat buffer.                                                
+      152 +This is the lean entry point — it does not open a dashboard.  
+          +For a landing                                                 
+      153 +screen, use `M-x hermes-dashboard' or `M-x doom-dashboard-herm
+          +es' instead."                                                 
+      154 +  (interactive)                                               
+      155 +  (hermes-new-session                                         
+      156 +   (lambda (buf) (when (buffer-live-p buf) (pop-to-buffer buf)
+          +))))                                                          
+      157 +                                                              
+      158  (defalias 'hermes-send #'hermes-input-send
+      159    "Queue-aware submission entry; see `hermes-input-send'.")
+      160  
+
+● Drop the auto-dashboard hooks from hermes--install-hooks (the dashboard
+  refreshes itself, no global wiring needed):
+
+● Update(hermes-mode.el)
+  ⎿  Added 1 line, removed 3 lines
+      83    "Wire RPC hooks once.  Idempotent."
+      84    (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
+      85    (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refr
+          esh-if-open)
+      86 -  (add-hook 'hermes-rpc-event-functions #'hermes-dashboard--ref
+         -resh-if-open)                                                  
+      86    (add-hook 'hermes-rpc-connection-functions #'hermes--route-co
+          nnection)
+      88 -  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions-
+         --refresh-if-open)                                              
+      89 -  (add-hook 'hermes-rpc-connection-functions #'hermes-dashboard
+         ---refresh-if-open))                                            
+      87 +  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions-
+         +-refresh-if-open))                                             
+      88  
+      89  ;;;; Major mode
+      90  
+
+● Drop the hermes-dashboard require — vanilla dashboard is opt-in now, not
+  auto-loaded with the core.
+
+● Update(hermes-mode.el)
+  ⎿  Removed 1 line
+      26  (require 'hermes-sessions)
+      27  (require 'hermes-skin)
+      28  (require 'hermes-compose)
+      29 -(require 'hermes-dashboard)                                    
+      29  
+      30  ;;;; Routing: filter event → buffer
+      31  
+
+● Now update hermes-dashboard.el: switch primary-session to lazy lookup,
+  install/uninstall hooks locally, rename entry to hermes-dashboard, route n
+  through hermes-new-session.
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 1 line
+      24  (declare-function hermes-input-send "hermes-input" (text))
+      25  (declare-function hermes-sessions "hermes-sessions" ())
+      26  (declare-function hermes "hermes-mode" ())
+      27 +(declare-function hermes-new-session "hermes-mode" (&optional c
+         +allback))                                                      
+      28  (declare-function hermes-interrupt "hermes-mode" ())
+      29  
+      30  (defcustom hermes-dashboard-logo nil
+
+● Replace primary-sid storage with lazy lookup and rewrite session-aware
+  commands:
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 12 lines, removed 3 lines
+      44  ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
+      45    "Fallback NOUS HERMES banner.")
+      46  
+      47 -;;;; State                                                     
+      47 +;;;; Primary-session lookup                                    
+      48 +;;                                                             
+      49 +;; Picked lazily on every render: the most-recently-modified li
+         +ve buffer                                                      
+      50 +;; in `hermes--session-buffers'.  No persistent state to keep i
+         +n sync.                                                        
+      51  
+      49 -(defvar hermes-dashboard--primary-sid nil                      
+      50 -  "Session id treated as the dashboard's `current' for the comp
+         -oser.")                                                        
+      52 +(defun hermes-dashboard--live-buffers ()                       
+      53 +  "Return live session buffers, most-recently-touched first."  
+      54 +  (let (acc)                                                   
+      55 +    (when (boundp 'hermes--session-buffers)                    
+      56 +      (maphash (lambda (_sid b) (when (buffer-live-p b) (push b
+         + acc)))                                                        
+      57 +               hermes--session-buffers))                       
+      58 +    (sort acc (lambda (a b) (> (buffer-modified-tick a)        
+      59 +                               (buffer-modified-tick b))))))   
+      60  
+      61  ;;;; Faces
+      62  
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 6 lines, removed 5 lines
+      119  
+      120  (defun hermes-dashboard--connection-line ()
+      121    (let* ((live (hermes-rpc-live-p))
+      122 -         (sid hermes-dashboard--primary-sid)                  
+      122 +         (buf (car (hermes-dashboard--live-buffers)))         
+      123 +         (sid (and buf (buffer-local-value 'hermes--state buf)
+      124 +                   (hermes-state-session-id                   
+      125 +                    (buffer-local-value 'hermes--state buf))))
+      126           (label (cond ((not live) "gateway down")
+      124 -                      ((null sid) "starting session…")        
+      127 +                      ((null sid) "no session yet")           
+      128                        (t (format "session %s ready"
+      129                                   (hermes-dashboard--short-sid 
+           sid))))))
+      130      (propertize (format "  ● %s" label) 'face
+     ...
+      132  
+      133  (defun hermes-dashboard--primary-state ()
+      134    "Return the `hermes-state' of the primary session buffer, or
+            nil."
+      132 -  (let* ((sid hermes-dashboard--primary-sid)                  
+      133 -         (buf (and sid (boundp 'hermes--session-buffers)      
+      134 -                   (gethash sid hermes--session-buffers))))   
+      135 +  (let ((buf (car (hermes-dashboard--live-buffers))))         
+      136      (and (buffer-live-p buf)
+      137           (buffer-local-value 'hermes--state buf))))
+      138  
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 2 lines, removed 5 lines
+      287  ;;;; Commands
+      288  
+      289  (defun hermes-dashboard--primary-buffer ()
+      290 -  "Return the buffer for the primary session, or nil."        
+      291 -  (let ((sid hermes-dashboard--primary-sid))                  
+      292 -    (and sid (boundp 'hermes--session-buffers)                
+      293 -         (let ((b (gethash sid hermes--session-buffers)))     
+      294 -           (and (buffer-live-p b) b)))))                      
+      290 +  "Return the most-recently-active live session buffer, or nil
+          +."                                                            
+      291 +  (car (hermes-dashboard--live-buffers)))                     
+      292  
+      293  (defun hermes-dashboard-dwim ()
+      294    "RET: switch to session at point, else send prompt to primar
+           y session."
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 17 lines, removed 6 lines
+      329        (call-interactively #'hermes-interrupt))))
+      330  
+      331  (defun hermes-dashboard-new-session ()
+      332 -  "Create another Hermes session and make it the primary."    
+      332 +  "Create another Hermes session in the background (no buffer 
+          +pop).                                                         
+      333 +The dashboard refreshes once `session.info' arrives for the ne
+          +w id."                                                        
+      334    (interactive)
+      334 -  (call-interactively #'hermes))                              
+      335 +  (hermes-new-session                                         
+      336 +   (lambda (_buf) (hermes-dashboard--refresh-if-open))))      
+      337  
+      338  ;;;; Entry / hook installation
+      339  
+      338 -(defun hermes-dashboard--note-session (sid)                   
+      339 -  "Mark SID as the dashboard's primary session and refresh."  
+      340 -  (setq hermes-dashboard--primary-sid sid)                    
+      341 -  (hermes-dashboard--refresh-if-open))                        
+      340 +(defun hermes-dashboard--install-hooks ()                     
+      341 +  "Install RPC hooks the dashboard needs.  Idempotent."       
+      342 +  (add-hook 'hermes-rpc-event-functions      #'hermes-dashboar
+          +d--refresh-if-open)                                           
+      343 +  (add-hook 'hermes-rpc-connection-functions #'hermes-dashboar
+          +d--refresh-if-open))                                          
+      344  
+      345 +(defun hermes-dashboard--uninstall-hooks ()                   
+      346 +  "Remove the dashboard's RPC hooks."                         
+      347 +  (remove-hook 'hermes-rpc-event-functions      #'hermes-dashb
+          +oard--refresh-if-open)                                        
+      348 +  (remove-hook 'hermes-rpc-connection-functions #'hermes-dashb
+          +oard--refresh-if-open))                                       
+      349 +                                                              
+      350 +;;;###autoload                                                
+      351 +(defalias 'hermes-dashboard #'hermes-dashboard-show           
+      352 +  "Open the vanilla Hermes landing dashboard.")               
+      353 +                                                              
+      354  (defun hermes-dashboard-show ()
+      355    "Pop up the dashboard buffer in the current window."
+      356    (interactive)
+
+● Wire install/uninstall into the mode so the dashboard hooks live and die with
+  the buffer:
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 3 lines, removed 1 line
+      282  (define-derived-mode hermes-dashboard-mode special-mode "Herme
+           s-Dash"
+      283    "Landing dashboard for the Hermes agent."
+      284    (setq truncate-lines t)
+      285 -  (buffer-disable-undo))                                      
+      285 +  (buffer-disable-undo)                                       
+      286 +  (hermes-dashboard--install-hooks)                           
+      287 +  (add-hook 'kill-buffer-hook #'hermes-dashboard--uninstall-ho
+          +oks nil t))                                                   
+      288  
+      289  ;;;; Commands
+      290  
+
+● Update Doom dashboard's n to use hermes-new-session:
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 1 line
+      28  
+      29  (defvar hermes--session-buffers)        ; hermes-mode.el
+      30  (declare-function hermes "hermes-mode" ())
+      31 +(declare-function hermes-new-session "hermes-mode" (&optional c
+         +allback))                                                      
+      32  (declare-function hermes-input-send "hermes-input" (text))
+      33  (declare-function hermes-compose "hermes-compose" ())
+      34  (declare-function hermes-sessions "hermes-sessions" ())
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 4 lines, removed 2 lines
+      300       (t (user-error "No live session yet")))))
+      301  
+      302  (defun doom-dashboard-hermes-new ()
+      303 -  "Create a new Hermes session via `hermes'."                 
+      303 +  "Create a new Hermes session in the background, without leav
+          +ing the dashboard.                                            
+      304 +The buffer refreshes once `session.info' lands for the new id.
+          +"                                                             
+      305    (interactive)
+      305 -  (call-interactively #'hermes))                              
+      306 +  (hermes-new-session                                         
+      307 +   (lambda (_buf) (doom-dashboard-hermes--schedule-refresh))))
+      308  
+      309  ;;;; Mode
+      310  
+
+● Same for doom-dashboard-hermes-start — when there's no session, create one in
+  the background instead of calling hermes (which pops):
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 5 lines, removed 1 line
+      288       (buf (pop-to-buffer buf)
+      289            (call-interactively #'hermes-input-send))
+      290       (t (when (yes-or-no-p "No live session — create one? ")
+      291 -          (call-interactively #'hermes))))))                  
+      291 +          (hermes-new-session                                 
+      292 +           (lambda (b)                                        
+      293 +             (when (buffer-live-p b)                          
+      294 +               (pop-to-buffer b)                              
+      295 +               (call-interactively #'hermes-input-send))))))))
+          +)                                                             
+      296  
+      297  (defun doom-dashboard-hermes-compose ()
+      298    "Pop the primary session buffer and open the multi-line comp
+           oser."
+
+● Compile + run tests:
+
+● Bash(eldev compile 2>&1 | tail -20)
+  ⎿  ELC      hermes-dashboard.el
+     ELC      hermes-mode.el
+
+● Bash(emacs -Q --batch -L . -f batch-byte-compile doom-dashboard-hermes.el 2>&1
+       | tail -10)
+  ⎿  (No output)
+
+● Bash(eldev test 2>&1 | tail -5)
+  ⎿     FAILED  hermes-render-test/multiple-stable-advances
+        FAILED  hermes-render-test/stable-advance-preserves-prose
+        FAILED  hermes-render-test/stable-chunks-converted-to-org
+     … +2 lines (ctrl+o to expand)
+
+● Same five pre-existing failures, nothing new. Three things are now decoupled:
+
+  - M-x hermes — lean entry. Creates a session and pops its chat buffer. No
+  dashboard.
+  - hermes-new-session (callback) — background helper used by both dashboards to
+   spawn a session without dragging focus away.
+  - M-x hermes-dashboard (vanilla) and M-x doom-dashboard-hermes (Doom) — opt-in
+   landing screens. Each installs its own RPC hooks inside its mode and tears
+  them down in kill-buffer-hook, so closing the buffer fully detaches it.
+
+  Both dashboards now pick the primary session lazily as the
+  most-recently-modified live buffer in hermes--session-buffers — no internal
+  pointer to drift, no note-session plumbing. The n key on either dashboard goes
+   through hermes-new-session and stays put on the dashboard until you press s
+  (or whichever start key) to enter the chat.
+
+  If you want either dashboard to be the auto-launcher, add to your config:
+
+  ;; Doom config:
+  (add-hook 'emacs-startup-hook #'doom-dashboard-hermes)
+  ;; or for vanilla:
+  ;; (add-hook 'emacs-startup-hook #'hermes-dashboard)
+
+✻ Cogitated for 2m 9s
+
+❯ Much better! But this is my dashboard now.                                    
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                             ██╗  ██╗███████╗██████╗ ███╗                       
+  ███╗███████╗███████╗                                                          
+                             ██║  ██║██╔════╝██╔══██╗████╗                      
+  ████║██╔════╝██╔════╝                                                         
+                             ███████║█████╗  ██████╔╝██╔████╔██║█████╗          
+  ███████╗                                                                      
+                             ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝          
+  ╚════██║                                                                      
+                             ██║  ██║███████╗██║  ██║██║ ╚═╝                    
+  ██║███████╗███████║                                                           
+                             ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝                        
+  ╚═╝╚══════╝╚══════╝                                                           
+                                                                                
+                     ●  session 49ec403f ready  ·                               
+  nvidia/nemotron-3-super-120b-a12b:free                                        
+                                                                                
+                                         [s]  Start chatting                    
+                                         [c]  Open multiline composer           
+                                         [n]  New session                       
+                                         [l]  Session list                      
+                                         [q]  Quit                              
+                                                                                
+                                        2 sessions live  ·  gateway up          
+   -- doesn't look right                                                        
+
+● A few things stand out from the screenshot that could each be "doesn't look
+  right" — and the fix differs. Let me ask before changing.
+
+● User answered Claude's questions:
+  ⎿  · Which of these is the main thing that feels off? → The centering takes 
+     too much time. I wonder how the doom dashboard does it (you can ask 
+     deepwiki doomemacs/doomemacs). Also, the keys are not the SPC oriented ones
+
+● Let me look up how Doom does it.
+
+  Called deepwiki (ctrl+o to expand)
+
+● Got it — Doom centers via set-window-margins, not string padding. That's both
+  faster and visually cleaner. Rewriting accordingly.
+
+● Write(doom-dashboard-hermes.el)
+  ⎿  Added 146 lines, removed 130 lines
+       6  
+       7  ;;; Commentary:
+       8  
+       9 -;; A standalone landing buffer styled after Doom Emacs's dashbo
+         -ard:                                                           
+      10 -;; centered banner, vertical keyboard-driven menu, dim status f
+         -ooter.                                                         
+       9 +;; A standalone landing buffer styled after Doom Emacs's `+doom
+         +-dashboard'.                                                   
+      10  ;; Independent of `hermes-dashboard.el' so the vanilla dashboar
+          d stays
+      12 -;; untouched.  Drop into a Doom config with:                   
+      11 +;; untouched.                                                  
+      12  ;;
+      14 -;;   (load! "~/Projects/emacs-hermes/doom-dashboard-hermes")   
+      15 -;;   (doom-dashboard-hermes-setup)                             
+      13 +;; Centering mirrors Doom's approach:                          
+      14 +;;   - Horizontal: content is inserted flush-left into the buff
+         +er, and the                                                    
+      15 +;;     window's left/right margins are widened to push the canv
+         +as to the                                                      
+      16 +;;     centre.  This means `string-width' math per line, no per
+         +-resize                                                        
+      17 +;;     reformatting — just two `set-window-margins' calls.     
+      18 +;;   - Vertical:  a single block of newlines at the top, sized 
+         +to whatever                                                    
+      19 +;;     `window-height' currently is.                           
+      20  ;;
+      17 -;; Performance: a 100ms idle-timer debouncer collapses bursts o
+         -f RPC                                                          
+      18 -;; events into a single repaint; only event types that change v
+         -isible                                                         
+      19 -;; fields are allowed through the filter; the whole buffer is b
+         -uilt as                                                        
+      20 -;; one propertized string and swapped in atomically.           
+      21 +;; Resize updates margins via `window-configuration-change-hook
+         +' and the                                                      
+      22 +;; vertical pad via `window-size-change-functions'.            
+      23 +;;                                                             
+      24 +;; Drop into a Doom config with:                               
+      25 +;;                                                             
+      26 +;;   (load! "~/Projects/emacs-hermes/doom-dashboard-hermes")   
+      27 +;;   (doom-dashboard-hermes-setup)   ; binds SPC h h, SPC h c, 
+         +…                                                              
+      28  
+      29  ;;; Code:
+      30  
+     ...
+      46    "Doom-styled landing dashboard for the Hermes agent."
+      47    :group 'hermes :prefix "doom-dashboard-hermes-")
+      48  
+      49 +(defcustom doom-dashboard-hermes-width 80                      
+      50 +  "Logical canvas width, in columns.  Used to compute window ma
+         +rgins."                                                        
+      51 +  :type 'integer :group 'doom-dashboard-hermes)                
+      52 +                                                               
+      53  (defcustom doom-dashboard-hermes-banner
+      54    "\
+      55  ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+     ...
+      62    :type 'string :group 'doom-dashboard-hermes)
+      63  
+      64  (defcustom doom-dashboard-hermes-menu
+      54 -  '(("s" "Start chatting"          doom-dashboard-hermes-start)
+      55 -    ("c" "Open multiline composer" doom-dashboard-hermes-compos
+         -e)                                                             
+      56 -    ("n" "New session"             doom-dashboard-hermes-new)  
+      57 -    ("l" "Session list"            hermes-sessions)            
+      58 -    ("q" "Quit"                    quit-window))               
+      59 -  "Menu rows: each entry is (KEY LABEL COMMAND)."              
+      60 -  :type '(repeat (list string string function))                
+      65 +  '(("Start chatting"          doom-dashboard-hermes-start)    
+      66 +    ("Open composer"           doom-dashboard-hermes-compose)  
+      67 +    ("New session"             doom-dashboard-hermes-new)      
+      68 +    ("Session list"            hermes-sessions)                
+      69 +    ("Quit"                    quit-window))                   
+      70 +  "Menu rows: each entry is (LABEL COMMAND).                   
+      71 +Keybindings shown next to each label are looked up dynamically 
+         +at render                                                      
+      72 +time via `where-is-internal' — so if you bind a command under t
+         +he Doom                                                        
+      73 +leader (e.g. `SPC h h'), that key appears automatically."      
+      74 +  :type '(repeat (list string function))                       
+      75    :group 'doom-dashboard-hermes)
+      76  
+      77  (defcustom doom-dashboard-hermes-debounce 0.1
+     ...
+       84  
+       85  (defface doom-dashboard-hermes-banner-face
+       86    '((t :inherit font-lock-keyword-face :weight bold))
+       73 -  "Face for the centered banner.")                            
+       87 +  "Face for the banner.")                                     
+       88  
+       75 -(defface doom-dashboard-hermes-key-face                       
+       76 -  '((t :inherit font-lock-constant-face :weight bold))        
+       77 -  "Face for [k] key labels in menu rows.")                    
+       78 -                                                              
+       89  (defface doom-dashboard-hermes-menu-face
+       90    '((t :inherit default))
+       91    "Face for menu row labels.")
+       92  
+       93 +(defface doom-dashboard-hermes-key-face                       
+       94 +  '((t :inherit font-lock-constant-face))                     
+       95 +  "Face for keybinding strings next to menu labels.")         
+       96 +                                                              
+       97  (defface doom-dashboard-hermes-footer-face
+       98    '((t :inherit shadow))
+       99    "Face for the dim status footer.")
+      100  
+      101  (defface doom-dashboard-hermes-status-face
+      102    '((t :inherit success))
+       89 -  "Face for the green session-ready indicator.")              
+      103 +  "Face for the gateway-up status dot.")                      
+      104  
+      105  (defface doom-dashboard-hermes-status-down-face
+      106    '((t :inherit error))
+       93 -  "Face for the red gateway-down indicator.")                 
+      107 +  "Face for the gateway-down status dot.")                    
+      108  
+      109  ;;;; Helpers
+      110  
+       97 -(defun doom-dashboard-hermes--strip-rich (s)                  
+       98 -  "Remove Rich `[…]'/`[/]' open/close markup from S."         
+       99 -  (replace-regexp-in-string "\\[/?[^]]*\\]" "" s))            
+      100 -                                                              
+      111  (defun doom-dashboard-hermes--short-sid (sid)
+      112    (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 
+           8) (or sid "?")))
+      113  
+      114  (defun doom-dashboard-hermes--live-buffers ()
+      105 -  "Return the live session buffers, newest-first."            
+      115 +  "Return live session buffers, most-recently-touched first." 
+      116    (let (acc)
+      117      (when (boundp 'hermes--session-buffers)
+      108 -      (maphash (lambda (_sid b)                               
+      109 -                 (when (buffer-live-p b) (push b acc)))       
+      118 +      (maphash (lambda (_sid b) (when (buffer-live-p b) (push 
+          +b acc)))                                                      
+      119                 hermes--session-buffers))
+      111 -    ;; Sort by buffer-modified-tick descending → most recently
+          - touched first.                                               
+      120      (sort acc (lambda (a b) (> (buffer-modified-tick a)
+      121                                 (buffer-modified-tick b))))))
+      122  
+      115 -(defun doom-dashboard-hermes--primary-state ()                
+      116 -  "Return the most-recently-active session's `hermes-state', o
+          -r nil."                                                       
+      117 -  (when-let ((buf (car (doom-dashboard-hermes--live-buffers)))
+          -)                                                             
+      118 -    (buffer-local-value 'hermes--state buf)))                 
+      119 -                                                              
+      123  (defun doom-dashboard-hermes--primary-buffer ()
+      121 -  "Return the most-recently-active session buffer, or nil."   
+      124    (car (doom-dashboard-hermes--live-buffers)))
+      125  
+      124 -(defun doom-dashboard-hermes--center (text width)             
+      125 -  "Return TEXT prefixed with spaces so it sits centered in a W
+          -IDTH window.                                                  
+      126 -TEXT may already contain face properties; they are preserved."
+      127 -  (let* ((len (string-width                                   
+      128 -               (substring-no-properties (replace-regexp-in-str
+          -ing "\n.*" "" text))))                                        
+      129 -         (pad (max 0 (/ (- width len) 2))))                   
+      130 -    (concat (make-string pad ?\s) text)))                     
+      126 +(defun doom-dashboard-hermes--primary-state ()                
+      127 +  (when-let ((b (doom-dashboard-hermes--primary-buffer)))     
+      128 +    (buffer-local-value 'hermes--state b)))                   
+      129  
+      132 -(defun doom-dashboard-hermes--center-block (block width)      
+      133 -  "Center each line of BLOCK independently to WIDTH."         
+      134 -  (mapconcat (lambda (line) (doom-dashboard-hermes--center lin
+          -e width))                                                     
+      135 -             (split-string block "\n")                        
+      136 -             "\n"))                                           
+      130 +(defun doom-dashboard-hermes--key-for (cmd)                   
+      131 +  "Best-effort: return a human-readable key sequence bound to 
+          +CMD, or nil.                                                  
+      132 +Prefers leader bindings (e.g. `SPC h h') if visible, otherwise
+          + falls back                                                   
+      133 +to a binding in the dashboard's own keymap."                  
+      134 +  (let* ((keys (where-is-internal cmd nil t))                 
+      135 +         (str  (and keys (key-description keys))))            
+      136 +    (and (stringp str) (not (string-empty-p str)) str)))      
+      137  
+      138 -;;;; Section builders — each returns a propertized string     
+      138 +;;;; Section builders — each returns a propertized string, no 
+          +padding                                                       
+      139  
+      140 -(defun doom-dashboard-hermes--banner-str (width)              
+      141 -  (let* ((clean (doom-dashboard-hermes--strip-rich            
+      142 -                 doom-dashboard-hermes-banner))               
+      143 -         (centered (doom-dashboard-hermes--center-block clean 
+          -width)))                                                      
+      144 -    (propertize centered 'face 'doom-dashboard-hermes-banner-f
+          -ace)))                                                        
+      140 +(defun doom-dashboard-hermes--banner-str ()                   
+      141 +  (propertize doom-dashboard-hermes-banner                    
+      142 +              'face 'doom-dashboard-hermes-banner-face))      
+      143  
+      146 -(defun doom-dashboard-hermes--status-str (width)              
+      144 +(defun doom-dashboard-hermes--status-str ()                   
+      145    (let* ((live (hermes-rpc-live-p))
+      148 -         (st (doom-dashboard-hermes--primary-state))          
+      149 -         (sid (and st (hermes-state-session-id st)))          
+      146 +         (st   (doom-dashboard-hermes--primary-state))        
+      147 +         (sid  (and st (hermes-state-session-id st)))         
+      148           (info (and st (hermes-state-session-info st)))
+      149           (model (and (hash-table-p info) (gethash "model" info
+           )))
+      150           (face (if live 'doom-dashboard-hermes-status-face
+     ...
+      152           (dot (propertize "●" 'face face))
+      153           (label (cond
+      154                   ((not live) "gateway down")
+      157 -                 ((null sid) "starting session…")             
+      155 +                 ((null sid) "no session yet")                
+      156                   (model (format "session %s ready  ·  %s"
+      157                                  (doom-dashboard-hermes--short-
+           sid sid)
+      160 -                                model))                       
+      158 +                                (if (> (length model) 28)     
+      159 +                                    (concat (substring model 0
+          + 27) "…")                                                     
+      160 +                                  model)))                    
+      161                   (t (format "session %s ready"
+      162                              (doom-dashboard-hermes--short-sid 
+           sid))))))
+      163 -    (doom-dashboard-hermes--center (concat dot "  " label) wid
+          -th)))                                                         
+      163 +    (concat dot "  " label)))                                 
+      164  
+      165 -(defun doom-dashboard-hermes--menu-str (width)                
+      166 -  (let* ((rows (mapcar                                        
+      167 -                (lambda (row)                                 
+      168 -                  (let ((key (nth 0 row))                     
+      169 -                        (label (nth 1 row)))                  
+      170 -                    (concat                                   
+      171 -                     (propertize (format "[%s]" key)          
+      172 -                                 'face 'doom-dashboard-hermes-
+          -key-face)                                                     
+      173 -                     "  "                                     
+      174 -                     (propertize label                        
+      175 -                                 'face 'doom-dashboard-hermes-
+          -menu-face))))                                                 
+      176 -                doom-dashboard-hermes-menu))                  
+      177 -         ;; Center the whole block by aligning to the widest r
+          -ow.                                                           
+      178 -         (widest (apply #'max 0 (mapcar (lambda (r)           
+      179 -                                          (string-width       
+      180 -                                           (substring-no-prope
+          -rties r)))                                                    
+      181 -                                        rows)))               
+      182 -         (left-pad (max 0 (/ (- width widest) 2)))            
+      183 -         (prefix (make-string left-pad ?\s)))                 
+      184 -    (mapconcat (lambda (r) (concat prefix r)) rows "\n")))    
+      165 +(defun doom-dashboard-hermes--menu-row (row)                  
+      166 +  (let* ((label (nth 0 row))                                  
+      167 +         (cmd   (nth 1 row))                                  
+      168 +         (key   (doom-dashboard-hermes--key-for cmd))         
+      169 +         (key-s (if key                                       
+      170 +                    (propertize (format "%-10s" key)          
+      171 +                                'face 'doom-dashboard-hermes-k
+          +ey-face)                                                      
+      172 +                  (propertize (format "%-10s" "")             
+      173 +                              'face 'doom-dashboard-hermes-key
+          +-face))))                                                     
+      174 +    (concat key-s "  "                                        
+      175 +            (propertize label 'face 'doom-dashboard-hermes-men
+          +u-face))))                                                    
+      176  
+      186 -(defun doom-dashboard-hermes--footer-str (width)              
+      177 +(defun doom-dashboard-hermes--menu-str ()                     
+      178 +  (mapconcat #'doom-dashboard-hermes--menu-row                
+      179 +             doom-dashboard-hermes-menu                       
+      180 +             "\n"))                                           
+      181 +                                                              
+      182 +(defun doom-dashboard-hermes--footer-str ()                   
+      183    (let* ((n (length (doom-dashboard-hermes--live-buffers)))
+      184           (live (hermes-rpc-live-p))
+      185           (txt (format "%d %s live  ·  gateway %s"
+      186                        n (if (= n 1) "session" "sessions")
+      187                        (if live "up" "down"))))
+      192 -    (doom-dashboard-hermes--center                            
+      193 -     (propertize txt 'face 'doom-dashboard-hermes-footer-face)
+      194 -     width)))                                                 
+      188 +    (propertize txt 'face 'doom-dashboard-hermes-footer-face))
+          +)                                                             
+      189  
+      196 -;;;; Render                                                   
+      190 +;;;; Render (flush-left, no per-line centering)               
+      191  
+      198 -(defun doom-dashboard-hermes--build-string (width height)     
+      199 -  "Build the full dashboard contents as a single propertized s
+          -tring."                                                       
+      200 -  (let* ((banner (doom-dashboard-hermes--banner-str width))   
+      201 -         (status (doom-dashboard-hermes--status-str width))   
+      202 -         (menu   (doom-dashboard-hermes--menu-str width))     
+      203 -         (footer (doom-dashboard-hermes--footer-str width))   
+      204 -         (content (string-join (list banner "" status "" menu 
+          -"" footer) "\n"))                                             
+      205 -         (content-lines (1+ (cl-count ?\n content)))          
+      206 -         (top-pad (max 1 (/ (- height content-lines) 3))))    
+      207 -    (concat (make-string top-pad ?\n) content "\n")))         
+      192 +(defun doom-dashboard-hermes--render-content ()               
+      193 +  "Insert the dashboard content flush-left.  Margins handle ce
+          +ntering."                                                     
+      194 +  (insert (doom-dashboard-hermes--banner-str) "\n\n")         
+      195 +  (insert (doom-dashboard-hermes--status-str) "\n\n")         
+      196 +  (insert (doom-dashboard-hermes--menu-str)   "\n\n")         
+      197 +  (insert (doom-dashboard-hermes--footer-str)))               
+      198  
+      199  (defun doom-dashboard-hermes--render ()
+      210 -  "Repaint the dashboard buffer.  Must be called inside it."  
+      211 -  (let* ((win (get-buffer-window (current-buffer) 'visible))  
+      212 -         (width (if win (window-width win) (frame-width)))    
+      213 -         (height (if win (window-height win) (frame-height))) 
+      214 -         (inhibit-read-only t)                                
+      215 -         (s (doom-dashboard-hermes--build-string width height)
+          -))                                                            
+      200 +  "Repaint the dashboard buffer and re-centre via margins + to
+          +p padding."                                                   
+      201 +  (let ((inhibit-read-only t))                                
+      202      (erase-buffer)
+      217 -    (insert s)                                                
+      203 +    (doom-dashboard-hermes--render-content)                   
+      204 +    (doom-dashboard-hermes--apply-vertical-padding)           
+      205 +    (doom-dashboard-hermes--apply-margins)                    
+      206      (goto-char (point-min))))
+      207  
+      208 +;;;; Window-margin centering (mirrors `+doom-dashboard-resize-
+          +h')                                                           
+      209 +                                                              
+      210 +(defun doom-dashboard-hermes--apply-margins ()                
+      211 +  "Set left/right margins on every window showing the dashboar
+          +d buffer."                                                    
+      212 +  (dolist (win (get-buffer-window-list (current-buffer) nil t)
+          +)                                                             
+      213 +    (let* ((total (window-total-width win))                   
+      214 +           (margin (max 0 (/ (- total doom-dashboard-hermes-wi
+          +dth) 2))))                                                    
+      215 +      (set-window-margins win margin margin))))               
+      216 +                                                              
+      217 +(defun doom-dashboard-hermes--apply-vertical-padding ()       
+      218 +  "Insert blank lines at the top so content sits vertically ce
+          +ntred."                                                       
+      219 +  (let* ((win (get-buffer-window (current-buffer) 'visible))  
+      220 +         (h   (if win (window-height win) (frame-height)))    
+      221 +         (lines (count-lines (point-min) (point-max)))        
+      222 +         (pad (max 1 (- (/ h 2) (/ lines 2)))))               
+      223 +    (save-excursion                                           
+      224 +      (goto-char (point-min))                                 
+      225 +      (insert (make-string pad ?\n)))))                       
+      226 +                                                              
+      227  ;;;; Debounced refresh
+      228  
+      229  (defvar doom-dashboard-hermes--refresh-timer nil
+     ...
+      235    "Event types that should trigger a dashboard repaint.")
+      236  
+      237  (defun doom-dashboard-hermes--schedule-refresh ()
+      231 -  "Cancel any pending refresh and schedule a fresh one."      
+      238    (when (timerp doom-dashboard-hermes--refresh-timer)
+      239      (cancel-timer doom-dashboard-hermes--refresh-timer))
+      240    (setq doom-dashboard-hermes--refresh-timer
+     ...
+      243           #'doom-dashboard-hermes--do-refresh)))
+      244  
+      245  (defun doom-dashboard-hermes--do-refresh ()
+      240 -  "Actually repaint the dashboard if it exists."              
+      246    (setq doom-dashboard-hermes--refresh-timer nil)
+      247    (let ((buf (get-buffer doom-dashboard-hermes-buffer-name)))
+      248      (when (buffer-live-p buf)
+     ...
+      250          (doom-dashboard-hermes--render)))))
+      251  
+      252  (defun doom-dashboard-hermes--on-event (type &rest _ignore)
+      248 -  "Hook for `hermes-rpc-event-functions'.  Filter and schedule
+          -."                                                            
+      253    (when (member type doom-dashboard-hermes--refresh-events)
+      254      (doom-dashboard-hermes--schedule-refresh)))
+      255  
+      256  (defun doom-dashboard-hermes--on-connection (&rest _ignore)
+      253 -  "Hook for `hermes-rpc-connection-functions'.  Always schedul
+          -e."                                                           
+      257    (doom-dashboard-hermes--schedule-refresh))
+      258  
+      256 -(defun doom-dashboard-hermes--on-window-resize (_frame)       
+      257 -  "Re-center on resize, but only if the dashboard is visible s
+          -omewhere."                                                    
+      258 -  (when (get-buffer-window doom-dashboard-hermes-buffer-name '
+          -visible)                                                      
+      259 -    (doom-dashboard-hermes--schedule-refresh)))               
+      259 +(defun doom-dashboard-hermes--on-window-change (&rest _ignore)
+      260 +  "Re-apply margins/vertical pad on window resize or split."  
+      261 +  (let ((buf (get-buffer doom-dashboard-hermes-buffer-name))) 
+      262 +    (when (and (buffer-live-p buf)                            
+      263 +               (get-buffer-window buf 'visible))              
+      264 +      (doom-dashboard-hermes--schedule-refresh))))            
+      265  
+      266  ;;;; Hook lifecycle
+      267  
+      268  (defun doom-dashboard-hermes--install-hooks ()
+      264 -  (add-hook 'hermes-rpc-event-functions      #'doom-dashboard-
+          -hermes--on-event)                                             
+      265 -  (add-hook 'hermes-rpc-connection-functions #'doom-dashboard-
+          -hermes--on-connection)                                        
+      266 -  (add-hook 'window-size-change-functions    #'doom-dashboard-
+          -hermes--on-window-resize))                                    
+      269 +  (add-hook 'hermes-rpc-event-functions       #'doom-dashboard
+          +-hermes--on-event)                                            
+      270 +  (add-hook 'hermes-rpc-connection-functions  #'doom-dashboard
+          +-hermes--on-connection)                                       
+      271 +  (add-hook 'window-size-change-functions     #'doom-dashboard
+          +-hermes--on-window-change)                                    
+      272 +  (add-hook 'window-configuration-change-hook #'doom-dashboard
+          +-hermes--on-window-change))                                   
+      273  
+      274  (defun doom-dashboard-hermes--uninstall-hooks ()
+      269 -  (remove-hook 'hermes-rpc-event-functions      #'doom-dashboa
+          -rd-hermes--on-event)                                          
+      270 -  (remove-hook 'hermes-rpc-connection-functions #'doom-dashboa
+          -rd-hermes--on-connection)                                     
+      271 -  (remove-hook 'window-size-change-functions    #'doom-dashboa
+          -rd-hermes--on-window-resize)                                  
+      275 +  (remove-hook 'hermes-rpc-event-functions       #'doom-dashbo
+          +ard-hermes--on-event)                                         
+      276 +  (remove-hook 'hermes-rpc-connection-functions  #'doom-dashbo
+          +ard-hermes--on-connection)                                    
+      277 +  (remove-hook 'window-size-change-functions     #'doom-dashbo
+          +ard-hermes--on-window-change)                                 
+      278 +  (remove-hook 'window-configuration-change-hook #'doom-dashbo
+          +ard-hermes--on-window-change)                                 
+      279    (when (timerp doom-dashboard-hermes--refresh-timer)
+      280      (cancel-timer doom-dashboard-hermes--refresh-timer)
+      281      (setq doom-dashboard-hermes--refresh-timer nil)))
+     ...
+      288    (doom-dashboard-hermes--do-refresh))
+      289  
+      290  (defun doom-dashboard-hermes-start ()
+      284 -  "Pop the primary session buffer and prompt via `hermes-input
+          --send'."                                                      
+      291 +  "Pop the primary session buffer and prompt via `hermes-input
+          +-send'.                                                       
+      292 +If no session exists, offer to create one and chat into it."  
+      293    (interactive)
+      294    (let ((buf (doom-dashboard-hermes--primary-buffer)))
+      295      (cond
+      296       (buf (pop-to-buffer buf)
+      297            (call-interactively #'hermes-input-send))
+      290 -     (t (when (yes-or-no-p "No live session — create one? ")  
+      291 -          (hermes-new-session                                 
+      292 -           (lambda (b)                                        
+      293 -             (when (buffer-live-p b)                          
+      294 -               (pop-to-buffer b)                              
+      295 -               (call-interactively #'hermes-input-send))))))))
+          -)                                                             
+      298 +     ((yes-or-no-p "No live session — create one? ")          
+      299 +      (hermes-new-session                                     
+      300 +       (lambda (b)                                            
+      301 +         (when (buffer-live-p b)                              
+      302 +           (pop-to-buffer b)                                  
+      303 +           (call-interactively #'hermes-input-send))))))))    
+      304  
+      305  (defun doom-dashboard-hermes-compose ()
+      306    "Pop the primary session buffer and open the multi-line comp
+           oser."
+     ...
+      312       (t (user-error "No live session yet")))))
+      313  
+      314  (defun doom-dashboard-hermes-new ()
+      307 -  "Create a new Hermes session in the background, without leav
+          -ing the dashboard.                                            
+      308 -The buffer refreshes once `session.info' lands for the new id.
+          -"                                                             
+      315 +  "Create a new Hermes session in the background, without leav
+          +ing the dashboard."                                           
+      316    (interactive)
+      317    (hermes-new-session
+      318     (lambda (_buf) (doom-dashboard-hermes--schedule-refresh))))
+     ...
+      321  
+      322  (defvar doom-dashboard-hermes-mode-map
+      323    (let ((m (make-sparse-keymap)))
+      324 +    ;; Single-letter shortcuts inside the buffer.  Doom users 
+          +will mostly                                                   
+      325 +    ;; reach the same commands via SPC h h / SPC h c / … which
+          + `where-is'                                                   
+      326 +    ;; picks up automatically and shows next to each menu row.
+      327      (define-key m (kbd "RET") #'doom-dashboard-hermes-start)
+      318 -    (define-key m (kbd "i")   #'doom-dashboard-hermes-start)  
+      328      (define-key m (kbd "s")   #'doom-dashboard-hermes-start)
+      329      (define-key m (kbd "c")   #'doom-dashboard-hermes-compose)
+      330      (define-key m (kbd "n")   #'doom-dashboard-hermes-new)
+     ...
+      362  ;;;###autoload
+      363  (defun doom-dashboard-hermes-setup ()
+      364    "Convenience entry for `~/.doom.d/config.el'.
+      356 -Binds `SPC h h' under the Doom leader when `map!' is available
+          -."                                                            
+      365 +Adds leader bindings under `SPC h' so the dashboard's menu row
+          +s show real                                                   
+      366 +key sequences (`SPC h h', `SPC h c', …) via `where-is-internal
+          +'."                                                           
+      367    (interactive)
+      368    (when (fboundp 'map!)
+      359 -    (eval '(map! :leader :desc "Hermes dashboard" "h h"       
+      360 -                 #'doom-dashboard-hermes))))                  
+      369 +    (eval                                                     
+      370 +     '(map! :leader                                           
+      371 +            (:prefix ("h" . "hermes")                         
+      372 +             :desc "Hermes dashboard" "h" #'doom-dashboard-her
+          +mes                                                           
+      373 +             :desc "Start chatting"   "s" #'doom-dashboard-her
+          +mes-start                                                     
+      374 +             :desc "Compose"          "c" #'doom-dashboard-her
+          +mes-compose                                                   
+      375 +             :desc "New session"      "n" #'doom-dashboard-her
+          +mes-new                                                       
+      376 +             :desc "Session list"     "l" #'hermes-sessions)))
+          +))                                                            
+      377  
+      378  (provide 'doom-dashboard-hermes)
+      379  ;;; doom-dashboard-hermes.el ends here
+
+● Bash(emacs -Q --batch -L . -f batch-byte-compile doom-dashboard-hermes.el 2>&1
+       | tail -20)
+  ⎿  (No output)
+
+● Big changes per Doom's actual approach:
+
+  Centering — content is rendered flush-left, no per-line space padding.
+  Horizontal centering is achieved by widening set-window-margins to
+  (window-total-width - 80) / 2 on each side; vertical by inserting newlines at
+  the top. Resize updates margins only — no string-width math, no per-line
+  reformatting. Should feel instant.
+
+  Menu rows — labels are paired with where-is-internal lookups of the bound
+  command. When you bind doom-dashboard-hermes-start to SPC h s via the setup
+  helper, the dashboard automatically shows SPC h s   Start chatting next to the
+   row. Buffer-local single-letter shortcuts (s, c, n, l, g, q) still work
+  inside the dashboard for muscle-memory.
+
+  Setup helper — (doom-dashboard-hermes-setup) now binds the full set under SPC 
+  h:
+
+  SPC h h   Hermes dashboard
+  SPC h s   Start chatting
+  SPC h c   Compose
+  SPC h n   New session
+  SPC h l   Session list
+
+  You can change them in your config; whatever you bind shows up automatically
+  in the dashboard menu.
+
+  Canvas width — doom-dashboard-hermes-width (default 80) is the customizable
+  logical width. Narrower windows clamp margins to 0.
+
+  Reload and try M-x doom-dashboard-hermes. Resize the frame to confirm margins
+  recompute without flicker.
+
+✻ Worked for 2m 55s
+
+❯                                                                               
+  error in process filter: let*: Symbol’s function definition is void:          
+  hermes-dashboard--logo                                                        
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● The function is defined. The most likely culprit is a stale .elc. Let me clean
+   and recompile both files.
+
+● Bash(rm -f hermes-dashboard.elc hermes-mode.elc doom-dashboard-hermes.elc &&
+      eldev compile 2>&1 | tail -20 && emacs -Q --batch -L . -f
+      batch-byte-compile doom-dashbo…)
+  ⎿  ELC      hermes-dashboard.el
+     ELC      hermes-mode.el
+
+● Bash(emacs -Q --batch -L . --eval "(progn (require 'hermes-dashboard) (princ
+      (symbol-function 'hermes-dashboard--logo)))" 2>&1 | tail -20)
+  ⎿  #[0 ��B    ��!������"����!��,������ "��,������+"��;��<����������?��<������
+     ��B
+     �� [hermes-dashboard-logo hermes--last-gateway-ready hermes-dashboard-
+     … +2 lines (ctrl+o to expand)
+
+
+● Function loads correctly from the fresh .elc. The error was a stale
+  byte-compiled file. Now in your running Emacs, do one of:
+
+  M-x load-file RET /home/ann/Projects/emacs-hermes/hermes-dashboard.elc RET
+
+  or just M-x load-library RET hermes-dashboard RET.
+
+  If you've also got hermes-mode loaded from an old session, reload that too —
+  it now uses the new hermes-new-session building block:
+
+  M-x load-library RET hermes-mode RET
+
+  (or kill the Emacs and restart — simpler if it's not a long-running session).
+  After that, M-x doom-dashboard-hermes should be clean and M-x hermes-dashboard
+   for the vanilla one.
+
+✻ Brewed for 46s
+
+❯ /usage 
+  ⎿  Status dialog dismissed
+
+❯ Can you also emulate how doom emacs dashboards manage the keys? I think they  
+  use a table and put the keys on the right instead of the left?                
+
+● Reworking menu rows: keys right-aligned within the canvas, rows become
+  clickable buttons with TAB navigation — that's how Doom does it.
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 27 lines, removed 13 lines
+      162                              (doom-dashboard-hermes--short-sid 
+           sid))))))
+      163      (concat dot "  " label)))
+      164  
+      165 -(defun doom-dashboard-hermes--menu-row (row)                  
+      165 +(defun doom-dashboard-hermes--insert-menu-row (row)           
+      166 +  "Insert ROW (LABEL COMMAND) as a clickable text-button.     
+      167 +Label is flush-left; key (looked up via `where-is-internal') i
+          +s                                                             
+      168 +right-aligned within `doom-dashboard-hermes-width' columns."  
+      169    (let* ((label (nth 0 row))
+      170           (cmd   (nth 1 row))
+      168 -         (key   (doom-dashboard-hermes--key-for cmd))         
+      169 -         (key-s (if key                                       
+      170 -                    (propertize (format "%-10s" key)          
+      171 -                                'face 'doom-dashboard-hermes-k
+          -ey-face)                                                      
+      172 -                  (propertize (format "%-10s" "")             
+      173 -                              'face 'doom-dashboard-hermes-key
+          --face))))                                                     
+      174 -    (concat key-s "  "                                        
+      175 -            (propertize label 'face 'doom-dashboard-hermes-men
+          -u-face))))                                                    
+      171 +         (key   (or (doom-dashboard-hermes--key-for cmd) "")) 
+      172 +         (lw    (string-width label))                         
+      173 +         (kw    (string-width key))                           
+      174 +         (gap   (max 1 (- doom-dashboard-hermes-width lw kw 4)
+          +))                                                            
+      175 +         (text  (concat "  "                                  
+      176 +                        (propertize label 'face 'doom-dashboar
+          +d-hermes-menu-face)                                           
+      177 +                        (make-string gap ?\s)                 
+      178 +                        (propertize key 'face 'doom-dashboard-
+          +hermes-key-face)                                              
+      179 +                        "  ")))                               
+      180 +    (insert-text-button                                       
+      181 +     text                                                     
+      182 +     'action (lambda (_btn) (call-interactively cmd))         
+      183 +     'follow-link t                                           
+      184 +     'help-echo (format "Run `%s'" cmd)                       
+      185 +     'mouse-face 'highlight                                   
+      186 +     'face nil)))                                             
+      187  
+      177 -(defun doom-dashboard-hermes--menu-str ()                     
+      178 -  (mapconcat #'doom-dashboard-hermes--menu-row                
+      179 -             doom-dashboard-hermes-menu                       
+      180 -             "\n"))                                           
+      188 +(defun doom-dashboard-hermes--insert-menu ()                  
+      189 +  "Insert all menu rows; called from the render function."    
+      190 +  (let ((first t))                                            
+      191 +    (dolist (row doom-dashboard-hermes-menu)                  
+      192 +      (unless first (insert "\n"))                            
+      193 +      (setq first nil)                                        
+      194 +      (doom-dashboard-hermes--insert-menu-row row))))         
+      195  
+      196  (defun doom-dashboard-hermes--footer-str ()
+      197    (let* ((n (length (doom-dashboard-hermes--live-buffers)))
+
+● Now --render-content needs to use the new menu inserter. And add the
+  button-navigation keys.
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 2 lines, removed 1 line
+      207    "Insert the dashboard content flush-left.  Margins handle ce
+           ntering."
+      208    (insert (doom-dashboard-hermes--banner-str) "\n\n")
+      209    (insert (doom-dashboard-hermes--status-str) "\n\n")
+      210 -  (insert (doom-dashboard-hermes--menu-str)   "\n\n")         
+      210 +  (doom-dashboard-hermes--insert-menu)                        
+      211 +  (insert "\n\n")                                             
+      212    (insert (doom-dashboard-hermes--footer-str)))
+      213  
+      214  (defun doom-dashboard-hermes--render ()
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 10 lines, removed 1 line
+      339      ;; Single-letter shortcuts inside the buffer.  Doom users 
+           will mostly
+      340      ;; reach the same commands via SPC h h / SPC h c / … which
+            `where-is'
+      341      ;; picks up automatically and shows next to each menu row.
+      342 -    (define-key m (kbd "RET") #'doom-dashboard-hermes-start)  
+      342 +    ;; Button navigation (mirrors `+doom-dashboard-mode-map').
+      343 +    (define-key m (kbd "TAB")     #'forward-button)           
+      344 +    (define-key m (kbd "<tab>")   #'forward-button)           
+      345 +    (define-key m (kbd "<backtab>") #'backward-button)        
+      346 +    (define-key m (kbd "C-n")     #'forward-button)           
+      347 +    (define-key m (kbd "C-p")     #'backward-button)          
+      348 +    (define-key m (kbd "<down>")  #'forward-button)           
+      349 +    (define-key m (kbd "<up>")    #'backward-button)          
+      350 +    ;; Direct triggers (preserved muscle-memory).             
+      351 +    (define-key m (kbd "RET") #'push-button)                  
+      352      (define-key m (kbd "s")   #'doom-dashboard-hermes-start)
+      353      (define-key m (kbd "c")   #'doom-dashboard-hermes-compose)
+      354      (define-key m (kbd "n")   #'doom-dashboard-hermes-new)
+
+● After render, point should land on the first button so TAB/RET works
+  immediately.
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 4 lines, removed 1 line
+      218      (doom-dashboard-hermes--render-content)
+      219      (doom-dashboard-hermes--apply-vertical-padding)
+      220      (doom-dashboard-hermes--apply-margins)
+      221 -    (goto-char (point-min))))                                 
+      221 +    (goto-char (point-min))                                   
+      222 +    ;; Park point on the first menu button so RET / TAB Just W
+          +ork.                                                          
+      223 +    (when (ignore-errors (forward-button 1))                  
+      224 +      t)))                                                    
+      225  
+      226  ;;;; Window-margin centering (mirrors `+doom-dashboard-resize-
+           h')
+      227  
+
+● Bash(rm -f doom-dashboard-hermes.elc && emacs -Q --batch -L . -f
+      batch-byte-compile doom-dashboard-hermes.el 2>&1 | tail -10)
+  ⎿  (No output)
+
+● Layout now matches Doom's:
+
+                      Start chatting                 SPC h s
+                      Open composer                  SPC h c
+                      New session                    SPC h n
+                      Session list                   SPC h l
+                      Quit                                 q
+
+  Each row is a real text-button: clickable with mouse, navigable with TAB/S-TAB
+   (and C-n/C-p, arrows), activated with RET. The key on the right is
+  where-is-internal for the bound command, so whatever you bind in your Doom
+  config shows up automatically — including the single-letter buffer-local
+  shortcuts (q for quit-window will display as q, while
+  doom-dashboard-hermes-start will display its SPC h s leader binding when
+  present).
+
+  On render, point lands on the first button, so opening the dashboard and
+  pressing RET immediately starts a chat.
+
+  Reload doom-dashboard-hermes and try again.
+
+✻ Brewed for 1m 0s
+
+❯ cool, but somehow the doom dashboard is still much more responsive. When the  
+  buffer starts, it is initially on the left, while the doom dashboard is       
+  always centered from the start                                                
+
+● The first-paint flash comes from rendering BEFORE the buffer has a window — so
+   get-buffer-window-list is empty and margins don't get set. Fix: pop the
+  buffer first, then render.
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 7 lines, removed 3 lines
+      382    (let ((buf (get-buffer-create doom-dashboard-hermes-buffer-n
+           ame)))
+      383      (with-current-buffer buf
+      384        (unless (derived-mode-p 'doom-dashboard-hermes-mode)
+      385 -        (doom-dashboard-hermes-mode))                         
+      386 -      (doom-dashboard-hermes--render))                        
+      387 -    (pop-to-buffer-same-window buf)))                         
+      385 +        (doom-dashboard-hermes-mode)))                        
+      386 +    ;; Display BEFORE rendering so `--apply-margins' has a rea
+          +l window                                                      
+      387 +    ;; to read `window-total-width' from.  Rendering first lea
+          +ves the                                                       
+      388 +    ;; first frame flush-left until a resize hook fires.      
+      389 +    (pop-to-buffer-same-window buf)                           
+      390 +    (with-current-buffer buf                                  
+      391 +      (doom-dashboard-hermes--render))))                      
+      392  
+      393  ;;;###autoload
+      394  (defun doom-dashboard-hermes-setup ()
+
+● Bash(rm -f doom-dashboard-hermes.elc && emacs -Q --batch -L . -f
+      batch-byte-compile doom-dashboard-hermes.el 2>&1 | tail -10)
+  ⎿  (No output)
+
+● Order swap: pop-to-buffer-same-window runs before --render, so when
+  --apply-margins calls get-buffer-window-list, it actually finds the window and
+   sets the margins on the very first paint. Same for --apply-vertical-padding
+  which reads window-height. No more flush-left flash.
+
+  Reload and try again.
+
+✻ Crunched for 37s
+
+❯ This is perfect! thank you. Now, symbol definition of hermes-new-session is   
+  void                                                                          
+● The Doom dashboard doesn't require 'hermes-mode (to stay lean), but it calls
+  hermes-new-session from it. Easiest fix: autoload.
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 8 lines
+      40  (declare-function hermes-compose "hermes-compose" ())
+      41  (declare-function hermes-sessions "hermes-sessions" ())
+      42  
+      43 +;; The dashboard intentionally avoids `(require 'hermes-mode)' 
+         +so it can be                                                   
+      44 +;; loaded standalone; autoload the entry points it actually cal
+         +ls.                                                            
+      45 +(autoload 'hermes              "hermes-mode"     nil t)        
+      46 +(autoload 'hermes-new-session  "hermes-mode"     nil nil)      
+      47 +(autoload 'hermes-input-send   "hermes-input"    nil t)        
+      48 +(autoload 'hermes-compose      "hermes-compose"  nil t)        
+      49 +(autoload 'hermes-sessions     "hermes-sessions" nil t)        
+      50 +                                                               
+      51  ;;;; User options
+      52  
+      53  (defgroup doom-dashboard-hermes nil
+
+● Bash(rm -f doom-dashboard-hermes.elc && emacs -Q --batch -L . -f
+      batch-byte-compile doom-dashboard-hermes.el 2>&1 | tail -10)
+  ⎿  (No output)
+
+● Five autoload stubs added — when the dashboard calls hermes-new-session (or
+  any of the others) for the first time, Emacs loads hermes-mode / hermes-input
+  / etc. on demand. Reload doom-dashboard-hermes and the error is gone.
+
+✻ Cooked for 25s
+
+❯ hermes-compose mode doesn't let me write                                      
+
+  Read 1 file (ctrl+o to expand)
+
+● Likely a Doom popup-system issue: pop-to-buffer is getting re-routed to a
+  non-selected window, so keystrokes still go to the dashboard (which is
+  special-mode — typing is silently swallowed).
+
+  Switching to pop-to-buffer-same-window makes the compose buffer fully replace
+  the current window, no display-buffer-alist magic, and kill-buffer restores
+  the previous buffer on send/cancel.
+
+● Update(hermes-compose.el)
+  ⎿  Added 7 lines, removed 1 line
+      49              (concat " Hermes compose · "
+      50                      (propertize "C-c C-c" 'face 'help-key-bindi
+          ng) " send · "
+      51                      (propertize "C-c C-k" 'face 'help-key-bindi
+          ng) " cancel")))
+      52 -    (pop-to-buffer buf)))                                      
+      52 +    ;; `pop-to-buffer-same-window' is the recommended replaceme
+         +nt for                                                         
+      53 +    ;; `switch-to-buffer' in elisp.  It guarantees the new buff
+         +er is in the                                                   
+      54 +    ;; selected window and ignores popup-routing rules (notably
+         + Doom's                                                        
+      55 +    ;; `+popup-mode' which can steal focus and leave keystrokes
+         + hitting                                                       
+      56 +    ;; the previous buffer — `*doom-hermes*' is `special-mode' 
+         +so typing                                                      
+      57 +    ;; into it is silently swallowed).                         
+      58 +    (pop-to-buffer-same-window buf)))                          
+      59  
+      60  (defun hermes-compose-send ()
+      61    "Send the buffer contents to the target session, then kill th
+          e composer."
+
+● Bash(rm -f hermes-compose.elc && eldev compile 2>&1 | tail -10)
+  ⎿  ELC      hermes-compose.el
+     ELC      hermes-mode.el
+
+● One-line swap: pop-to-buffer → pop-to-buffer-same-window in
+  hermes-compose.el:52. The compose buffer will now reliably take over the
+  current window and receive your keystrokes; on send or cancel the previous
+  buffer comes back automatically.
+
+  Reload hermes-compose and try C-c C-l (or the c row on the dashboard) again.
+
+✻ Cooked for 53s
+
+❯ When I run doom-dashboard-hermes-start, the first time it doesn't actually    
+  start a new session, it only turns the signal green without a new session id. 
+   When I do it a second time, it works. Interesting behaviour. It's systematic 
+
+  Read 1 file (ctrl+o to expand)
+
+● Found it. hermes-new-session fires session.create immediately after starting
+  the gateway, but the Python gateway needs initialization time and only signals
+   it's accepting requests via the gateway.ready event. The first request races
+  and is lost; the second works because the gateway is by then up.
+
+  Fix: defer session.create until gateway.ready has been observed.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(hermes-mode.el)
+  ⎿  Added 4 lines
+      67  
+      68  (defun hermes--route-connection (state)
+      69    "Broadcast a connection state change into every Hermes buffer
+          ."
+      70 +  ;; Clear the cached `gateway.ready' payload so that the *next
+         +* time we                                                      
+      71 +  ;; reconnect we wait for a fresh one before firing `session.c
+         +reate'.                                                        
+      72 +  (when (eq state 'disconnected)                               
+      73 +    (setq hermes--last-gateway-ready nil))                     
+      74    (maphash (lambda (_sid b)
+      75               (when (buffer-live-p b)
+      76                 (with-current-buffer b
+
+● Now teach hermes-new-session to wait for gateway.ready when the gateway is
+  still warming up.
+
+● Update(hermes-mode.el)
+  ⎿  Added 31 lines, removed 12 lines
+      115  
+      116  ;;;; Public entry points
+      117  
+      118 -(defun hermes-new-session (&optional callback)                
+      119 -  "Start the gateway (if needed), create a session, and prepar
+          -e its buffer.                                                 
+      120 -The buffer is registered in `hermes--session-buffers' but NOT 
+          -popped to the                                                 
+      121 -user; that's the caller's job.  CALLBACK, if non-nil, is calle
+          -d with the new                                                
+      122 -buffer (or nil on error) once `session.create' resolves.      
+      123 -                                                              
+      124 -This is the building block dashboards use to spawn sessions in
+          - the                                                          
+      125 -background; for the user-facing entry that also pops the buffe
+          -r, see                                                        
+      126 -`hermes'."                                                    
+      127 -  (hermes--install-hooks)                                     
+      128 -  (unless (hermes-rpc-live-p)                                 
+      129 -    (hermes-rpc-start))                                       
+      118 +(defun hermes--do-session-create (callback)                   
+      119 +  "Internal: send `session.create' and wire its response to CA
+          +LLBACK."                                                      
+      120    (hermes-rpc-request
+      121     "session.create" '(:cols 100)
+      122     (lambda (result error)
+     ...
+      137             (hermes-input-fetch-catalog))
+      138           (when callback (funcall callback buf))))))))
+      139  
+      140 +(defun hermes-new-session (&optional callback)                
+      141 +  "Start the gateway (if needed), create a session, and prepar
+          +e its buffer.                                                 
+      142 +The buffer is registered in `hermes--session-buffers' but NOT 
+          +popped to the                                                 
+      143 +user; that's the caller's job.  CALLBACK, if non-nil, is calle
+          +d with the new                                                
+      144 +buffer (or nil on error) once `session.create' resolves.      
+      145 +                                                              
+      146 +If the gateway has not yet emitted `gateway.ready' we wait for
+          + it before                                                    
+      147 +sending `session.create' — the Python gateway drops requests r
+          +eceived                                                       
+      148 +before its handlers are installed.                            
+      149 +                                                              
+      150 +This is the building block dashboards use to spawn sessions in
+          + the                                                          
+      151 +background; for the user-facing entry that also pops the buffe
+          +r, see                                                        
+      152 +`hermes'."                                                    
+      153 +  (hermes--install-hooks)                                     
+      154 +  (unless (hermes-rpc-live-p)                                 
+      155 +    (hermes-rpc-start))                                       
+      156 +  (if hermes--last-gateway-ready                              
+      157 +      ;; Gateway already greeted us — go straight to session.c
+          +reate.                                                        
+      158 +      (hermes--do-session-create callback)                    
+      159 +    ;; Otherwise, register a one-shot hook that fires session.
+          +create once                                                   
+      160 +    ;; `gateway.ready' lands, then removes itself.            
+      161 +    (let (hook)                                               
+      162 +      (setq hook                                              
+      163 +            (lambda (type _sid _payload)                      
+      164 +              (when (equal type "gateway.ready")              
+      165 +                (remove-hook 'hermes-rpc-event-functions hook)
+      166 +                (hermes--do-session-create callback))))       
+      167 +      (add-hook 'hermes-rpc-event-functions hook))))          
+      168 +                                                              
+      169  ;;;###autoload
+      170  (defun hermes ()
+      171    "Start the gateway (if needed), create a session, and pop it
+           s chat buffer.
+
+● Bash(rm -f hermes-mode.elc && eldev compile 2>&1 | tail -10)
+  ⎿  ELC      hermes-mode.el
+
+● Bash(eldev test 2>&1 | tail -5)
+  ⎿     FAILED  hermes-render-test/multiple-stable-advances
+        FAILED  hermes-render-test/stable-advance-preserves-prose
+        FAILED  hermes-render-test/stable-chunks-converted-to-org
+     … +2 lines (ctrl+o to expand)
+
+● Same 5 pre-existing failures. The race fix:
+
+  - hermes-new-session now checks hermes--last-gateway-ready (set when the
+  gateway emits its gateway.ready event). If absent, it installs a one-shot
+  listener on hermes-rpc-event-functions that fires session.create the moment
+  the gateway becomes ready, then removes itself.
+  - hermes--route-connection clears the cached payload on disconnected, so a
+  stop/start cycle correctly re-waits for the new gateway's greeting.
+  - hermes--do-session-create is the unchanged "send and wire callback" half —
+  extracted so both the ready and not-ready paths share it.
+
+  First-call behavior should now match the second: status dot turns green AND a
+  session id appears.
+
+✻ Churned for 1m 29s
+
+❯ Shouldn't we create a state machine with no-sessions/waiting/ready instead?   
+
+● Yes — and ideally at the gateway/transport layer, not per-session. Three
+  states:
+
+  - down — process not running
+  - starting — process spawned, waiting for gateway.ready
+  - ready — accepting requests
+
+  Then hermes-rpc-request becomes the only function that knows about this: if
+  ready, send immediately; otherwise enqueue the frame in a pending list and
+  flush it when gateway.ready lands. hermes-new-session then doesn't need its
+  own one-shot hook — it just calls hermes-rpc-request and trusts the transport.
+   commands.catalog, slash.exec, and any future early request get the same fix
+  for free.
+
+  Tradeoff: adds one state variable + a small flush function to hermes-rpc.el,
+  removes the one-shot trick from hermes-mode.el. Mild abstraction cost, but it
+  kills a whole class of races instead of patching one of them. The current
+  hermes--last-gateway-ready cache can stay (it's used for skin replay on new
+  buffers) but it stops being load-bearing for request scheduling.
+
+  Want me to do it? If so, I'd:
+  1. Add hermes-rpc--state (down/starting/ready) and hermes-rpc--pending-frames.
+  2. Have hermes-rpc-start set starting, the gateway.ready event set ready and
+  flush the queue, and the sentinel reset to down.
+  3. Make hermes-rpc-request enqueue when not ready instead of erroring.
+  4. Drop the one-shot hook in hermes-new-session.
+
+✻ Cogitated for 16s
+❯ yes                                                                           
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(hermes-rpc.el)
+  ⎿  Added 18 lines
+       81  (defvar hermes-rpc-connection-functions nil
+       82    "Hook of (STATE) where STATE is one of `connecting', `connec
+           ted', `disconnected'.")
+       83  
+       84 +(defvar hermes-rpc--state 'down                               
+       85 +  "Gateway lifecycle state machine.  One of:                  
+       86 +                                                              
+       87 +  `down'      no subprocess running                           
+       88 +  `starting'  subprocess spawned, awaiting the `gateway.ready'
+          + event                                                        
+       89 +  `ready'     gateway has greeted us; requests are flushed imm
+          +ediately                                                      
+       90 +                                                              
+       91 +`hermes-rpc-request' buffers outgoing frames in               
+       92 +`hermes-rpc--pending-frames' while in `starting' and dispatche
+          +s them in                                                     
+       93 +order on the `down' → `ready' transition.  The sentinel resets
+          + the state                                                    
+       94 +back to `down' (and drops any still-pending frames) when the p
+          +rocess                                                        
+       95 +dies.")                                                       
+       96 +                                                              
+       97 +(defvar hermes-rpc--pending-frames nil                        
+       98 +  "FIFO list of frames waiting to be sent once the gateway is 
+          +ready.                                                        
+       99 +Each element is the JSON-RPC frame plist as produced by       
+      100 +`hermes-rpc-request'.  Drained by `hermes-rpc--flush-pending'.
+          +")                                                            
+      101 +                                                              
+      102  ;;;; Process lifecycle
+      103  
+      104  ;;;###autoload
+
+● Now wire the state transitions: hermes-rpc-start → starting, gateway.ready →
+  ready+flush, sentinel → down.
+
+● Update(hermes-rpc.el)
+  ⎿  Added 3 lines, removed 1 line
+      141      (when stderr-pipe
+      142        (set-process-filter stderr-pipe #'hermes-rpc--stderr-fil
+           ter))
+      143      (setq hermes-rpc--stderr-buffer stderr-buf
+      144 -          hermes-rpc--process proc)                           
+      144 +          hermes-rpc--process proc                            
+      145 +          hermes-rpc--state 'starting                         
+      146 +          hermes-rpc--pending-frames nil)                     
+      147      (run-hook-with-args 'hermes-rpc-connection-functions 'conn
+           ecting)
+      148      proc))
+      149  
+
+● Now make hermes-rpc-request enqueue when not ready, add the flush function,
+  hook gateway.ready detection into the frame dispatcher, and reset on
+  disconnect.
+
+● Update(hermes-rpc.el)
+  ⎿  Added 21 lines, removed 2 lines
+      165  (defun hermes-rpc-request (method params &optional callback)
+      166    "Send a JSON-RPC request for METHOD with PARAMS (a plist or 
+           alist).
+      167  CALLBACK, if non-nil, is called as (RESULT ERROR) when the res
+           ponse
+      168 -arrives.  Exactly one of RESULT / ERROR is non-nil."          
+      168 +arrives.  Exactly one of RESULT / ERROR is non-nil.           
+      169 +                                                              
+      170 +If the gateway is `starting' (process spawned but no `gateway.
+          +ready'                                                        
+      171 +event yet), the frame is buffered in `hermes-rpc--pending-fram
+          +es' and                                                       
+      172 +sent in order when the gateway transitions to `ready'.  The Py
+          +thon                                                          
+      173 +gateway drops requests that arrive before its handlers are ins
+          +talled,                                                       
+      174 +so this queue is the only thing keeping the first request from
+          + being                                                        
+      175 +lost."                                                        
+      176    (unless (hermes-rpc-live-p)
+      177      (error "Hermes gateway is not running"))
+      178    (let* ((id (cl-incf hermes-rpc--next-id))
+     ...
+      182                        :params (or params (make-hash-table)))))
+      183      (when callback
+      184        (puthash id callback hermes-rpc--pending))
+      178 -    (hermes-rpc--send frame)                                  
+      185 +    (pcase hermes-rpc--state                                  
+      186 +      ('ready    (hermes-rpc--send frame))                    
+      187 +      ('starting (setq hermes-rpc--pending-frames             
+      188 +                       (append hermes-rpc--pending-frames (lis
+          +t frame))))                                                   
+      189 +      (_ ;; 'down — process should be alive per `hermes-rpc-li
+          +ve-p' above,                                                  
+      190 +       ;; so this is an inconsistency.  Surface it loudly.    
+      191 +       (error "hermes-rpc: process alive but state is %s" herm
+          +es-rpc--state)))                                              
+      192      id))
+      193  
+      194 +(defun hermes-rpc--flush-pending ()                           
+      195 +  "Send every frame buffered while the gateway was `starting'.
+          +"                                                             
+      196 +  (let ((frames hermes-rpc--pending-frames))                  
+      197 +    (setq hermes-rpc--pending-frames nil)                     
+      198 +    (dolist (f frames) (hermes-rpc--send f))))                
+      199 +                                                              
+      200  (defun hermes-rpc--send (frame)
+      201    "Encode FRAME as JSON, append newline, write to gateway stdi
+           n."
+      202    (let ((json (json-serialize frame
+
+● Update(hermes-rpc.el)
+  ⎿  Added 7 lines
+      249             (type    (and params (gethash "type" params)))
+      250             (sid     (and params (gethash "session_id" params))
+           )
+      251             (payload (and params (gethash "payload" params))))
+      252 +      ;; `gateway.ready' is the transition that lets us send b
+          +uffered                                                       
+      253 +      ;; frames.  Do this BEFORE the user-facing hook so subsc
+          +ribers see                                                    
+      254 +      ;; an already-ready state.                              
+      255 +      (when (and (equal type "gateway.ready")                 
+      256 +                 (eq hermes-rpc--state 'starting))            
+      257 +        (setq hermes-rpc--state 'ready)                       
+      258 +        (hermes-rpc--flush-pending))                          
+      259        (when type
+      260          (run-hook-with-args 'hermes-rpc-event-functions type s
+           id payload))))
+      261     (t
+
+● Update(hermes-rpc.el)
+  ⎿  Added 3 lines, removed 1 line
+      282        (run-hook-with-args 'hermes-rpc-stderr-functions
+      283                            hermes-rpc--stderr-tail)
+      284        (setq hermes-rpc--stderr-tail ""))
+      285 -    (setq hermes-rpc--process nil)                            
+      285 +    (setq hermes-rpc--process nil                             
+      286 +          hermes-rpc--state 'down                             
+      287 +          hermes-rpc--pending-frames nil)                     
+      288      (run-hook-with-args 'hermes-rpc-connection-functions 'disc
+           onnected)
+      289      (message "hermes-rpc: gateway %s" (string-trim event))))
+      290  
+
+● Also handle hermes-rpc-stop so manual shutdowns reset state.
+
+● Update(hermes-rpc.el)
+  ⎿  Added 3 lines, removed 1 line
+      154    (when (and hermes-rpc--process
+      155               (process-live-p hermes-rpc--process))
+      156      (delete-process hermes-rpc--process))
+      157 -  (setq hermes-rpc--process nil))                             
+      157 +  (setq hermes-rpc--process nil                               
+      158 +        hermes-rpc--state 'down                               
+      159 +        hermes-rpc--pending-frames nil))                      
+      160  
+      161  (defun hermes-rpc-live-p ()
+      162    "Return non-nil if the gateway process is alive."
+
+● Now drop the one-shot hook in hermes-new-session — the transport handles
+  deferral.
+
+● Update(hermes-mode.el)
+  ⎿  Added 4 lines, removed 15 lines
+      143  user; that's the caller's job.  CALLBACK, if non-nil, is calle
+           d with the new
+      144  buffer (or nil on error) once `session.create' resolves.
+      145  
+      146 -If the gateway has not yet emitted `gateway.ready' we wait for
+          - it before                                                    
+      147 -sending `session.create' — the Python gateway drops requests r
+          -eceived                                                       
+      148 -before its handlers are installed.                            
+      146 +If the gateway is still warming up, the request is queued by t
+          +he transport                                                  
+      147 +(`hermes-rpc--pending-frames') and flushed when `gateway.ready
+          +' arrives —                                                   
+      148 +no special-casing required here.                              
+      149  
+      150  This is the building block dashboards use to spawn sessions in
+            the
+      151  background; for the user-facing entry that also pops the buffe
+           r, see
+     ...
+      153    (hermes--install-hooks)
+      154    (unless (hermes-rpc-live-p)
+      155      (hermes-rpc-start))
+      156 -  (if hermes--last-gateway-ready                              
+      157 -      ;; Gateway already greeted us — go straight to session.c
+          -reate.                                                        
+      158 -      (hermes--do-session-create callback)                    
+      159 -    ;; Otherwise, register a one-shot hook that fires session.
+          -create once                                                   
+      160 -    ;; `gateway.ready' lands, then removes itself.            
+      161 -    (let (hook)                                               
+      162 -      (setq hook                                              
+      163 -            (lambda (type _sid _payload)                      
+      164 -              (when (equal type "gateway.ready")              
+      165 -                (remove-hook 'hermes-rpc-event-functions hook)
+      166 -                (hermes--do-session-create callback))))       
+      167 -      (add-hook 'hermes-rpc-event-functions hook))))          
+      156 +  (hermes--do-session-create callback))                       
+      157  
+      158  ;;;###autoload
+      159  (defun hermes ()
+
+● Bash(rm -f hermes-rpc.elc hermes-mode.elc && eldev compile 2>&1 | tail -10)
+  ⎿  ELC      hermes-dashboard.el
+     ELC      hermes-rpc.el
+     ELC      hermes-input.el
+     … +3 lines (ctrl+o to expand)
+
+● Bash(eldev test 2>&1 | tail -5)
+  ⎿     FAILED  hermes-render-test/multiple-stable-advances
+        FAILED  hermes-render-test/stable-advance-preserves-prose
+        FAILED  hermes-render-test/stable-chunks-converted-to-org
+     … +2 lines (ctrl+o to expand)
+
+● Same 5 pre-existing failures, nothing new. State machine landed:
+
+  hermes-rpc.el
+  - hermes-rpc--state ∈ {down, starting, ready} + hermes-rpc--pending-frames
+  FIFO.
+  - hermes-rpc-start → sets starting, clears the queue.
+  - The frame dispatcher detects gateway.ready first, transitions to ready, and
+  calls --flush-pending before firing user event hooks (so subscribers see an
+  already-ready state).
+  - hermes-rpc-request sends immediately when ready, enqueues when starting,
+  errors loudly when down.
+  - Sentinel and hermes-rpc-stop both reset to down and drop pending frames.
+
+  hermes-mode.el
+  - hermes-new-session is now five lines: install hooks, start gateway if
+  needed, call session.create. No one-shot listener. The transport handles
+  deferral for commands.catalog, slash.exec, and anything else fired early too.
+
+  Reload hermes-rpc + hermes-mode and the first s press should produce a session
+   id on the first try, every time.
+
+✻ Cogitated for 1m 33s
+
+❯ are these changes reflected in the dashboard?                                 
+
+● Partially. The dashboards still derive their status from hermes-rpc-live-p +
+  whether a primary session exists, so they show three visible states: gateway 
+  down (red), no session yet (green, gateway up but pre-session), and session 
+  NNN ready (green). They don't surface the new starting state — during the
+  brief gateway-warming window they'd flash "gateway down → no session yet →
+  session ready" instead of "starting → ready".
+
+  Wiring it up is small: read hermes-rpc--state and add an amber "starting…"
+  branch. Want me to do it on both dashboards? It'd also let me drop the
+  hermes-rpc-live-p fallback and use the state machine as the single source of
+  truth for the status line.
+
+✻ Worked for 11s
+
+❯ do it please                                                                  
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 4 lines
+      114    '((t :inherit error))
+      115    "Face for the gateway-down status dot.")
+      116  
+      117 +(defface doom-dashboard-hermes-status-starting-face           
+      118 +  '((t :inherit warning))                                     
+      119 +  "Face for the gateway-starting status dot.")                
+      120 +                                                              
+      121  ;;;; Helpers
+      122  
+      123  (defun doom-dashboard-hermes--short-sid (sid)
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 22 lines, removed 17 lines
+      154                'face 'doom-dashboard-hermes-banner-face))
+      155  
+      156  (defun doom-dashboard-hermes--status-str ()
+      157 -  (let* ((live (hermes-rpc-live-p))                           
+      158 -         (st   (doom-dashboard-hermes--primary-state))        
+      159 -         (sid  (and st (hermes-state-session-id st)))         
+      160 -         (info (and st (hermes-state-session-info st)))       
+      157 +  (let* ((state hermes-rpc--state)                            
+      158 +         (st    (doom-dashboard-hermes--primary-state))       
+      159 +         (sid   (and st (hermes-state-session-id st)))        
+      160 +         (info  (and st (hermes-state-session-info st)))      
+      161           (model (and (hash-table-p info) (gethash "model" info
+           )))
+      162 -         (face (if live 'doom-dashboard-hermes-status-face    
+      163 -                 'doom-dashboard-hermes-status-down-face))    
+      164 -         (dot (propertize "●" 'face face))                    
+      165 -         (label (cond                                         
+      166 -                 ((not live) "gateway down")                  
+      167 -                 ((null sid) "no session yet")                
+      168 -                 (model (format "session %s ready  ·  %s"     
+      169 -                                (doom-dashboard-hermes--short-
+          -sid sid)                                                      
+      170 -                                (if (> (length model) 28)     
+      171 -                                    (concat (substring model 0
+          - 27) "…")                                                     
+      172 -                                  model)))                    
+      173 -                 (t (format "session %s ready"                
+      174 -                            (doom-dashboard-hermes--short-sid 
+          -sid))))))                                                     
+      162 +         (face  (pcase state                                  
+      163 +                  ('ready    'doom-dashboard-hermes-status-fac
+          +e)                                                            
+      164 +                  ('starting 'doom-dashboard-hermes-status-sta
+          +rting-face)                                                   
+      165 +                  (_         'doom-dashboard-hermes-status-dow
+          +n-face)))                                                     
+      166 +         (dot   (propertize "●" 'face face))                  
+      167 +         (label (pcase state                                  
+      168 +                  ('down     "gateway down")                  
+      169 +                  ('starting "gateway starting…")             
+      170 +                  ('ready                                     
+      171 +                   (cond                                      
+      172 +                    ((null sid) "ready  ·  no session yet")   
+      173 +                    (model (format "session %s ready  ·  %s"  
+      174 +                                   (doom-dashboard-hermes--sho
+          +rt-sid sid)                                                   
+      175 +                                   (if (> (length model) 28)  
+      176 +                                       (concat (substring mode
+          +l 0 27) "…")                                                  
+      177 +                                     model)))                 
+      178 +                    (t (format "session %s ready"             
+      179 +                               (doom-dashboard-hermes--short-s
+          +id sid))))))))                                                
+      180      (concat dot "  " label)))
+      181  
+      182  (defun doom-dashboard-hermes--insert-menu-row (row)
+
+● Footer too — show the state name there for consistency.
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 2 lines, removed 2 lines
+      212  
+      213  (defun doom-dashboard-hermes--footer-str ()
+      214    (let* ((n (length (doom-dashboard-hermes--live-buffers)))
+      215 -         (live (hermes-rpc-live-p))                           
+      215           (txt (format "%d %s live  ·  gateway %s"
+      216                        n (if (= n 1) "session" "sessions")
+      218 -                      (if live "up" "down"))))                
+      217 +                      (pcase hermes-rpc--state                
+      218 +                        ('ready "up") ('starting "starting") (
+          +_ "down")))))                                                 
+      219      (propertize txt 'face 'doom-dashboard-hermes-footer-face))
+           )
+      220  
+      221  ;;;; Render (flush-left, no per-line centering)
+● Schedule a refresh on every connection event so the starting → ready
+  transition actually repaints; gateway.ready is already in the allow-list but
+  connecting (which fires from hermes-rpc-start) should as well for the
+  transition into starting:
+
+  Read 1 file (ctrl+o to expand)
+
+● Connection hook already calls --on-connection which calls --schedule-refresh
+  unconditionally — so connecting already triggers a repaint. Good.
+
+  Now the vanilla dashboard:
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 13 lines, removed 7 lines
+      118    (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 
+           8) (or sid "?")))
+      119  
+      120  (defun hermes-dashboard--connection-line ()
+      121 -  (let* ((live (hermes-rpc-live-p))                           
+      121 +  (let* ((state hermes-rpc--state)                            
+      122           (buf (car (hermes-dashboard--live-buffers)))
+      123           (sid (and buf (buffer-local-value 'hermes--state buf)
+      124                     (hermes-state-session-id
+      125                      (buffer-local-value 'hermes--state buf))))
+      126 -         (label (cond ((not live) "gateway down")             
+      127 -                      ((null sid) "no session yet")           
+      128 -                      (t (format "session %s ready"           
+      129 -                                 (hermes-dashboard--short-sid 
+          -sid))))))                                                     
+      130 -    (propertize (format "  ● %s" label) 'face                 
+      131 -                (if live 'success 'error))))                  
+      126 +         (face (pcase state                                   
+      127 +                 ('ready    'success)                         
+      128 +                 ('starting 'warning)                         
+      129 +                 (_         'error)))                         
+      130 +         (label (pcase state                                  
+      131 +                  ('down     "gateway down")                  
+      132 +                  ('starting "gateway starting…")             
+      133 +                  ('ready (if sid                             
+      134 +                              (format "session %s ready"      
+      135 +                                      (hermes-dashboard--short
+          +-sid sid))                                                    
+      136 +                            "ready · no session yet")))))     
+      137 +    (propertize (format "  ● %s" label) 'face face)))         
+      138  
+      139  (defun hermes-dashboard--primary-state ()
+      140    "Return the `hermes-state' of the primary session buffer, or
+            nil."
+
+● Bash(rm -f hermes-dashboard.elc doom-dashboard-hermes.elc && eldev compile
+      2>&1 | tail -10 && emacs -Q --batch -L . -f batch-byte-compile
+      doom-dashboard-hermes.el 2>…)
+  ⎿  ELC      hermes-dashboard.el
+
+● Clean. Both dashboards now read hermes-rpc--state directly:
+
+  ┌────────────────┬──────────────────┬─────────────────────┬──────────────┐
+  │     State      │  Vanilla label   │     Doom label      │   Dot face   │
+  ├────────────────┼──────────────────┼─────────────────────┼──────────────┤
+  │ down           │ gateway down     │ gateway down        │ red (error)  │
+  ├────────────────┼──────────────────┼─────────────────────┼──────────────┤
+  │ starting       │ gateway          │ gateway starting…   │ yellow       │
+  │                │ starting…        │                     │ (warning)    │
+  ├────────────────┼──────────────────┼─────────────────────┼──────────────┤
+  │ ready (no      │ ready · no       │ ready  ·  no        │ green        │
+  │ session)       │ session yet      │ session yet         │ (success)    │
+  ├────────────────┼──────────────────┼─────────────────────┼──────────────┤
+  │ ready (sid +   │ session NNN      │ session NNN ready   │ green        │
+  │ model)         │ ready            │ ·  <model>          │              │
+  └────────────────┴──────────────────┴─────────────────────┴──────────────┘
+
+  The footer line in the Doom dashboard now also says gateway up/starting/down
+  consistently. Reload and you should see the amber starting… flash on M-x 
+  doom-dashboard-hermes-start from a cold gateway.
+
+✻ Churned for 58s
+
+❯ Very good! but when I see "read no session yet" I still have to interactively 
+   re-ask for a start instead of just waiting for the session appearing         
+
+● I see what's going on. After hermes-new-session creates the session, nothing
+  schedules a dashboard refresh — the dashboard only repaints on certain RPC
+  events. Plus the yes-or-no-p is a friction point you've already implicitly
+  answered by pressing s. Two fixes:
+
+  1. Drop the yes-or-no-p — pressing s is intent enough.
+  2. Refresh the dashboard right after the new buffer is registered, and track
+  an "in-flight" flag so a second press while creation is pending is a no-op
+  instead of spawning a second session.
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 19 lines, removed 5 lines
+      322    (interactive)
+      323    (doom-dashboard-hermes--do-refresh))
+      324  
+      325 +(defvar doom-dashboard-hermes--pending-start nil              
+      326 +  "Non-nil while a `start' is waiting for `hermes-new-session'
+          + to resolve.                                                  
+      327 +Prevents accidentally spawning a second session if the user pr
+          +esses `s'                                                     
+      328 +twice before the first one has appeared.")                    
+      329 +                                                              
+      330  (defun doom-dashboard-hermes-start ()
+      326 -  "Pop the primary session buffer and prompt via `hermes-input
+          --send'.                                                       
+      327 -If no session exists, offer to create one and chat into it."  
+      331 +  "Start chatting: pop the primary session buffer and read a p
+          +rompt.                                                        
+      332 +If no session exists yet, create one in the background and pop
+          + the                                                          
+      333 +buffer the moment it appears.  A second press while creation i
+          +s still                                                       
+      334 +in flight is a no-op."                                        
+      335    (interactive)
+      336    (let ((buf (doom-dashboard-hermes--primary-buffer)))
+      337      (cond
+      331 -     (buf (pop-to-buffer buf)                                 
+      332 -          (call-interactively #'hermes-input-send))           
+      333 -     ((yes-or-no-p "No live session — create one? ")          
+      338 +     (buf                                                     
+      339 +      (pop-to-buffer buf)                                     
+      340 +      (call-interactively #'hermes-input-send))               
+      341 +     (doom-dashboard-hermes--pending-start                    
+      342 +      (message "Hermes: session is on its way…"))             
+      343 +     (t                                                       
+      344 +      (setq doom-dashboard-hermes--pending-start t)           
+      345 +      (message "Hermes: creating session…")                   
+      346        (hermes-new-session
+      347         (lambda (b)
+      348 +         (setq doom-dashboard-hermes--pending-start nil)      
+      349 +         (doom-dashboard-hermes--schedule-refresh)            
+      350           (when (buffer-live-p b)
+      351             (pop-to-buffer b)
+      352             (call-interactively #'hermes-input-send))))))))
+
+● Show the in-flight state in the status line too, so the user has visible
+  feedback:
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 1 line
+      169                    ('starting "gateway starting…")
+      170                    ('ready
+      171                     (cond
+      172 +                    (doom-dashboard-hermes--pending-start "cre
+          +ating session…")                                              
+      173                      ((null sid) "ready  ·  no session yet")
+      174                      (model (format "session %s ready  ·  %s"
+      175                                     (doom-dashboard-hermes--sho
+           rt-sid sid)
+
+● Apply the same simplification to the vanilla dashboard so behavior is
+  consistent:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 23 lines, removed 5 lines
+      309              (user-error "Session buffer is gone — press g to r
+           efresh")))
+      310        (hermes-dashboard-send))))
+      311  
+      312 +(defvar hermes-dashboard--pending-start nil                   
+      313 +  "Non-nil while a `send' is waiting on a freshly-spawned sess
+          +ion.")                                                        
+      314 +                                                              
+      315  (defun hermes-dashboard-send ()
+      313 -  "Pop the primary session buffer and call `hermes-input-send'
+          -."                                                            
+      316 +  "Pop the primary session buffer and call `hermes-input-send'
+          +.                                                             
+      317 +If no session exists yet, create one in the background and cha
+          +t into                                                        
+      318 +it as soon as the buffer appears.  A second press while creati
+          +on is                                                         
+      319 +still in flight is a no-op."                                  
+      320    (interactive)
+      321    (let ((buf (hermes-dashboard--primary-buffer)))
+      316 -    (unless buf                                               
+      317 -      (user-error "No primary session yet — wait for `session 
+          -ready'"))                                                     
+      318 -    (pop-to-buffer buf)                                       
+      319 -    (call-interactively #'hermes-input-send)))                
+      322 +    (cond                                                     
+      323 +     (buf                                                     
+      324 +      (pop-to-buffer buf)                                     
+      325 +      (call-interactively #'hermes-input-send))               
+      326 +     (hermes-dashboard--pending-start                         
+      327 +      (message "Hermes: session is on its way…"))             
+      328 +     (t                                                       
+      329 +      (setq hermes-dashboard--pending-start t)                
+      330 +      (message "Hermes: creating session…")                   
+      331 +      (hermes-new-session                                     
+      332 +       (lambda (b)                                            
+      333 +         (setq hermes-dashboard--pending-start nil)           
+      334 +         (hermes-dashboard--refresh-if-open)                  
+      335 +         (when (buffer-live-p b)                              
+      336 +           (pop-to-buffer b)                                  
+      337 +           (call-interactively #'hermes-input-send))))))))    
+      338  
+      339  (defun hermes-dashboard-compose ()
+      340    "Pop the primary session buffer and open the multi-line comp
+           oser."
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 6 lines, removed 4 lines
+      130           (label (pcase state
+      131                    ('down     "gateway down")
+      132                    ('starting "gateway starting…")
+      133 -                  ('ready (if sid                             
+      134 -                              (format "session %s ready"      
+      135 -                                      (hermes-dashboard--short
+          --sid sid))                                                    
+      136 -                            "ready · no session yet")))))     
+      133 +                  ('ready                                     
+      134 +                   (cond                                      
+      135 +                    (hermes-dashboard--pending-start "creating
+          + session…")                                                   
+      136 +                    (sid (format "session %s ready"           
+      137 +                                 (hermes-dashboard--short-sid 
+          +sid)))                                                        
+      138 +                    (t   "ready · no session yet"))))))       
+      139      (propertize (format "  ● %s" label) 'face face)))
+      140  
+      141  (defun hermes-dashboard--primary-state ()
+
+● Bash(rm -f hermes-dashboard.elc doom-dashboard-hermes.elc && eldev compile
+      2>&1 | tail -10 && emacs -Q --batch -L . -f batch-byte-compile
+      doom-dashboard-hermes.el 2>…)
+  ⎿  ELC      hermes-dashboard.el
+
+     In hermes-dashboard--connection-line:
+     … +6 lines (ctrl+o to expand)
+
+● Both vars are defined later in the file than where they're first read. Move
+  them up.
+
+● Update(hermes-dashboard.el)
+  ⎿  Removed 3 lines
+      311              (user-error "Session buffer is gone — press g to r
+           efresh")))
+      312        (hermes-dashboard-send))))
+      313  
+      314 -(defvar hermes-dashboard--pending-start nil                   
+      315 -  "Non-nil while a `send' is waiting on a freshly-spawned sess
+          -ion.")                                                        
+      316 -                                                              
+      314  (defun hermes-dashboard-send ()
+      315    "Pop the primary session buffer and call `hermes-input-send'
+           .
+      316  If no session exists yet, create one in the background and cha
+           t into
+
+● Update(hermes-dashboard.el)
+  ⎿  Added 3 lines
+      44  ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
+      45    "Fallback NOUS HERMES banner.")
+      46  
+      47 +(defvar hermes-dashboard--pending-start nil                    
+      48 +  "Non-nil while a `send' is waiting on a freshly-spawned sessi
+         +on.")                                                          
+      49 +                                                               
+      50  ;;;; Primary-session lookup
+      51  ;;
+      52  ;; Picked lazily on every render: the most-recently-modified li
+          ve buffer
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Removed 5 lines
+      323    (interactive)
+      324    (doom-dashboard-hermes--do-refresh))
+      325  
+      326 -(defvar doom-dashboard-hermes--pending-start nil              
+      327 -  "Non-nil while a `start' is waiting for `hermes-new-session'
+          - to resolve.                                                  
+      328 -Prevents accidentally spawning a second session if the user pr
+          -esses `s'                                                     
+      329 -twice before the first one has appeared.")                    
+      330 -                                                              
+      326  (defun doom-dashboard-hermes-start ()
+      327    "Start chatting: pop the primary session buffer and read a p
+           rompt.
+      328  If no session exists yet, create one in the background and pop
+            the
+
+● Update(doom-dashboard-hermes.el)
+  ⎿  Added 5 lines
+      88  
+      89  (defconst doom-dashboard-hermes-buffer-name "*doom-hermes*")
+      90  
+      91 +(defvar doom-dashboard-hermes--pending-start nil               
+      92 +  "Non-nil while a `start' is waiting for `hermes-new-session' 
+         +to resolve.                                                    
+      93 +Prevents accidentally spawning a second session if the user pre
+         +sses `s'                                                       
+      94 +twice before the first one has appeared.")                     
+      95 +                                                               
+      96  ;;;; Faces
+      97  
+      98  (defface doom-dashboard-hermes-banner-face
+
+● Bash(rm -f hermes-dashboard.elc doom-dashboard-hermes.elc && eldev compile
+      2>&1 | tail -10 && emacs -Q --batch -L . -f batch-byte-compile
+      doom-dashboard-hermes.el 2>…)
+  ⎿  ELC      hermes-dashboard.el
+  ⎿  You're out of extra usage · resets May 15, 7pm (Europe/Rome)
+     /upgrade to increase your usage limit.
+
+✻ Crunched for 2m 37s

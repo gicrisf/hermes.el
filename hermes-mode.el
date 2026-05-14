@@ -102,8 +102,14 @@ without this cache, the very first buffer would never see the skin.")
 (define-derived-mode hermes-mode org-mode "Hermes"
   "Major mode for a Hermes conversation buffer."
   (setq-local org-startup-folded nil)
+  (setq-local org-hide-leading-stars t)
   (setq buffer-read-only t)
   (hermes-state-init)
+  ;; Insert file-level metadata line.
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (insert "#+TITLE: hermes\n")))
   (add-hook 'hermes-state-change-hook    #'hermes--render        nil t)
   (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  nil t)
   (add-hook 'hermes-state-change-hook    #'hermes-input--drain   nil t)

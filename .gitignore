@@ -1,3 +1,5 @@
 Eldev-local
 .eldev/
 *.elc
+hermes-agent/
+.claude/

@@ -281,24 +281,31 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                                            (format "-> running %s\n" tname))))
                            ns)))))))))
       ("tool.complete"
-       (let ((str (hermes-state-stream state))
+       (let* ((str (hermes-state-stream state))
              (tid (or (hermes--get p "tool_id")
                       (hermes--get p "id")
-                      (hermes--get p "name")))
+                      (hermes--get p "name")
+                      ;; Fallback: use the id of the last tool in stream.
+                      (and str
+                           (let ((ts (hermes-stream-tools str)))
+                             (and (> (length ts) 0)
+                                  (hermes-tool-id (aref ts (1- (length ts)))))))))
              (output (hermes--get p "output"))
              (err    (hermes--get p "error"))
              (dur    (hermes--get p "duration_s")))
          (if (or (null str) (null tid))
              state
-           (let* ((tools (hermes-stream-tools str))
-                  (idx (cl-position-if
-                        (lambda (tl) (equal tid (hermes-tool-id tl)))
-                        tools)))
+            (let* ((tools (hermes-stream-tools str))
+                   (tname (hermes--get p "name"))
+                   (idx (cl-position-if
+                         (lambda (tl)
+                           (or (equal tid (hermes-tool-id tl))
+                               (and tname (equal tname (hermes-tool-name tl)))))
+                         tools)))
              (if (null idx)
                  state
                 (let* ((old-tool (aref tools idx))
-                       (tname (or (hermes--get p "name")
-                                  (hermes-tool-name old-tool)))
+                       (tname (or tname (hermes-tool-name old-tool)))
                        (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
                                   (setf (hermes-tool-status nt)
                                         (if err 'error 'complete)
@@ -310,22 +317,25 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                   (hermes--with-copy state hermes-state-copy s
                     (setf (hermes-state-stream s)
                           (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-tools ns) new-tools)
-                            (when tname
-                              (let* ((old-text (hermes-stream-text ns))
-                                    (running (format "-> running %s"
-                                                     (regexp-quote tname)))
-                                    (status (if err "error" "done"))
-                                    (done (format "-> %s %s (%.1fs)"
-                                                  status tname (or dur 0.0))))
-                                (setf (hermes-stream-text ns)
-                                      (replace-regexp-in-string
-                                       running done old-text t t))
-                                (when output
-                                  (setf (hermes-stream-text ns)
-                                        (concat (hermes-stream-text ns) "\n"
-                                                (format "#+begin_example\n%s\n#+end_example\n"
-                                                        output))))))
+                             (setf (hermes-stream-tools ns) new-tools)
+                             (if tname
+                                 (let ((status (if err "error" "done"))
+                                       (line (format "-> %s %s (%.1fs)\n"
+                                                     (if err "error" "done")
+                                                     tname
+                                                     (or dur 0.0))))
+                                   ;; TODO: remove debug log after tool pipeline is stable
+                                   (message "[hermes] tool.complete: tname=%S status=%s dur=%s output=%S"
+                                            tname status (or dur "nil")
+                                            (and output (substring output 0 (min 80 (length output)))))
+                                   (setf (hermes-stream-text ns)
+                                         (concat (hermes-stream-text ns) line))
+                                   (when output
+                                     (setf (hermes-stream-text ns)
+                                           (concat (hermes-stream-text ns)
+                                                   (format "#+begin_example\n%s\n#+end_example\n"
+                                                           output)))))
+                               (message "[hermes] tool.complete: NO tname (tid=%S)" tid))
                             ns)))))))))
       ;;; --- Blocking prompts ----------------------------------------------
       ;; All four: replace wholesale; only one pending slot

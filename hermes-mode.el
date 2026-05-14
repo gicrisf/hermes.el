@@ -47,6 +47,11 @@ without this cache, the very first buffer would never see the skin.")
 
 (defun hermes--route-event (type session-id payload)
   "Dispatch event TYPE/PAYLOAD into the session buffer's atoms."
+  ;; TODO: remove debug log after tool pipeline is stable
+  (message "[hermes] event: %s keys=%S"
+           type
+           (and (hash-table-p payload)
+                (let (ks) (maphash (lambda (k _v) (push k ks)) payload) ks)))
   (when (or (equal type "gateway.ready") (equal type "skin.changed"))
     (setq hermes--last-gateway-ready payload))
   (let ((buf (and session-id (not (string-empty-p session-id))

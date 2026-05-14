@@ -222,7 +222,7 @@ an Org :ID: is stamped."
     ;; Defensive: a delta arrived without a preceding message.start.
     (hermes--stream-begin))
   (let* ((old-text (and old-stream (hermes-stream-text old-stream)))
-         (new-text (hermes-stream-text new-stream)))
+          (new-text (hermes-stream-text new-stream)))
     (unless (equal old-text new-text)
       (hermes--rewrite-stream new-text))))
 
@@ -241,6 +241,10 @@ replaces only the old unstable characters — tools that sit beyond
          (old-unstable-len
           (- (marker-position hermes--stream-end)
              (marker-position hermes--stream-stable-end))))
+    ;; TODO: remove debug log after tool pipeline is stable
+    (message "[hermes] rewrite: text=%S boundary=%d already=%d del=%d"
+             (substring text 0 (min 120 (length text)))
+             boundary already old-unstable-len)
     ;; Append the newly-stable chunk at the stable marker, converting to Org.
     (when (> (length new-stable-substring) 0)
       (goto-char hermes--stream-stable-end)

@@ -516,6 +516,28 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                                   (mapconcat (lambda (l) (format "  %s" l))
                                              lines "\n"))
                     :timestamp (current-time)))))))
+       ;;; --- Background / review -------------------------------------------
+       ("background.complete"
+        (let ((tid (hermes--get p "task_id"))
+              (text (hermes--get p "text")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-messages s)
+                  (hermes--vector-append
+                   (hermes-state-messages state)
+                   (make-hermes-message
+                    :kind 'system
+                    :text (format "[bg %s] %s" (or tid "?") (or text ""))
+                    :timestamp (current-time)))))))
+       ("review.summary"
+        (let ((text (hermes--get p "text")))
+          (hermes--with-copy state hermes-state-copy s
+            (setf (hermes-state-messages s)
+                  (hermes--vector-append
+                   (hermes-state-messages state)
+                   (make-hermes-message
+                    :kind 'system
+                    :text (format "[review] %s" (or text ""))
+                    :timestamp (current-time)))))))
        ;;; --- Pass-through (no-op for M2) -----------------------------------
        (_ state))))
 

@@ -520,6 +520,22 @@
     (should (string-match-p "err1" (hermes-message-text msg)))
     (should (string-match-p "err2" (hermes-message-text msg)))))
 
+(ert-deftest hermes-state-test/background-complete-appends-system-message ()
+  (let* ((s (hermes--reduce nil (cons "background.complete"
+                                      (hermes-test--ht "task_id" "t1"
+                                                       "text" "done"))))
+         (msg (hermes-test--last-msg s)))
+    (should (eq 'system (hermes-message-kind msg)))
+    (should (string-match-p "\\[bg t1\\] done" (hermes-message-text msg)))))
+
+(ert-deftest hermes-state-test/review-summary-appends-system-message ()
+  (let* ((s (hermes--reduce nil (cons "review.summary"
+                                      (hermes-test--ht "text" "looks good"))))
+         (msg (hermes-test--last-msg s)))
+    (should (eq 'system (hermes-message-kind msg)))
+    (should (string-match-p "\\[review\\] looks good"
+                            (hermes-message-text msg)))))
+
 (ert-deftest hermes-state-test/ui-gateway-start-timeout-sets-status ()
   (let ((s (hermes--ui-reduce nil (cons "gateway.start_timeout" nil))))
     (should (string-match-p "failed to start"

@@ -88,8 +88,8 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 | 20 | `gateway.stderr` | **Handled** | Pushes stderr line as activity item in turn feed (clipped to 120 chars) | Emacs: reducer appends `[stderr] <line>` system message (clipped to 120). Routed from `hermes-rpc-stderr-functions` hook. |
 | 21 | `gateway.start_timeout` | **Handled** | Sets error status, pushes error activity, surfaces up to 8 stderr tail lines | Emacs: sentinel collects last 8 stderr lines on process exit during `starting` state, reducer appends `[gateway start timeout]` system message. UI reducer sets error status text. |
 | 22 | `gateway.protocol_error` | **Handled** | Sets warning status, pushes one-time "protocol noise" activity, shows truncated preview | Emacs: reducer appends `[protocol noise] <preview>` system message. UI reducer sets warning status text. Routed from `hermes-rpc-protocol-error-functions` hook. |
-| 23 | `background.complete` | **Missing** | Removes task from `bgTasks`, emits system line `[bg <id>] <text>` | Emacs: no handler. Background prompts complete invisibly. |
-| 24 | `review.summary` | **Missing** | Emits persistent system line (self-improvement review summary) | Emacs: no handler. |
+| 23 | `background.complete` | **Handled** | Removes task from `bgTasks`, emits system line `[bg <id>] <text>` | Emacs: reducer appends `[bg <id>] <text>` system message. |
+| 24 | `review.summary` | **Handled** | Emits persistent system line (self-improvement review summary) | Emacs: reducer appends `[review] <text>` system message. |
 | 25 | `subagent.spawn_requested` | **Missing** | Upserts subagent with status `queued`, fetches delegation caps | Emacs: no subagent state. |
 | 26 | `subagent.start` | **Missing** | Upserts subagent with status `running` | Emacs: no handler. |
 | 27 | `subagent.thinking` | **Missing** | Appends thinking text to subagent's `thinking` array | Emacs: no handler. |
@@ -647,8 +647,8 @@ Emacs only has **queue** mode:
 | | `browser.progress` | No-op | Full | Low |
 | | `voice.status` | No-op | Full | Low |
 | | `voice.transcript` | No-op | Full | Low |
-| | `background.complete` | Missing | Full | Medium |
-| | `review.summary` | Missing | Full | Low |
+| | `background.complete` | Full | Full | None |
+| | `review.summary` | Full | Full | None |
 | **Subagent** | `subagent.spawn_requested` | Missing | Full | **High** |
 | | `subagent.start` | Missing | Full | **High** |
 | | `subagent.thinking` | Missing | Full | Medium |
@@ -792,11 +792,11 @@ Emacs only has **queue** mode:
    - UI reducer sets warning status text
    - Routed from `hermes-rpc-protocol-error-functions` hook
 
-4. **Handle `background.complete`**
-   - Reducer: append system message `[bg <id>] <text>`
+4. **Handle `background.complete`** ✅
+   - Reducer appends `[bg <id>] <text>` system message
 
-5. **Handle `review.summary`**
-   - Reducer: append system message with review text
+5. **Handle `review.summary`** ✅
+   - Reducer appends `[review] <text>` system message
 
 ### Phase 4.5 — Session Info & Usage ✅ Completed
 

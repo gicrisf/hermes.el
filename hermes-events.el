@@ -51,6 +51,9 @@
     "gateway.stderr"         ; {line}  — raw stderr line from subprocess
     "gateway.start_timeout"  ; {lines} — last stderr tail when gateway fails to start
     "gateway.protocol_error" ; {preview} — truncated raw frame that failed JSON parse
+    ;; Background / review
+    "background.complete"    ; {task_id, text}
+    "review.summary"         ; {text}
     ;; Other
     "error"                  ; {message}
     "browser.progress"       ; v1: no-op

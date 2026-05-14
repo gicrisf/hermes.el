@@ -463,13 +463,8 @@ the inserted content."
     (let ((boundary (marker-position hermes--stream-end)))
       (goto-char (point-max))
       ;; Ensure at least one blank line between text and inserted content.
-      (unless (or (bobp)
-                  (and (>= (point) 2)
-                       (eq (char-before (1- (point))) ?\n)
-                       (eq (char-before) ?\n)))
-        (if (bolp)
-            (insert "\n")
-          (insert "\n\n")))
+      (unless (<= (point) 1)
+        (insert "\n"))
       (insert content)
       ;; stream-end may have auto-advanced if we inserted at its
       ;; position; snap it back to the boundary.
@@ -492,13 +487,10 @@ the inserted content."
       (let ((boundary (marker-position hermes--stream-end)))
         (goto-char (point-max))
         ;; Ensure at least one blank line between text and first tool.
-        (unless (or (bobp)
-                    (and (>= (point) 2)
-                         (eq (char-before (1- (point))) ?\n)
-                         (eq (char-before) ?\n)))
-          (if (bolp)
-              (insert "\n")
-            (insert "\n\n")))
+        ;; Always insert a newline unconditionally: if the text already ends
+        ;; with one we get a blank line; if not we guarantee separation.
+        (unless (<= (point) 1)
+          (insert "\n"))
         (insert block)
         (setq hermes--stream-tools-marker (copy-marker boundary))
         (set-marker-insertion-type hermes--stream-tools-marker nil)

@@ -6,8 +6,9 @@
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).
 >
 > **Recent changes reflected in this version:**
-> - Thinking/reasoning interleaved as Org blocks before stream text
-> - Tool rendering refactored out of `stream-text` into separate Org sub-headlines
+> - Segmented stream rendering: stream state uses typed `segments` vector; renderer does full rewrite
+> - Tool rendering moved into segments (tool blocks are interleaved in arrival order, not appended after text)
+> - Thinking/reasoning rendered as typed segments (not separate marker-managed blocks)
 > - Approval choices fixed to canonical `once`/`session`/`always`/`deny`
 
 ---
@@ -69,17 +70,17 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 | 1 | `gateway.ready` | **Handled** | `handleReady()` — applies skin, fetches `commands.catalog`, auto-resumes or creates session, schedules startup prompt | Emacs: sets connection=connected, stores skin. Does **not** auto-resume or fetch catalog on its own (catalog fetch is wired separately via `hermes-input-fetch-catalog`). |
 | 2 | `skin.changed` | **Handled** | `applySkin()` — hot-swaps theme | Emacs: stores skin, `hermes-skin-watch` re-applies face remaps. |
 | 3 | `session.info` | **Handled** | Patches `uiStore.info`, merges usage, updates status, patches intro messages in history | Emacs: merges into `session-info` hash table. Extracts and merges `usage` sub-object into `hermes-state-usage`. Does not patch intro messages. |
-| 4 | `message.start` | **Handled** | `turnController.startMessage()` — resets turn state, sets `busy=true` | Emacs: creates empty `hermes-stream`, resets ephemeral UI state. |
-| 5 | `message.delta` | **Handled** | `turnController.recordMessageDelta()` — accumulates text, prunes trails, schedules batched flush | Emacs: appends text to `hermes-stream-text`. |
-| 6 | `message.complete` | **Handled** | `turnController.recordMessageComplete()` — closes reasoning, dedupes inline diffs, archives todos, builds final segments, archives spawn tree, appends transcript, rings bell, updates usage, resets turn state | Emacs: commits `hermes-stream` → `hermes-message`, appends to messages vector, clears stream. Extracts `tokens_sent`/`tokens_received` from payload and accumulates into `hermes-state-usage`. No diff dedupe, no todo archive, no spawn-tree persistence. |
-| 7 | `thinking.delta` | **Handled** | Sets status, forwards to `recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-thinking`; renderer inserts/updates `#+begin_example Thinking` block before text region. |
-| 8 | `reasoning.delta` | **Handled** | `turnController.recordReasoningDelta()` | Emacs: accumulates in `hermes-stream-reasoning`; renderer inserts/updates `#+begin_example Reasoning` block before text region. |
-| 9 | `reasoning.available` | **Handled** | `turnController.recordReasoningAvailable()` — initializes reasoning block before deltas | Emacs: reducer initializes `stream.reasoning` so the renderer can insert the block before deltas arrive. |
+| 4 | `message.start` | **Handled** | `turnController.startMessage()` — resets turn state, sets `busy=true` | Emacs: creates empty `hermes-stream` with empty `segments` vector. |
+| 5 | `message.delta` | **Handled** | `turnController.recordMessageDelta()` — accumulates text, prunes trails, schedules batched flush | Emacs: appends to last text segment, or creates new `hermes-segment` if last is non-text. |
+| 6 | `message.complete` | **Handled** | `turnController.recordMessageComplete()` — closes reasoning, dedupes inline diffs, archives todos, builds final segments, archives spawn tree, appends transcript, rings bell, updates usage, resets turn state | Emacs: commits `stream.segments` into `message.segments`, populates deprecated `text`/`thinking`/`tools` slots from segments for backward compat. |
+| 7 | `thinking.delta` | **Handled** | Sets status, forwards to `recordReasoningDelta()` | Emacs: creates/appends `thinking` segment in stream. Rendered as `#+begin_example Thinking` block. |
+| 8 | `reasoning.delta` | **Handled** | `turnController.recordReasoningDelta()` | Emacs: creates/appends `reasoning` segment in stream. Rendered as `#+begin_example Reasoning` block. |
+| 9 | `reasoning.available` | **Handled** | `turnController.recordReasoningAvailable()` — initializes reasoning block before deltas | Emacs: creates `reasoning` segment if not already present (same as `reasoning.delta`). |
 | 10 | `status.update` | **Handled** | Sets status text; if `kind` is compressing/goal, emits system line; else pushes activity item (capped at 8), restores default after 4000ms | Emacs: sets `status-text` and `status-kind` in ephemeral UI state. No activity feed, no auto-restore. |
-| 11 | `tool.generating` | **Handled** | Pushes transient trail line "drafting X…" into `turnTrail` | Emacs: adds tool to `stream.tools` with status `generating`. Renderer inserts `*** tool (running…)` sub-headline after text region. |
-| 12 | `tool.start` | **Handled** | Flushes streaming segment, closes reasoning, records todos, adds tool to `activeTools`, updates tool-token accumulator | Emacs: reducer transitions tool status `generating` → `running`, stores `context`. Renderer rewrites tool block with running status + context drawer. |
-| 13 | `tool.progress` | **Handled** | Updates `activeTool.context`, throttles UI refresh to `STREAM_BATCH_MS` | Emacs: stores preview in persistent `stream.tools` (via reducer) and renders it in tool block. Also stored in ephemeral `tool-previews` for UI status. |
-| 14 | `tool.complete` | **Handled** | Removes from `activeTools`, builds final trail line, flushes into segments, handles `inline_diff`, handles `todos`, updates `turnTrail` | Emacs: updates tool status/output/error/duration/inline-diff/todos in `stream.tools`. Renderer rewrites tool sub-headline with final status + output/error + inline-diff block + todos checklist. Tool text is **not** interleaved into `stream-text` anymore (refactored 2026-05-14). |
+| 11 | `tool.generating` | **Handled** | Pushes transient trail line "drafting X…" into `turnTrail` | Emacs: creates `tool` segment with `hermes-tool` content (status `generating`). |
+| 12 | `tool.start` | **Handled** | Flushes streaming segment, closes reasoning, records todos, adds tool to `activeTools`, updates tool-token accumulator | Emacs: updates existing tool segment's status to `running`, stores `context`. |
+| 13 | `tool.progress` | **Handled** | Updates `activeTool.context`, throttles UI refresh to `STREAM_BATCH_MS` | Emacs: updates tool segment's `preview` in-place. |
+| 14 | `tool.complete` | **Handled** | Removes from `activeTools`, builds final trail line, flushes into segments, handles `inline_diff`, handles `todos`, updates `turnTrail` | Emacs: updates tool segment's status/output/error/duration/inline-diff/todos. |
 | 15 | `approval.request` | **Handled** | Patches `overlayStore.approval`, sets status="approval needed" | Emacs: sets `pending` to `hermes-pending` with kind `approval`. `hermes-prompts.el` handles the minibuffer prompt with canonical choices `once`/`session`/`always`/`deny` (fixed 2026-05-14). |
 | 16 | `clarify.request` | **Handled** | Patches `overlayStore.clarify`, sets status="waiting for input…" | Emacs: sets `pending` with kind `clarify`. Minibuffer handler dispatches `clarify.respond`. |
 | 17 | `sudo.request` | **Handled** | Patches `overlayStore.sudo`, sets status="sudo password needed" | Emacs: sets `pending` with kind `sudo`. Minibuffer handler dispatches `sudo.respond`. |
@@ -252,20 +253,27 @@ The TUI splits state across **three nanostore atoms** plus local React state.
 ```elisp
 (cl-defstruct (hermes-message (:copier hermes-message-copy))
   kind        ; 'user | 'assistant | 'system
-  text        ; raw markdown for assistant / plain for user / status text
-  thinking    ; accumulated thinking text (assistant only)
-  reasoning   ; accumulated reasoning text (assistant only)
-  tools       ; vector of hermes-tool (the trail)
+  text        ; DEPRECATED — derive from segments
+  thinking    ; DEPRECATED — derive from segments
+  reasoning   ; DEPRECATED — derive from segments
+  tools       ; DEPRECATED — derive from segments
+  segments    ; vector of hermes-segment — committed turn narrative
   usage timestamp)
 ```
 
 #### Stream State (`hermes-stream`)
 ```elisp
 (cl-defstruct hermes-stream
-  text
-  thinking
-  reasoning
-  tools)              ; vector of hermes-tool
+  segments    ; vector of hermes-segment, ordered by arrival
+  tools)      ; DEPRECATED — kept for backward compat
+```
+
+#### Segment State (`hermes-segment`)
+```elisp
+(cl-defstruct hermes-segment
+  type        ; 'text | 'thinking | 'reasoning | 'tool | 'system
+  content     ; string for text/thinking/reasoning/system; hermes-tool for tool segments
+  id)         ; unique segment id (for stable updates)
 ```
 
 #### Tool State (`hermes-tool`)
@@ -293,12 +301,12 @@ The TUI splits state across **three nanostore atoms** plus local React state.
 |--------|-----|-------|
 | **Busy flag** | `uiState.busy` — explicit boolean | Implicit: `(hermes-state-stream state)` |
 | **Activity feed** | `turnState.activity` — array of items, capped at 8 | Not present |
-| **Tool active list** | `turnState.tools` — active tools with context, tokens | `stream.tools` — all tools in stream |
-| **Tool previews** | Active tool context updates (throttled) | Stored in `tool-previews` but never rendered |
+| **Tool active list** | `turnState.tools` — active tools with context, tokens | `segments` — all tools in stream as typed tool segments |
+| **Tool previews** | Active tool context updates (throttled) | Stored in tool segment's `hermes-tool-preview`; also in `tool-previews` (dead state) |
 | **Subagents** | Full delegation tree with depth, status, notes | Not present |
 | **Todos** | `turnState.todos` — active todo list | Not present |
 | **Turn trail** | `turnState.turnTrail` — transient trail lines | Not present |
-| **Segments** | `streamSegments` + `streamPendingTools` — structured | Not present (plain text only) |
+| **Segments** | `streamSegments` + `streamPendingTools` — structured | ✅ `stream.segments` vector of typed `hermes-segment` objects. Renderer does full segment rewrite on each update. |
 | **Reasoning tokens** | `reasoningTokens`, `toolTokens` | Not present |
 | **Usage merging** | Merges usage on every `session.info` | ✅ Merged into `hermes-state-usage`; also accumulated from `message.complete` |
 | **Background tasks** | `bgTasks: Set<string>` | Not present |
@@ -483,17 +491,27 @@ The TUI renders tools through `turnController`:
 
 Tools appear inline in the transcript as collapsible segments.
 
-### 5.3 Emacs Tool Rendering (Refactored 2026-05-14)
+### 5.3 Emacs Tool Rendering (Segmented 2026-05-14)
 
 **Before:** Tools were interleaved into `stream-text` as plain text (`-> running name\n`, `-> done name (0.5s)\n`). This polluted the assistant's prose and broke the stable/unstable split.
 
-**After:** Tools are rendered as **separate Org sub-headlines** after the text region, independent of `stream-text`:
-- `tool.generating` → reducer adds tool to `stream.tools`; renderer inserts `*** name (running…)` sub-headline after `stream-end`
-- `tool.complete` → reducer updates tool status/output/error/duration; renderer rewrites the sub-headline with final status + `#+begin_example` output/error block
-- `hermes--stream-tools-marker` tracks the start of the tool blocks region for replacement
-- `hermes--update-tool-views` formats the entire `stream.tools` vector and inserts it after the text region
+**After (v1):** Tools were rendered as **separate Org sub-headlines** after the text region, independent of `stream-text`. Thinking/reasoning were managed as separate marker-tracked blocks before text.
 
-This follows the same model as thinking/reasoning blocks: **state holds the data, renderer owns the visual representation**.
+**After (v2 — segmented):** All content lives in a single `segments` vector as typed `hermes-segment` objects. The renderer does a **full rewrite of the segment region** on every stream update (Option A from the plan). No stable/unstable split, no per-block markers:
+
+- `tool.generating` → reducer creates tool segment; renderer formats as `*** name (running…)`
+- `tool.start` → reducer updates segment in-place; renderer rewrites all segments
+- `tool.complete` → reducer updates status/output/etc; renderer rewrites
+- `thinki.ng.delta` / `reasoning.delta` → creates/appends typed segments
+- `message.delta` → creates/appends text segments
+- End of turn → `message.complete` commits segments to `message.segments`
+
+Segments are rendered in arrival order with blank-line separation. The Org buffer faithfully mirrors the turn narrative: reasoning → tool call → tool output → assistant text, all in the order they happened.
+
+Renderer markers:
+- `hermes--stream-segments-start` — after assistant property drawer
+- `hermes--stream-segments-end` — end of rendered segments
+- `hermes--stream-headline-marker` — at the `** assistant` headline
 
 ### 5.4 Tool Pipeline Gaps
 
@@ -577,9 +595,11 @@ Subagents are rendered as a tree in the transcript:
 
 ---
 
-## 8. Message Stream Segmentation (TUI Advanced Feature)
+## 8. Message Stream Segmentation
 
-The TUI does not treat `message.delta` as a flat text buffer. It segments the stream:
+### 8.1 TUI
+
+The TUI treats the stream as structured segments:
 
 - **Segments** (`streamSegments`): structured message parts (assistant text, tool diffs, tool trails, reasoning blocks)
 - **Pending tools** (`streamPendingTools`): tools that finished but haven't been flushed into a segment yet
@@ -593,7 +613,28 @@ On `message.complete`, the TUI:
 4. Archives spawn-tree snapshot
 5. Appends to transcript history
 
-**Emacs:** Flat text only. `hermes-stream-text` is a single string. No segmentation, no trail, no activity feed.
+### 8.2 Emacs (Segmented)
+
+**Emacs now uses a typed segment model matching the TUI's approach:**
+
+- `stream.segments` — vector of `hermes-segment` objects, each with `type`, `content`, `id`
+- Segment types: `text`, `thinking`, `reasoning`, `tool`, `system`
+- Segments are appended in arrival order as events arrive from the gateway
+- Renderer does a **full rewrite** of the segment region on every stream update (simple, correct)
+- On `message.complete`, segments are committed to `message.segments` (the deprecated `text`/`thinking`/`tools` slots are populated from segments for backward compat)
+
+**Formatting per segment type:**
+- `text` → markdown-to-Org conversion via `hermes-md-to-org`
+- `thinking` → `#+begin_example Thinking` block
+- `reasoning` → `#+begin_example Reasoning` block
+- `tool` → `*** name (status)` sub-headline with context, output, diff, todos
+- `system` → `#+begin_comment` block
+
+**Key properties:**
+- Segments are rendered in order → tools appear **interleaved** with text where they happened in the turn
+- No stable/unstable split, no per-block markers, no manual marker bookkeeping
+- The renderer is a simple format-each-segment loop with full region replace
+- ~6-7 hours total implementation time (per PLAN-segmented-stream.md)
 
 ---
 
@@ -696,35 +737,52 @@ Emacs only has **queue** mode:
 
 ## 11. Implementation Plan
 
-### Phase 0 — Thinking/Reasoning + Tool Rendering Refactor (Completed 2026-05-14)
+### Phase 0 — Foundational (Completed 2026-05-14)
 
-**Files:** `hermes-state.el`, `hermes-render.el`, `hermes-prompts.el`
+**Files:** `hermes-state.el`, `hermes-render.el`
 
-1. **Add thinking/reasoning to committed messages**
-   - Added `thinking` and `reasoning` slots to `hermes-message`
-   - `message.complete` reducer commits them alongside `text`
+1. **Text/reasoning/tool rendering basics**
+   - Thinking/reasoning rendered as `#+begin_example` Org blocks
+   - Tools rendered as `*** name (status)` Org sub-headlines
+   - `hermes--format-thinking-block`, `hermes--format-tool` created
 
-2. **Interleave thinking/reasoning as Org blocks**
-   - `hermes--format-thinking-block` — returns `#+begin_example Thinking/Reasoning` blocks
-   - `hermes--insert-before-text` — inserts before text region, advances markers
-   - `hermes--update-thinking-block` — inserts, updates, or removes block on delta changes
-   - `hermes--stream-thinking-marker` tracks block start
-   - Defensive `(max 0 ...)` guards in `hermes--rewrite-stream` prevent negative offsets
-
-3. **Refactor tool rendering out of stream-text**
-   - Removed tool text interleaving from reducer (`-> running name`, `-> done name`)
-   - `hermes--format-tool` / `hermes--format-tools-block` — render tools as `*** name (status)` Org sub-headlines
-   - `hermes--update-tool-views` — renders tool vector after text region
-   - `hermes--stream-tools-marker` tracks tool blocks start
-
-4. **Fix approval choices**
+2. **Fix approval choices**
    - Changed to canonical `once`/`session`/`always`/`deny`
-   - Removed ambiguous `all` param
    - Quick-keys: `?o` (once), `?s` (session), `?a` (always), `?n` (deny)
 
-### Phase 1 — Critical Fixes (Tool Start + Error Reset + Reasoning.available) ✅ Completed
+3. **Bug fixes: tool.start, error reset, reasoning.available**
+   - `tool.start` → reducer transitions `generating` → `running`, stores context
+   - `error` → commits in-flight stream before appending error
+   - `reasoning.available` → initializes reasoning before deltas arrive
+   - `tool.progress` → preview stored in persistent state
 
-**Files:** `hermes-events.el`, `hermes-state.el`, `hermes-render.el`
+### Phase 1 — Segmented Stream Rendering (Completed 2026-05-14)
+
+**Files:** `hermes-state.el`, `hermes-render.el`, `test/hermes-state-test.el`, `test/hermes-render-test.el`
+
+**Goal:** Replace flat `text`/`thinking`/`reasoning`/`tools` slots with a single ordered `segments` vector of typed `hermes-segment` objects. Mirror the TUI's `streamSegments` pattern.
+
+1. **Data model**
+   - Added `hermes-segment` struct with `type`, `content`, `id` slots
+   - Changed `hermes-stream`: `text thinking reasoning` → `segments` vector
+   - Added `segments` slot to `hermes-message`; deprecated old slots populated from segments
+
+2. **Reducer**
+   - Segment helpers: `hermes--last-segment`, `hermes--append-segment`, `hermes--update-last-segment`, `hermes--find-tool-segment-index`, `hermes--segments-derive-deprecated`
+   - All events (`message.delta`, `thinking.delta`, `reasoning.delta`, `tool.*`) create/append typed segments
+   - `message.complete` and `error` commit segments + populate deprecated slots
+
+3. **Renderer**
+   - New markers: `hermes--stream-segments-start`, `hermes--stream-segments-end`
+   - `hermes--format-segment` dispatches by segment type
+   - `hermes--render-stream-segments` — full rewrite of segment region on each update (Option A)
+   - Removed flat rendering (stable/unstable split, thinking block markers, tool view markers)
+
+4. **Tests**
+   - 82 ERT tests pass (71 state + 11 renderer)
+   - Tests cover segment creation, ordering, formatting, and lifecycle
+
+### Phase 2 — Critical Fixes (Completed 2026-05-14)
 
 1. **Add `tool.start` event handling** ✅
    - Added `"tool.start"` to `hermes-events-incoming`

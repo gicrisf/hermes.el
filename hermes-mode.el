@@ -113,7 +113,14 @@ without this cache, the very first buffer would never see the skin.")
     (hermes--broadcast-dispatch "gateway.start_timeout" payload)))
 
 (defun hermes--install-hooks ()
-  "Wire RPC hooks once.  Idempotent."
+  "Wire RPC hooks once.  Truly idempotent — removes before adding."
+  (remove-hook 'hermes-rpc-event-functions #'hermes--route-event)
+  (remove-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
+  (remove-hook 'hermes-rpc-connection-functions #'hermes--route-connection)
+  (remove-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open)
+  (remove-hook 'hermes-rpc-stderr-functions #'hermes--route-stderr)
+  (remove-hook 'hermes-rpc-protocol-error-functions #'hermes--route-protocol-error)
+  (remove-hook 'hermes-rpc-start-timeout-functions #'hermes--route-start-timeout)
   (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
   (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
   (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection)

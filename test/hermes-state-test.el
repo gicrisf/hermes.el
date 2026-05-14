@@ -546,5 +546,12 @@
     (should (string-match-p "Protocol noise"
                             (hermes-ui-state-status-text s)))))
 
+(ert-deftest hermes-state-test/install-hooks-is-idempotent ()
+  (require 'hermes-mode)
+  (hermes--install-hooks)
+  (let ((after-once (length hermes-rpc-stderr-functions)))
+    (hermes--install-hooks)
+    (should (= (length hermes-rpc-stderr-functions) after-once))))
+
 (provide 'hermes-state-test)
 ;;; hermes-state-test.el ends here

@@ -43,6 +43,9 @@
 assistant property drawer).  Used to compute the `already' offset so
 the property drawer is not counted as stream text.")
 
+(defvar-local hermes--stream-thinking-marker nil
+  "Marker at the start of the thinking block, or nil if none.")
+
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
@@ -159,6 +162,47 @@ an Org :ID: is stamped."
       (insert (format ":%s: %s\n" prop (or val "")))))
   (insert ":END:\n"))
 
+(defun hermes--format-thinking-block (thinking reasoning)
+  "Return an Org block string for THINKING and REASONING content.
+If both are empty or nil, return the empty string."
+  (let (parts)
+    (when (and thinking (not (string-empty-p thinking)))
+      (push (concat "#+begin_example Thinking\n"
+                    thinking
+                    (unless (eq (aref thinking (1- (length thinking))) ?\n) "\n")
+                    "#+end_example\n")
+            parts))
+    (when (and reasoning (not (string-empty-p reasoning)))
+      (push (concat "#+begin_example Reasoning\n"
+                    reasoning
+                    (unless (eq (aref reasoning (1- (length reasoning))) ?\n) "\n")
+                    "#+end_example\n")
+            parts))
+    (apply #'concat (nreverse parts))))
+
+(defun hermes--insert-before-text (content)
+  "Insert CONTENT before the main text region, advancing all stream markers.
+All existing stream markers are pushed forward by the length of CONTENT."
+  (when (and content (> (length content) 0)
+             (markerp hermes--stream-content-start)
+             (marker-position hermes--stream-content-start))
+    (goto-char hermes--stream-content-start)
+    (insert content)
+    ;; content-start itself must move past the inserted block so it
+    ;; still marks the boundary between meta-content and stream text.
+    (set-marker hermes--stream-content-start
+                (+ (marker-position hermes--stream-content-start)
+                   (length content)))
+    ;; Advance markers that should follow inserted text.
+    (when (markerp hermes--stream-stable-end)
+      (set-marker hermes--stream-stable-end
+                  (+ (marker-position hermes--stream-stable-end)
+                     (length content))))
+    (when (markerp hermes--stream-end)
+      (set-marker hermes--stream-end
+                  (+ (marker-position hermes--stream-end)
+                     (length content))))))
+
 ;;;; Stream lifecycle
 
 (defun hermes--stream-begin ()
@@ -178,9 +222,10 @@ an Org :ID: is stamped."
     (save-excursion
       (goto-char hermes--stream-headline-marker)
       (ignore-errors (org-id-get-create))))
-  (setq hermes--stream-content-start (point-marker)
-        hermes--stream-stable-end    (point-marker)
-        hermes--stream-end           (point-marker))
+  (setq hermes--stream-content-start   (point-marker)
+        hermes--stream-stable-end      (point-marker)
+        hermes--stream-end             (point-marker)
+        hermes--stream-thinking-marker nil)
   (set-marker-insertion-type hermes--stream-content-start nil)
   (set-marker-insertion-type hermes--stream-stable-end    nil)
   (set-marker-insertion-type hermes--stream-end           t))
@@ -208,12 +253,14 @@ an Org :ID: is stamped."
   (dolist (m (list hermes--stream-stable-end
                     hermes--stream-end
                     hermes--stream-content-start
-                    hermes--stream-headline-marker))
+                    hermes--stream-headline-marker
+                    hermes--stream-thinking-marker))
     (when (markerp m) (set-marker m nil)))
   (setq hermes--stream-stable-end nil
         hermes--stream-end nil
         hermes--stream-content-start nil
-        hermes--stream-headline-marker nil))
+        hermes--stream-headline-marker nil
+        hermes--stream-thinking-marker nil))
 
 (defun hermes--stream-update (old-stream new-stream)
   "Reflect OLD-STREAM → NEW-STREAM into the buffer."
@@ -222,9 +269,16 @@ an Org :ID: is stamped."
     ;; Defensive: a delta arrived without a preceding message.start.
     (hermes--stream-begin))
   (let* ((old-text (and old-stream (hermes-stream-text old-stream)))
-          (new-text (hermes-stream-text new-stream)))
+         (new-text (hermes-stream-text new-stream))
+         (old-thinking (and old-stream (hermes-stream-thinking old-stream)))
+         (new-thinking (hermes-stream-thinking new-stream))
+         (old-reasoning (and old-stream (hermes-stream-reasoning old-stream)))
+         (new-reasoning (hermes-stream-reasoning new-stream)))
     (unless (equal old-text new-text)
-      (hermes--rewrite-stream new-text))))
+      (hermes--rewrite-stream new-text))
+    (unless (and (equal old-thinking new-thinking)
+                 (equal old-reasoning new-reasoning))
+      (hermes--update-thinking-block new-thinking new-reasoning))))
 
 (defun hermes--rewrite-stream (text)
   "Place TEXT into the in-flight region using a stable/unstable split.
@@ -279,6 +333,51 @@ Returns 0 if no such boundary exists yet."
         (setq i (+ i 2)))
        (t (setq i (1+ i)))))
     last-boundary))
+
+(defun hermes--update-thinking-block (thinking reasoning)
+  "Insert or update the thinking block before the text region.
+THINKING and REASONING are strings; when both are empty the block
+is removed."
+  (let ((have-content (or (and thinking (not (string-empty-p thinking)))
+                          (and reasoning (not (string-empty-p reasoning))))))
+    (cond
+     ;; No block yet and we have content → insert before text region.
+      ((and (null hermes--stream-thinking-marker) have-content)
+       (let ((block (hermes--format-thinking-block thinking reasoning)))
+         ;; Remember where the block will start (current content-start).
+         (setq hermes--stream-thinking-marker
+               (copy-marker hermes--stream-content-start))
+         (set-marker-insertion-type hermes--stream-thinking-marker nil)
+         (hermes--insert-before-text block)))
+     ;; Block exists and we have content → replace region.
+      ((and (markerp hermes--stream-thinking-marker)
+            (marker-position hermes--stream-thinking-marker)
+            have-content)
+       (let* ((beg (marker-position hermes--stream-thinking-marker))
+              (end (marker-position hermes--stream-content-start))
+              (block (hermes--format-thinking-block thinking reasoning)))
+         (goto-char beg)
+         (delete-region beg end)
+         (insert block)
+         ;; Re-anchor the marker at the start of the block.
+         (set-marker hermes--stream-thinking-marker beg)
+         (set-marker hermes--stream-content-start (+ beg (length block)))))
+      ;; Block exists but content is now empty → remove.
+      ((and (markerp hermes--stream-thinking-marker)
+            (marker-position hermes--stream-thinking-marker)
+            (not have-content))
+       (let* ((beg (marker-position hermes--stream-thinking-marker))
+              (end (marker-position hermes--stream-content-start))
+              (len (- end beg)))
+         (delete-region beg end)
+         (when (markerp hermes--stream-stable-end)
+           (set-marker hermes--stream-stable-end
+                       (- (marker-position hermes--stream-stable-end) len)))
+         (when (markerp hermes--stream-end)
+           (set-marker hermes--stream-end
+                       (- (marker-position hermes--stream-end) len)))
+         (set-marker hermes--stream-thinking-marker nil)
+         (setq hermes--stream-thinking-marker nil))))))
 
 ;;; Header line
 

@@ -31,6 +31,8 @@
 (cl-defstruct (hermes-message (:copier hermes-message-copy))
   kind        ; 'user | 'assistant | 'system
   text        ; raw markdown for assistant / plain for user / status text
+  thinking    ; accumulated thinking text (assistant only)
+  reasoning   ; accumulated reasoning text (assistant only)
   tools       ; vector of hermes-tool (the trail)
   usage timestamp)
 
@@ -229,21 +231,23 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                    (setf (hermes-stream-reasoning ns)
                          (concat (hermes-stream-reasoning old-stream)
                                  chunk)))))))
-      ("message.complete"
-       ;; Commit stream → messages.
-       (let ((str (hermes-state-stream state)))
-         (if (null str)
-             state                      ; nothing to commit
-           (let ((msg (make-hermes-message
-                       :kind 'assistant
-                       :text (hermes-stream-text str)
-                       :tools (hermes-stream-tools str)
-                       :usage p
-                       :timestamp (current-time))))
-             (hermes--with-copy state hermes-state-copy s
-               (setf (hermes-state-messages s)
-                     (hermes--vector-append (hermes-state-messages state) msg)
-                     (hermes-state-stream s) nil))))))
+       ("message.complete"
+        ;; Commit stream → messages.
+        (let ((str (hermes-state-stream state)))
+          (if (null str)
+              state                      ; nothing to commit
+            (let ((msg (make-hermes-message
+                        :kind 'assistant
+                        :text (hermes-stream-text str)
+                        :thinking (hermes-stream-thinking str)
+                        :reasoning (hermes-stream-reasoning str)
+                        :tools (hermes-stream-tools str)
+                        :usage p
+                        :timestamp (current-time))))
+              (hermes--with-copy state hermes-state-copy s
+                (setf (hermes-state-messages s)
+                      (hermes--vector-append (hermes-state-messages state) msg)
+                      (hermes-state-stream s) nil))))))
       ;;; --- Tools ---------------------------------------------------------
       ("tool.generating"
        ;; tool.generating means a tool has been selected and is about to run.

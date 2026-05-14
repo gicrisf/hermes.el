@@ -119,12 +119,27 @@
          (m (hermes-test--last-msg s)))
     (should (null (hermes-state-stream s)))
     (should (eq 'assistant (hermes-message-kind m)))
-    (should (equal "Hi" (hermes-message-text m)))))
+    (should (equal "Hi" (hermes-message-text m)))
+    (should (equal "" (hermes-message-thinking m)))
+    (should (equal "" (hermes-message-reasoning m)))))
 
 (ert-deftest hermes-state-test/message-complete-without-stream-is-noop ()
   (let* ((s0 (hermes--reduce nil '(:connected)))
          (s1 (hermes--reduce s0 (cons "message.complete" nil))))
     (should (eq s0 s1))))
+
+(ert-deftest hermes-state-test/thinking-and-reasoning-committed ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "Hi"))
+             (cons "thinking.delta" (hermes-test--ht "text" "hmm "))
+             (cons "thinking.delta" (hermes-test--ht "text" "maybe"))
+             (cons "reasoning.delta" (hermes-test--ht "text" "because"))
+             (cons "message.complete" nil)))
+         (m (hermes-test--last-msg s)))
+    (should (equal "hmm maybe" (hermes-message-thinking m)))
+    (should (equal "because" (hermes-message-reasoning m)))))
 
 ;;;; Errors
 

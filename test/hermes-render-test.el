@@ -93,11 +93,46 @@ position right after the heading line."
     (hermes--stream-commit)
     ;; The markdown got cooked into Org, and the raw backticks are gone.
     (should (string-match-p "A ~code~ example"
-                            (buffer-substring-no-properties
-                             (point-min) (point-max))))
+                             (buffer-substring-no-properties
+                              (point-min) (point-max))))
     (should-not (string-match-p "`code`"
-                                (buffer-substring-no-properties
-                                 (point-min) (point-max))))))
+                                 (buffer-substring-no-properties
+                                  (point-min) (point-max))))))
+
+(ert-deftest hermes-render-test/thinking-block-inserted-before-text ()
+  (with-temp-buffer
+    (hermes-render-test--setup)
+    (hermes--update-thinking-block "hmm" nil)
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "#\\+begin_example Thinking\nhmm\n#\\+end_example" body))
+      ;; The block sits before the (empty) text region.
+      (should (string-match-p "#\\+end_example\n\\'" body)))))
+
+(ert-deftest hermes-render-test/thinking-block-updated-on-change ()
+  (with-temp-buffer
+    (hermes-render-test--setup)
+    (hermes--update-thinking-block "hmm" nil)
+    (hermes--update-thinking-block "hmm maybe" nil)
+    (should (string-match-p
+             "#\\+begin_example Thinking\nhmm maybe\n#\\+end_example"
+             (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest hermes-render-test/thinking-block-removed-when-empty ()
+  (with-temp-buffer
+    (hermes-render-test--setup)
+    (hermes--update-thinking-block "hmm" nil)
+    (hermes--update-thinking-block nil nil)
+    (should-not (string-match-p
+                 "Thinking"
+                 (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest hermes-render-test/thinking-and-reasoning-separate-blocks ()
+  (with-temp-buffer
+    (hermes-render-test--setup)
+    (hermes--update-thinking-block "think" "reason")
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "#\\+begin_example Thinking\nthink\n#\\+end_example" body))
+      (should (string-match-p "#\\+begin_example Reasoning\nreason\n#\\+end_example" body)))))
 
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

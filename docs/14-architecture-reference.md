@@ -1,4 +1,10 @@
-# emacs-hermes — Architecture
+# emacs-hermes — Architecture (Supplementary Reference)
+
+> **Note:** This document is a comprehensive architecture dump from 2026-05-14.
+> Some low-level details (marker names, unhandled events list) are slightly stale
+> after the segmented rendering and subagent refactors. For current struct shapes
+> see [03-state-shape-comparison.md](03-state-shape-comparison.md), for rendering
+> see [08-message-stream-segmentation.md](08-message-stream-segmentation.md).
 
 ## Overview
 
@@ -215,85 +221,7 @@ sub-renderers:
     (org-element-cache-reset)))   ; restore Org cache after silent mods
 ```
 
-### Streaming (in-flight assistant text)
 
-The assistant's response arrives as a sequence of `message.delta` events. The buffer
-region between `hermes--stream-stable-end` and `hermes--stream-end` holds text that
-may still change. Text before `stable-end` is frozen ("stable").
-
-**Markers:**
-
-```
-hermes--stream-headline-marker   → start of ** assistant headline
-hermes--stream-content-start     → where body text begins (after property drawer)
-hermes--stream-stable-end        → end of frozen / start of unstable
-hermes--stream-end               → end of all in-flight text
-hermes--stream-tool-markers      → alist (tool-id . marker) for tool subtrees
-```
-
-**The rewrite function:**
-
-```elisp
-(defun hermes--rewrite-stream (text)
-  (let* ((boundary (hermes--stable-boundary text))  ; last \n\n outside fences
-         (already  (- stable-end content-start))     ; chars already in stable
-         (stable   (substring text 0 boundary))
-         (unstable (substring text boundary))
-         (new-stable-substring (substring stable already))
-         (old-unstable-len (- stream-end stable-end)))
-    ;; 1. Insert newly-stable chunk (converted to Org)
-    (when (> (length new-stable-substring) 0)
-      (goto-char stable-end)
-      (insert (hermes-md-to-org new-stable-substring))
-      (set-marker stable-end (point)))
-    ;; 2. Delete exactly the old unstable chars
-    (goto-char stable-end)
-    (delete-char old-unstable-len)
-    ;; 3. Insert new unstable text
-    (insert unstable)))
-```
-
-Key design decisions:
-- `delete-char N` removes exactly N characters (the old unstable text).
-  Tools that sit beyond `stream-end` are untouched. This replaced a previous
-  `delete-region stable-end stream-end` which could wipe tools inserted after the text.
-- `already` is computed from `content-start`, NOT from the headline start,
-  so the property drawer between the heading and body text is not counted as stream text.
-- Stable chunks are converted through `hermes-md-to-org` before insertion;
-  unstable chunks stay as raw markdown until they cross a `\n\n` boundary or commit.
-
-### Stream lifecycle
-
-```
-message.start → hermes--stream-begin
-  Insert ** assistant heading + property drawer + :hermes: tag + :ID:
-  Set content-start, stable-end, stream-end markers
-
-tool.generating / tool.complete → hermes--render-stream-tools
-  Insert or rewrite *** tool subtrees at point-max.
-  stream-end (t insertion type) follows tool insertions but tools are
-  beyond stream-end (stable text is between stable-end and stream-end).
-
-message.delta → hermes--rewrite-stream (via hermes--stream-update)
-  Rewrite unstable region. delete-char removes only old unstable text.
-
-message.complete → hermes--stream-commit
-  Stamp :ID: on tool subtrees and assistant headline.
-  Convert unstable tail from markdown to Org.
-  Drop all stream markers.
-  Append user message to committed messages vector.
-  Stream set to nil.
-```
-
-### Tool subtrees
-
-Tools are inserted AT point-max, which is AFTER `hermes--stream-end`.
-The `delete-char` in `hermes--rewrite-stream` removes only the characters
-between `stable-end` and `stream-end`, leaving tools intact.
-
-When tools update (progress → complete), `hermes--rewrite-tool-subtree` finds
-the tool by its marker in `hermes--stream-tool-markers` and replaces its content
-in place.
 
 ### Tick integration
 
@@ -579,14 +507,7 @@ In `hermes-mode` normal state:
 
 The gateway sends `tool.generating` and `tool.complete` with `{"name":"terminal"}`
 — no `"tool_id"` key. The reducer falls back to `(or tool_id id name)` to
-identify tools. Currently each tool name is unique per turn, so `name` works.
-
-### delete-char vs delete-region
-
-`delete-region stable-end stream-end` could delete tool subtrees because
-`hermes--stream-end` has t insertion type and follows tool insertions at
-point-max. `delete-char old-unstable-len` removes exactly the right number
-of characters and leaves tools intact.
+identify tools. (See [13-operational-notes.md](13-operational-notes.md) for details.)
 
 ### org-element-cache-reset on every render
 
@@ -594,13 +515,6 @@ of characters and leaves tools intact.
 at the end of every render ensures Org operations (org-id-get-create,
 org-entry-put) work correctly on the next call. This is safe because
 hermes buffers are modest in size.
-
-### hermes--stream-content-start marker
-
-The `already` offset in `hermes--rewrite-stream` measures how many
-characters of body text are already committed to the stable region.
-`content-start` is set after the assistant's property drawer, so the
-drawer content is not counted as body text.
 
 ### Guarding org-id-get-create
 
@@ -626,7 +540,11 @@ detects tool changes because these events produce structurally new vectors.
 
 ### Unhandled events
 
-Events like `tool.start`, `reasoning.available`, `status.update` are not
-handled in the reducer. They return `state` unchanged, which means no re-render.
-This is intentional — they are informational and don't affect the buffer's
-visible content.
+Events the gateway emits but the Emacs reducer treats as no-ops (returns
+`state` unchanged, no re-render):
+
+| Event | Why no-op |
+|-------|-----------|
+| `voice.status` | Voice mode not supported in v1 |
+| `voice.transcript` | Voice mode not supported in v1 |
+| `browser.progress` | Browser tool progress not rendered in v1 |

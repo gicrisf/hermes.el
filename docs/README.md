@@ -26,3 +26,10 @@
 - [11. Implementation Plan](11-implementation-plan.md)
 - [12. References](12-references.md)
 - [13. Operational Notes & Debugging](13-operational-notes.md)
+
+- [14. Architecture Reference (Supplementary)](14-architecture-reference.md)
+
+## Doom Emacs Integration
+
+- [Doom Hermes Theme Spec](doom-hermes-theme-spec.md) — brand colors, faces, and theme design
+- [Dashboard Spec](hermes-dashboard-spec.md) — dashboard layout and component spec

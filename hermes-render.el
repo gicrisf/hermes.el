@@ -33,12 +33,7 @@
   "Marker: end of the stable (frozen) part of the in-flight assistant message.")
 
 (defvar-local hermes--stream-end nil
-  "Marker: end of the unstable suffix.
-Text inserts happen between `hermes--stream-stable-end' and this marker;
-tool subtrees accumulate AFTER this marker.")
-
-(defvar-local hermes--stream-tool-markers nil
-  "Alist of tool-id (string) → marker at the tool's headline start.")
+  "Marker: end of the unstable suffix.")
 
 (defvar-local hermes--stream-headline-marker nil
   "Marker at the start of the in-flight `** assistant' headline.")
@@ -185,22 +180,13 @@ an Org :ID: is stamped."
       (ignore-errors (org-id-get-create))))
   (setq hermes--stream-content-start (point-marker)
         hermes--stream-stable-end    (point-marker)
-        hermes--stream-end           (point-marker)
-        hermes--stream-tool-markers  nil)
+        hermes--stream-end           (point-marker))
   (set-marker-insertion-type hermes--stream-content-start nil)
   (set-marker-insertion-type hermes--stream-stable-end    nil)
   (set-marker-insertion-type hermes--stream-end           t))
 
 (defun hermes--stream-commit ()
   "Stream finished: stamp Org :ID:s on the trail, drop markers."
-  ;; Walk every in-flight tool subtree and stamp it with an :ID:.
-  (when (derived-mode-p 'org-mode)
-    (dolist (cell hermes--stream-tool-markers)
-      (let ((m (cdr cell)))
-        (when (and (markerp m) (marker-position m))
-          (save-excursion
-            (goto-char m)
-            (ignore-errors (org-id-get-create)))))))
   ;; Convert any residual unstable tail from markdown to Org.
   (when (and (markerp hermes--stream-stable-end)
              (markerp hermes--stream-end)
@@ -224,13 +210,10 @@ an Org :ID: is stamped."
                     hermes--stream-content-start
                     hermes--stream-headline-marker))
     (when (markerp m) (set-marker m nil)))
-  (dolist (cell hermes--stream-tool-markers)
-    (when (markerp (cdr cell)) (set-marker (cdr cell) nil)))
   (setq hermes--stream-stable-end nil
         hermes--stream-end nil
         hermes--stream-content-start nil
-        hermes--stream-headline-marker nil
-        hermes--stream-tool-markers nil))
+        hermes--stream-headline-marker nil))
 
 (defun hermes--stream-update (old-stream new-stream)
   "Reflect OLD-STREAM → NEW-STREAM into the buffer."
@@ -241,11 +224,7 @@ an Org :ID: is stamped."
   (let* ((old-text (and old-stream (hermes-stream-text old-stream)))
          (new-text (hermes-stream-text new-stream)))
     (unless (equal old-text new-text)
-      (hermes--rewrite-stream new-text)))
-  (let ((old-tools (and old-stream (hermes-stream-tools old-stream)))
-        (new-tools (hermes-stream-tools new-stream)))
-    (unless (eq old-tools new-tools)
-      (hermes--render-stream-tools old-tools new-tools))))
+      (hermes--rewrite-stream new-text))))
 
 (defun hermes--rewrite-stream (text)
   "Place TEXT into the in-flight region using a stable/unstable split.
@@ -297,89 +276,7 @@ Returns 0 if no such boundary exists yet."
        (t (setq i (1+ i)))))
     last-boundary))
 
-;;;; Tool subtrees
-
-(defun hermes--render-stream-tools (old-tools new-tools)
-  "Sync OLD-TOOLS → NEW-TOOLS by inserting or rewriting subtrees at point-max."
-  (let ((old-ids (mapcar #'hermes-tool-id (append old-tools nil))))
-    (dotimes (i (length new-tools))
-      (let ((tool (aref new-tools i)))
-        (unless (member (hermes-tool-id tool) old-ids)
-          (hermes--insert-tool-subtree tool)))))
-  (let ((n (min (length old-tools) (length new-tools))))
-    (dotimes (i n)
-      (let ((old (aref old-tools i))
-            (new (aref new-tools i)))
-        (unless (eq old new)
-          (hermes--rewrite-tool-subtree new))))))
-
-(defun hermes--insert-tool-subtree (tool)
-  "Append the subtree for TOOL at point-max, recording a marker."
-  (goto-char (point-max))
-  (unless (bolp) (insert "\n"))
-  (let ((start (point-marker))
-        (hb (point)))
-    (set-marker-insertion-type start nil)
-    (insert (hermes--format-tool-subtree tool))
-    ;; Overlay the tool headline (first line) with the tool face.
-    (save-excursion
-      (goto-char hb)
-      (hermes--face-overlay (point) (line-end-position) 'hermes-tool-face))
-    (push (cons (hermes-tool-id tool) start) hermes--stream-tool-markers)))
-
-(defun hermes--rewrite-tool-subtree (tool)
-  "Locate TOOL's subtree via its marker and replace its contents."
-  (let ((m (alist-get (hermes-tool-id tool)
-                      hermes--stream-tool-markers nil nil #'equal)))
-    (when (and (markerp m) (marker-position m))
-      (save-excursion
-        (goto-char m)
-        (let ((beg (point))
-              (end (save-excursion
-                     (forward-line 1)
-                     (let ((next (save-excursion
-                                   (re-search-forward "^\\* " nil t))))
-                       (if next
-                           (progn (forward-line -1)
-                                  (line-beginning-position 2))
-                         (point-max))))))
-          ;; Find the start of the next sibling `**' or higher to bound.
-          (setq end (save-excursion
-                      (goto-char beg)
-                      (forward-line 1)
-                       (if (re-search-forward "^\\*\\{1,3\\} " nil t)
-                          (line-beginning-position)
-                        (point-max))))
-          (delete-region beg end)
-          (insert (hermes--format-tool-subtree tool)))))))
-
-(defun hermes--format-tool-subtree (tool)
-  "Return the Org text for TOOL's subtree (headline + drawer + output)."
-  (let* ((name (or (hermes-tool-name tool) "tool"))
-         (status (hermes-tool-status tool))
-         (dur (hermes-tool-duration tool))
-         (status-label (pcase status
-                         ('generating "running…")
-                         ('running    "running…")
-                         ('complete   (if dur (format "%.1fs" dur) "done"))
-                         ('error      "error")
-                         (_           (format "%s" status))))
-         (output (hermes-tool-output tool))
-         (err    (hermes-tool-error tool)))
-    (concat
-     (format "*** %s (%s)                                              :hermes-tool:\n"
-             name status-label)
-     ":PROPERTIES:\n"
-     (format ":tool_id:  %s\n" (hermes-tool-id tool))
-     (format ":status:   %s\n" status)
-     (when dur (format ":duration: %s\n" dur))
-     ":END:\n"
-     (cond
-      (err    (format "#+begin_example\n%s\n#+end_example\n" err))
-      (output (format "#+begin_example\n%s\n#+end_example\n" output))
-      (t      "")))))
-
-;;;; Header line
+;;; Header line
 
 (defun hermes--render-header (_state)
   "Set `header-line-format'.  Reads `hermes--state' live via :eval."

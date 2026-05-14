@@ -249,6 +249,8 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
        ;; tool.generating means a tool has been selected and is about to run.
        ;; Add it to stream.tools if not already present.  Drop if no stream
        ;; (edge case #2: turnController.ts:620-645).
+       ;; Also append an inline "-> running name" marker to the stream text
+       ;; so tools appear interleaved in the assistant response.
        (let ((str (hermes-state-stream state))
              (tid (or (hermes--get p "tool_id")
                       (hermes--get p "id")
@@ -268,7 +270,16 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                    (setf (hermes-state-stream s)
                          (hermes--with-copy str hermes-stream-copy ns
                            (setf (hermes-stream-tools ns)
-                                 (hermes--vector-append tools tool)))))))))))
+                                 (hermes--vector-append tools tool))
+                           (when tname
+                             (setf (hermes-stream-text ns)
+                                   (concat (hermes-stream-text ns)
+                                           (if (string-empty-p
+                                                (hermes-stream-text ns))
+                                               ""
+                                             "\n")
+                                           (format "-> running %s\n" tname))))
+                           ns)))))))))
       ("tool.complete"
        (let ((str (hermes-state-stream state))
              (tid (or (hermes--get p "tool_id")
@@ -285,19 +296,37 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                         tools)))
              (if (null idx)
                  state
-               (let* ((old-tool (aref tools idx))
-                      (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
+                (let* ((old-tool (aref tools idx))
+                       (tname (or (hermes--get p "name")
+                                  (hermes-tool-name old-tool)))
+                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
                                   (setf (hermes-tool-status nt)
                                         (if err 'error 'complete)
                                         (hermes-tool-output nt) output
                                         (hermes-tool-error nt) err
                                         (hermes-tool-duration nt) dur)))
                       (new-tools (copy-sequence tools)))
-                 (aset new-tools idx new-tool)
-                 (hermes--with-copy state hermes-state-copy s
-                   (setf (hermes-state-stream s)
-                         (hermes--with-copy str hermes-stream-copy ns
-                           (setf (hermes-stream-tools ns) new-tools))))))))))
+                  (aset new-tools idx new-tool)
+                  (hermes--with-copy state hermes-state-copy s
+                    (setf (hermes-state-stream s)
+                          (hermes--with-copy str hermes-stream-copy ns
+                            (setf (hermes-stream-tools ns) new-tools)
+                            (when tname
+                              (let* ((old-text (hermes-stream-text ns))
+                                    (running (format "-> running %s"
+                                                     (regexp-quote tname)))
+                                    (status (if err "error" "done"))
+                                    (done (format "-> %s %s (%.1fs)"
+                                                  status tname (or dur 0.0))))
+                                (setf (hermes-stream-text ns)
+                                      (replace-regexp-in-string
+                                       running done old-text t t))
+                                (when output
+                                  (setf (hermes-stream-text ns)
+                                        (concat (hermes-stream-text ns) "\n"
+                                                (format "#+begin_example\n%s\n#+end_example\n"
+                                                        output))))))
+                            ns)))))))))
       ;;; --- Blocking prompts ----------------------------------------------
       ;; All four: replace wholesale; only one pending slot
       ;; (createGatewayEventHandler.ts:519-547).

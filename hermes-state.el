@@ -367,19 +367,23 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
                             (hermes--with-copy str hermes-stream-copy ns
                               (setf (hermes-stream-tools ns) new-tools)
                               ns)))))))))
-         ("tool.complete"
-         (let* ((str (hermes-state-stream state))
-               (tid (or (hermes--get p "tool_id")
-                        (hermes--get p "id")
-                        (hermes--get p "name")
-                        ;; Fallback: use the id of the last tool in stream.
-                        (and str
-                             (let ((ts (hermes-stream-tools str)))
-                               (and (> (length ts) 0)
-                                    (hermes-tool-id (aref ts (1- (length ts)))))))))
-               (inline-diff (hermes--get p "inline_diff"))
-               (todos-raw (hermes--get p "todos"))
-              (output (hermes--get p "output"))
+          ("tool.complete"
+          ;; Debug: real payload from gateway (nvidia/nemotron model):
+          ;;   (("duration_s" . 0.47) ("name" . "terminal")
+          ;;    ("tool_id" . "chatcmpl-tool-..."))
+          ;; Note: "output" may be absent for some tools/models.
+          (let* ((str (hermes-state-stream state))
+                (tid (or (hermes--get p "tool_id")
+                         (hermes--get p "id")
+                         (hermes--get p "name")
+                         ;; Fallback: use the id of the last tool in stream.
+                         (and str
+                              (let ((ts (hermes-stream-tools str)))
+                                (and (> (length ts) 0)
+                                     (hermes-tool-id (aref ts (1- (length ts)))))))))
+                (inline-diff (hermes--get p "inline_diff"))
+                (todos-raw (hermes--get p "todos"))
+               (output (hermes--get p "output"))
               (err    (hermes--get p "error"))
               (dur    (hermes--get p "duration_s")))
           (if (or (null str) (null tid))

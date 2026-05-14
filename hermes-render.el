@@ -419,11 +419,14 @@ is removed."
                      (format ":CONTEXT:\n%s\n:END:\n" context))
                    (when (and (memq status '(running generating)) preview)
                      (format "#+begin_example\n%s\n#+end_example\n" preview))
-                   ;; Output / error for complete tools
-                   (cond
-                    (err (format "#+begin_example\n%s\n#+end_example\n" err))
-                    (output (format "#+begin_example\n%s\n#+end_example\n" output))
-                    (t ""))
+                    ;; Output / error for complete tools.
+                    ;; Note: some gateway payloads omit "output" entirely
+                    ;; (e.g. nvidia/nemotron terminal tool), so this block
+                    ;; may be empty even for completed tools.
+                    (cond
+                     (err (format "#+begin_example\n%s\n#+end_example\n" err))
+                     (output (format "#+begin_example\n%s\n#+end_example\n" output))
+                     (t ""))
                    ;; Inline diff
                    (when inline-diff
                      (format "#+begin_diff\n%s\n#+end_diff\n" inline-diff))

@@ -53,10 +53,8 @@
   ;; `with-silent-modifications' suppresses `after-change-functions', which
   ;; is what `org-indent-mode' uses to attach line-prefix properties — so
   ;; without this, new sub-headlines fall back to their parent's indent.
-  (let ((indent-refresh-start nil)
-        (buffer-modified nil))
+  (let ((indent-refresh-start nil))
     (cl-flet ((bump (pos)
-                (setq buffer-modified t)
                 (when (and pos (or (null indent-refresh-start)
                                    (< pos indent-refresh-start)))
                   (setq indent-refresh-start pos))))
@@ -77,8 +75,11 @@
                    (bump (point-max))
                    (hermes--stream-begin))
                   ((and os (null ns))
-                   (bump (or (and (markerp hermes--stream-segments-start)
-                                  (marker-position hermes--stream-segments-start))
+                   ;; `stream-commit' rewrites the :ID: line inside the
+                   ;; ** assistant property drawer, so refresh from the
+                   ;; headline marker, not the segment-region start.
+                   (bump (or (and (markerp hermes--stream-headline-marker)
+                                  (marker-position hermes--stream-headline-marker))
                              (point-max)))
                    (hermes--stream-commit))
                   ((not (eq os ns))
@@ -101,12 +102,12 @@
             (force-mode-line-update)))))
     (when (derived-mode-p 'org-mode)
       (org-element-cache-reset)
-      (when (and buffer-modified
-                 indent-refresh-start
-                 (bound-and-true-p org-indent-mode)
-                 (fboundp 'org-indent-add-properties))
-        (ignore-errors
-          (org-indent-add-properties indent-refresh-start (point-max)))))))
+      (when indent-refresh-start
+        (when (and (bound-and-true-p org-indent-mode)
+                   (fboundp 'org-indent-add-properties))
+          (ignore-errors
+            (org-indent-add-properties indent-refresh-start (point-max))))
+        (hermes--hide-drawers indent-refresh-start (point-max))))))
 
 (defun hermes--render-ui (_old new)
   "Re-render the header line from the ephemeral state NEW."
@@ -405,6 +406,29 @@ STATE is one of `folded', `children', `subtree', `all', etc."
                  (get-text-property (point) 'hermes-fold-id))))
       (when (and fid (not (member fid hermes--unfolded-tool-ids)))
         (push fid hermes--unfolded-tool-ids)))))
+
+(defun hermes--hide-drawers (start end)
+  "Collapse every PROPERTIES drawer between START and END.
+Uses plain overlays — does not touch `org-element' — so this stays
+cheap to call once per render even during streaming, where
+`org-fold-hide-drawer-toggle' would force a full re-parse each time."
+  (when (derived-mode-p 'org-mode)
+    (add-to-invisibility-spec '(org-hide-drawer . t))
+    (save-excursion
+      (goto-char start)
+      (let ((case-fold-search t))
+        (while (re-search-forward "^[ \t]*:PROPERTIES:[ \t]*$" end t)
+          (let ((beg (line-end-position)))
+            (when (re-search-forward "^[ \t]*:END:[ \t]*$" end t)
+              ;; Skip if a hermes drawer overlay already covers this range.
+              (unless (cl-some (lambda (o) (overlay-get o 'hermes-drawer))
+                                (overlays-at beg))
+                (let ((ov (make-overlay beg (line-end-position))))
+                  (overlay-put ov 'invisible 'org-hide-drawer)
+                  (overlay-put ov 'evaporate t)
+                  (overlay-put ov 'hermes-drawer t)
+                  (overlay-put ov 'isearch-open-invisible
+                                (lambda (o) (delete-overlay o))))))))))))
 
 (defun hermes--apply-tool-folds (start end)
   "Hide subtrees marked with `hermes-fold' between START and END.

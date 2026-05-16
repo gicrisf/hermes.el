@@ -140,6 +140,64 @@ Thinking deltas no longer touch the persistent stream — see UI reducer tests."
                                       (hermes-test--ht "text" "hmm")))))
     (should (equal s0 s1))))
 
+(ert-deftest hermes-state-test/reasoning-delta-suppressed-when-duplicate-of-text ()
+  "A `reasoning.delta' whose payload equals the prior text segment is dropped."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "Hello"))
+             (cons "reasoning.delta" (hermes-test--ht "text" "Hello"))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 1 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))
+    (should (equal "Hello" (hermes-segment-content (aref segs 0))))))
+
+(ert-deftest hermes-state-test/reasoning-delta-suppressed-when-duplicate-of-reasoning ()
+  "A `reasoning.delta' identical to the prior reasoning segment is dropped."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "reasoning.delta" (hermes-test--ht "text" "A"))
+             (cons "reasoning.delta" (hermes-test--ht "text" "A"))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 1 (length segs)))
+    (should (eq 'reasoning (hermes-segment-type (aref segs 0))))
+    (should (equal "A" (hermes-segment-content (aref segs 0))))))
+
+(ert-deftest hermes-state-test/reasoning-delta-kept-when-different ()
+  "A genuinely-different `reasoning.delta' is appended as its own segment."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "Hello"))
+             (cons "reasoning.delta" (hermes-test--ht "text" "Because..."))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 2 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))
+    (should (eq 'reasoning (hermes-segment-type (aref segs 1))))))
+
+(ert-deftest hermes-state-test/reasoning-delta-trimmed-match-suppresses ()
+  "Whitespace-only differences still count as duplicates and are dropped."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "Hello"))
+             (cons "reasoning.delta" (hermes-test--ht "text" " Hello "))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 1 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))))
+
+(ert-deftest hermes-state-test/reasoning-available-suppressed-when-duplicate ()
+  "`reasoning.available' is also guarded against duplicating prior text."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "Hello"))
+             (cons "reasoning.available" (hermes-test--ht "text" "Hello"))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 1 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))))
+
 (ert-deftest hermes-state-test/message-complete-commits-and-clears ()
   (let* ((s (hermes-test--reduce*
              nil

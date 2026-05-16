@@ -151,6 +151,16 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
 
 ;;;; Segment helpers
 
+(defun hermes--reasoning-duplicate-p (chunk last-seg)
+  "Return t if CHUNK duplicates LAST-SEG's content (text or reasoning).
+Gateways occasionally emit a `reasoning.delta' whose payload is identical
+to the response text — likely a model echo.  Suppress at the reducer so
+the buffer doesn't grow a `*** Reasoning' block that mirrors the answer."
+  (and last-seg
+       (memq (hermes-segment-type last-seg) '(text reasoning))
+       (string= (string-trim (or (hermes-segment-content last-seg) ""))
+                (string-trim (or chunk "")))))
+
 (defun hermes--last-segment (stream)
   "Return the last segment in STREAM, or nil."
   (let ((segs (hermes-stream-segments stream)))
@@ -513,32 +523,36 @@ which case dispatch routes to the correct typed reconstructor."
                               (make-hermes-stream :segments [] :tools [])))
               (text (or (hermes--get p "text") ""))
               (last (hermes--last-segment old-stream)))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-stream s)
-                 (if (and last (eq 'reasoning (hermes-segment-type last)))
-                     (hermes--update-last-segment old-stream
-                       (lambda (seg)
-                         (hermes--with-copy seg hermes-segment-copy ns
-                           (setf (hermes-segment-content ns) text))))
-                   (hermes--append-segment old-stream
-                     (make-hermes-segment :type 'reasoning :content text
-                                          :id (hermes--next-segment-id))))))))
+         (if (hermes--reasoning-duplicate-p text last)
+             state
+           (hermes--with-copy state hermes-state-copy s
+             (setf (hermes-state-stream s)
+                   (if (and last (eq 'reasoning (hermes-segment-type last)))
+                       (hermes--update-last-segment old-stream
+                         (lambda (seg)
+                           (hermes--with-copy seg hermes-segment-copy ns
+                             (setf (hermes-segment-content ns) text))))
+                     (hermes--append-segment old-stream
+                       (make-hermes-segment :type 'reasoning :content text
+                                            :id (hermes--next-segment-id)))))))))
       ("reasoning.delta"
        (let* ((old-stream (or (hermes-state-stream state)
                               (make-hermes-stream :segments [] :tools [])))
               (chunk (or (hermes--get p "text") ""))
               (last (hermes--last-segment old-stream)))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-stream s)
-                 (if (and last (eq 'reasoning (hermes-segment-type last)))
-                     (hermes--update-last-segment old-stream
-                       (lambda (seg)
-                         (hermes--with-copy seg hermes-segment-copy ns
-                           (setf (hermes-segment-content ns)
-                                 (concat (hermes-segment-content seg) chunk)))))
-                   (hermes--append-segment old-stream
-                     (make-hermes-segment :type 'reasoning :content chunk
-                                          :id (hermes--next-segment-id))))))))
+         (if (hermes--reasoning-duplicate-p chunk last)
+             state
+           (hermes--with-copy state hermes-state-copy s
+             (setf (hermes-state-stream s)
+                   (if (and last (eq 'reasoning (hermes-segment-type last)))
+                       (hermes--update-last-segment old-stream
+                         (lambda (seg)
+                           (hermes--with-copy seg hermes-segment-copy ns
+                             (setf (hermes-segment-content ns)
+                                   (concat (hermes-segment-content seg) chunk)))))
+                     (hermes--append-segment old-stream
+                       (make-hermes-segment :type 'reasoning :content chunk
+                                            :id (hermes--next-segment-id)))))))))
       ("message.complete"
        (let ((str (hermes-state-stream state)))
          (if (null str)

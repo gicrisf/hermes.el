@@ -143,6 +143,13 @@ without this cache, the very first buffer would never see the skin.")
   "Major mode for a Hermes conversation buffer."
   (setq-local org-startup-folded nil)
   (setq-local org-hide-leading-stars t)
+  (setq-local org-todo-keywords
+              '((sequence "RUNNING(r)" "|" "DONE(d)" "ERROR(e)")))
+  (setq-local org-todo-keyword-faces
+              '(("RUNNING" . hermes-tool-running-face)
+                ("DONE"    . hermes-tool-done-face)
+                ("ERROR"   . hermes-tool-error-face)))
+  (add-hook 'org-cycle-hook #'hermes--remember-cycle nil t)
   (setq buffer-read-only t)
   (hermes-state-init)
   ;; Insert file-level metadata line.

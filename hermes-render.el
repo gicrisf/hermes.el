@@ -25,6 +25,7 @@
 (require 'hermes-state)
 (require 'hermes-skin)
 (require 'hermes-md)
+(require 'hermes-tool-formatters)
 
 ;;;; Buffer-local markers for the in-flight region
 
@@ -254,47 +255,62 @@ Each block is followed by a blank line for visual separation."
                (setq hermes--stream-subagents-marker (copy-marker boundary))
                (set-marker-insertion-type hermes--stream-subagents-marker nil)))))))
 
+(defun hermes--tool-status-keyword (status)
+  "Map a tool STATUS symbol to an org TODO keyword string."
+  (pcase status
+    ('generating "RUNNING")
+    ('running    "RUNNING")
+    ('complete   "DONE")
+    ('error      "ERROR")
+    (_           "DONE")))
+
+(defun hermes--tool-properties (tool)
+  "Return an alist of org PROPERTY entries for TOOL."
+  (let ((dur (hermes-tool-duration tool))
+        (tid (hermes-tool-id tool))
+        (acc nil))
+    (when tid  (push (cons "TOOL_ID" (format "%s" tid)) acc))
+    (when dur  (push (cons "DURATION" (format "%.1fs" dur)) acc))
+    (nreverse acc)))
+
+(defun hermes--format-property-drawer (props)
+  "Render PROPS (an alist) as an org PROPERTIES drawer, or empty string."
+  (if (null props) ""
+    (concat ":PROPERTIES:\n"
+            (mapconcat (lambda (kv)
+                         (format ":%s: %s" (car kv) (cdr kv)))
+                       props "\n")
+            "\n:END:\n")))
+
 (defun hermes--format-tool (tool)
-  "Return an Org block string for a single TOOL."
-  (let* ((name (or (hermes-tool-name tool) "tool"))
-         (status (hermes-tool-status tool))
-         (dur (hermes-tool-duration tool))
-         (output (hermes-tool-output tool))
-         (err (hermes-tool-error tool))
-         (preview (hermes-tool-preview tool))
-         (context (hermes-tool-context tool))
-         (inline-diff (hermes-tool-inline-diff tool))
-         (todos (hermes-tool-todos tool))
-         (status-label (pcase status
-                         ('generating "running…")
-                         ('running "running…")
-                         ('complete (if dur (format "%.1fs" dur) "done"))
-                         ('error "error")
-                         (_ (format "%s" status)))))
-    (let ((body
-           (concat (format "*** %s (%s)\n" name status-label)
-                   (when (and (eq status 'running) context)
-                     (format ":CONTEXT:\n%s\n:END:\n" context))
-                   (when (and (memq status '(running generating)) preview)
-                     (format "#+begin_example\n%s\n#+end_example\n" preview))
-                   (cond
-                    (err (format "#+begin_example\n%s\n#+end_example\n" err))
-                    (output (format "#+begin_example\n%s\n#+end_example\n" output))
-                    (t ""))
-                   (when inline-diff
-                     (format "#+begin_diff\n%s\n#+end_diff\n" inline-diff))
-                   (when todos
-                     (concat (format ":TODOS:\n")
-                             (mapconcat
-                              (lambda (todo)
-                                (let ((text (or (hermes--get todo "text") ""))
-                                      (done (hermes--get todo "done")))
-                                  (format "- [%s] %s" (if done "X" " ") text)))
-                              todos "\n")
-                             "\n:END:\n")))))
-      (if (> (length body) 0)
-          (concat body "\n")
-        body))))
+  "Return an Org block string for a single TOOL.
+Heading uses an org TODO keyword for status; body is produced by a
+per-tool formatter from `hermes-tool-formatters'."
+  (let* ((name      (or (hermes-tool-name tool) "tool"))
+         (status    (hermes-tool-status tool))
+         (keyword   (hermes--tool-status-keyword status))
+         (formatter (hermes-tool--lookup name))
+         (parts     (funcall formatter tool))
+         (summary   (or (plist-get parts :summary) name))
+         (body      (or (plist-get parts :body) ""))
+         (fold-p    (and (eq status 'complete) (plist-get parts :fold)))
+         (props     (hermes--tool-properties tool))
+         (heading   (format "*** %s %s" keyword summary))
+         ;; Tag the heading line with a text property so the renderer can
+         ;; fold it after insertion without re-parsing org structure.
+         (heading-line
+          (if fold-p
+              (concat
+               (propertize heading 'hermes-fold t
+                           'hermes-tool-id (hermes-tool-id tool))
+               "\n")
+            (concat heading "\n")))
+         (out (concat heading-line
+                      (hermes--format-property-drawer props)
+                      body)))
+    (if (> (length out) 0)
+        (concat out (if (string-suffix-p "\n" out) "" "\n"))
+      out)))
 
 (defun hermes--format-segment (seg)
   "Return Org string for a single SEGMENT."
@@ -329,7 +345,40 @@ Each block is followed by a blank line for visual separation."
           (insert formatted)
           (unless (bolp)
             (insert "\n")))))
-    (set-marker hermes--stream-segments-end (point))))
+    (set-marker hermes--stream-segments-end (point))
+    (hermes--apply-tool-folds start (marker-position hermes--stream-segments-end))))
+
+(defvar-local hermes--unfolded-tool-ids nil
+  "Set (list) of tool ids the user has manually expanded; never re-folded.")
+
+(defun hermes--remember-cycle (state)
+  "Org cycle hook: record the tool id when the user expands a folded tool.
+STATE is one of `folded', `children', `subtree', `all', etc."
+  (when (memq state '(children subtree all))
+    (let ((tid (save-excursion
+                 (beginning-of-line)
+                 (get-text-property (point) 'hermes-tool-id))))
+      (when (and tid (not (member tid hermes--unfolded-tool-ids)))
+        (push tid hermes--unfolded-tool-ids)))))
+
+(defun hermes--apply-tool-folds (start end)
+  "Hide subtrees marked with `hermes-fold' between START and END.
+Skips tools whose id is in `hermes--unfolded-tool-ids'."
+  (when (derived-mode-p 'org-mode)
+    (save-excursion
+      (goto-char start)
+      (let (pos)
+        (while (and (< (point) end)
+                    (setq pos (text-property-any (point) end 'hermes-fold t)))
+          (goto-char pos)
+          (let ((tid (get-text-property pos 'hermes-tool-id)))
+            (unless (and tid (member tid hermes--unfolded-tool-ids))
+              (ignore-errors
+                (if (fboundp 'org-fold-hide-subtree)
+                    (org-fold-hide-subtree)
+                  (outline-hide-subtree)))))
+          ;; Move past this heading line so we don't loop forever.
+          (forward-line 1))))))
 
 ;;;; Stream lifecycle
 
@@ -373,7 +422,8 @@ Each block is followed by a blank line for visual separation."
   (setq hermes--stream-segments-start nil
         hermes--stream-segments-end nil
         hermes--stream-subagents-marker nil
-        hermes--stream-headline-marker nil))
+        hermes--stream-headline-marker nil
+        hermes--unfolded-tool-ids nil))
 
 (defun hermes--stream-update (old-stream new-stream)
   "Reflect OLD-STREAM → NEW-STREAM into the buffer."

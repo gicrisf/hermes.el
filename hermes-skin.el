@@ -40,6 +40,21 @@
   "Face for tool subtree headlines."
   :group 'hermes)
 
+(defface hermes-tool-running-face
+  '((t :inherit warning :weight bold))
+  "Face for the RUNNING TODO keyword on tool headings."
+  :group 'hermes)
+
+(defface hermes-tool-done-face
+  '((t :inherit success :weight bold))
+  "Face for the DONE TODO keyword on tool headings."
+  :group 'hermes)
+
+(defface hermes-tool-error-face
+  '((t :inherit error :weight bold))
+  "Face for the ERROR TODO keyword on tool headings."
+  :group 'hermes)
+
 ;;;; Application
 
 (defvar-local hermes-skin--remap-cookies nil
@@ -63,10 +78,16 @@
                         (hermes-skin--get skin "banner_text")))
          (tool      (hermes-skin--get skin "ui_label"))
          (system    (hermes-skin--get skin "ui_warn"))
-         (remaps (list (cons 'hermes-assistant-face assistant)
-                       (cons 'hermes-user-face      user)
-                       (cons 'hermes-tool-face      tool)
-                       (cons 'hermes-system-face    system))))
+         (running   (hermes-skin--get skin "ui_accent"))
+         (done      (hermes-skin--get skin "ui_label"))
+         (errcol    (hermes-skin--get skin "ui_warn"))
+         (remaps (list (cons 'hermes-assistant-face     assistant)
+                       (cons 'hermes-user-face          user)
+                       (cons 'hermes-tool-face          tool)
+                       (cons 'hermes-system-face        system)
+                       (cons 'hermes-tool-running-face  running)
+                       (cons 'hermes-tool-done-face     done)
+                       (cons 'hermes-tool-error-face    errcol))))
     (dolist (pair remaps)
       (when (cdr pair)
         (push (face-remap-add-relative (car pair) :foreground (cdr pair))

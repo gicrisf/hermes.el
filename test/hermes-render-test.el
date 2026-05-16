@@ -351,5 +351,103 @@ position right after the heading line."
     ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
+;;;; Pending-turns drain vs stream-commit interaction
+
+(defun hermes-render-test--count (re)
+  "Count occurrences of regexp RE in current buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((n 0))
+      (while (re-search-forward re nil t) (cl-incf n))
+      n)))
+
+(ert-deftest hermes-render-test/assistant-complete-no-duplicate ()
+  "message.complete must not produce a duplicate `** assistant' heading.
+The reducer pushes the assistant msg to pending-turns AND clears the
+stream in the same step.  The renderer must seal the streaming turn
+via stream-commit and skip the assistant in the drain, leaving exactly
+one assistant subtree with exactly one :HERMES_RAW: drawer."
+  (with-temp-buffer
+    (hermes-mode)
+    ;; Stage 1: stream begins and accumulates text.
+    (let* ((old hermes--state)
+           (stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content "Hello"
+                                       :id "s1"))))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-stream s) stream))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    ;; Stage 2: message.complete fires — assistant msg pushed to
+    ;; pending-turns AND stream cleared, atomically.
+    (let* ((old hermes--state)
+           (stream (hermes-state-stream old))
+           (msg (hermes--message-from-stream stream nil))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s) (vector msg)
+                        (hermes-state-stream s) nil))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    (should (= 1 (hermes-render-test--count "^\\*\\* assistant")))
+    (should (= 1 (hermes-render-test--count "^:HERMES_RAW:")))
+    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+
+(ert-deftest hermes-render-test/error-with-stream-no-duplicate ()
+  "Error path pushes [assistant, system] and clears stream.
+After render: one assistant subtree, one system heading, system appears
+*after* the assistant turn, and each subtree owns exactly one raw drawer."
+  (with-temp-buffer
+    (hermes-mode)
+    ;; Stage 1: stream begins.
+    (let* ((old hermes--state)
+           (stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content "partial"
+                                       :id "s1"))))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-stream s) stream))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    ;; Stage 2: error — [assistant, system] pushed, stream cleared.
+    (let* ((old hermes--state)
+           (stream (hermes-state-stream old))
+           (amsg (hermes--message-from-stream stream nil))
+           (sysmsg (make-hermes-message
+                    :kind 'system
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content "boom"
+                                       :id "sys1"))
+                    :timestamp (current-time)))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s) (vector amsg sysmsg)
+                        (hermes-state-stream s) nil))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    (should (= 1 (hermes-render-test--count "^\\*\\* assistant")))
+    (should (= 1 (hermes-render-test--count "^\\* system:")))
+    (should (= 2 (hermes-render-test--count "^:HERMES_RAW:")))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should (< (string-match "^\\*\\* assistant" body)
+                 (string-match "^\\* system:" body))))))
+
+(ert-deftest hermes-render-test/pending-turns-assistant-skipped ()
+  "Drain with only an assistant in pending-turns inserts nothing,
+but still clears the vector via :pending-turns-clear."
+  (with-temp-buffer
+    (hermes-mode)
+    (let* ((old hermes--state)
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "x" :id "s1"))
+                 :timestamp (current-time)))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s) (vector msg)))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    (should (= 0 (hermes-render-test--count "^\\*\\* assistant")))
+    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

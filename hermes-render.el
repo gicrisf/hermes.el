@@ -80,15 +80,14 @@
         (old-stream-snapshot (and old (hermes-state-stream old))))
     (with-silent-modifications
       (save-excursion
-        ;; 1. Drain pending-turns vector into the buffer.
-        (let ((turns (hermes-state-pending-turns new)))
-          (when (and (vectorp turns) (> (length turns) 0))
-            (setq msg-append-start (point-max)
-                  structural-change t
-                  drain-pending t)
-            (dotimes (i (length turns))
-              (hermes--insert-committed-turn (aref turns i)))))
-        ;; 2. Stream lifecycle.
+        ;; 1. Stream lifecycle runs FIRST.  When `message.complete' or the
+        ;; error path fires, the reducer pushes the assistant msg onto
+        ;; pending-turns AND clears the stream in the same step.  If the
+        ;; drain ran first, inserting a user/system message at point-max
+        ;; would rear-advance `hermes--bench-end' past the new text, and
+        ;; `stream-commit' would then write the assistant's raw drawer
+        ;; into the wrong subtree.  Sealing the stream first keeps the
+        ;; bench-anchored writes contained.
         (let ((os old-stream-snapshot)
               (ns (hermes-state-stream new)))
           (cond ((and (null os) ns)
@@ -100,6 +99,23 @@
                 ((not (eq os ns))
                  (setq bench-touched-p t)
                  (hermes--stream-update os ns))))
+        ;; 2. Drain pending-turns vector into the buffer.  Assistant
+        ;; messages are skipped: they're committed in-place by
+        ;; `stream-commit' above, and re-inserting here would create a
+        ;; duplicate `** assistant' heading at point-max.
+        (let ((turns (hermes-state-pending-turns new)))
+          (when (and (vectorp turns) (> (length turns) 0))
+            (setq drain-pending t)
+            (let ((any-inserted nil)
+                  (start (point-max)))
+              (dotimes (i (length turns))
+                (let ((msg (aref turns i)))
+                  (unless (eq 'assistant (hermes-message-kind msg))
+                    (unless any-inserted
+                      (setq msg-append-start start
+                            structural-change t
+                            any-inserted t))
+                    (hermes--insert-committed-turn msg)))))))
         ;; 3. Header line — session-info / connection / usage.
         (unless (and old
                       (eq (hermes-state-session-info old)

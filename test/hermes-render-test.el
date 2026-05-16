@@ -236,5 +236,50 @@ position right after the heading line."
       (should (string-match (regexp-quote "step2") body))
       (should-not (string-match (regexp-quote "step1") body)))))
 
+;;;; Bench region
+
+(defun hermes-render-test--bench-overlay ()
+  "Return the bench overlay in the current buffer, or nil."
+  (cl-find-if (lambda (o) (overlay-get o 'hermes-bench))
+              (overlays-in (point-min) (point-max))))
+
+(ert-deftest hermes-render-test/bench-overlay-spans-live-region ()
+  "After `stream-begin' an overlay tagged `hermes-bench' covers the bench."
+  (with-temp-buffer
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "live" :id "s1")))
+    (let ((ov (hermes-render-test--bench-overlay)))
+      (should ov)
+      (should (= (overlay-start ov)
+                 (marker-position hermes--bench-start)))
+      (should (= (overlay-end ov)
+                 (marker-position hermes--bench-end)))
+      (should (eq (overlay-get ov 'face) 'hermes-bench-face)))))
+
+(ert-deftest hermes-render-test/bench-overlay-removed-on-commit ()
+  "After `stream-commit' no bench overlay remains."
+  (with-temp-buffer
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "live" :id "s1")))
+    (should (hermes-render-test--bench-overlay))
+    (hermes--stream-commit)
+    (should-not (hermes-render-test--bench-overlay))
+    (should (null hermes--bench-start))
+    (should (null hermes--bench-end))))
+
+(ert-deftest hermes-render-test/bench-markers-cleared-on-commit ()
+  "All stream + bench markers nulled on commit."
+  (with-temp-buffer
+    (hermes--stream-begin)
+    (hermes--stream-commit)
+    (dolist (m (list hermes--bench-start
+                     hermes--bench-end
+                     hermes--stream-segments-start
+                     hermes--stream-segments-end
+                     hermes--stream-headline-marker))
+      (should (null m)))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

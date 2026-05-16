@@ -44,82 +44,101 @@
 (defvar-local hermes--stream-subagents-marker nil
   "Marker at the start of the subagent block region in the stream.")
 
+;; The bench is the live (in-flight) assistant turn region.  Renderers
+;; mutate inside the bench every stream tick; everything outside is
+;; frozen — never touched after the previous turn committed.  The
+;; markers below are the single source of truth for that boundary; the
+;; older segment / subagent markers remain as interior bounds used by
+;; the segment-region delete+reinsert.
+(defvar-local hermes--bench-start nil
+  "Marker at the start of the live assistant turn.  nil between turns.")
+
+(defvar-local hermes--bench-end nil
+  "Marker at the end of the live region.  Rear-advancing.  nil between turns.")
+
+(defvar-local hermes--bench-overlay nil
+  "Overlay tinting the bench so the user can see the live region.")
+
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
   "Diff OLD vs NEW (both `hermes-state') and update the buffer."
-  ;; Track the earliest buffer position that any sub-renderer touches so we
-  ;; can refresh `org-indent-mode' over just the changed tail afterwards.
-  ;; `with-silent-modifications' suppresses `after-change-functions', which
-  ;; is what `org-indent-mode' uses to attach line-prefix properties — so
-  ;; without this, new sub-headlines fall back to their parent's indent.
-  (let ((indent-refresh-start nil)
+  ;; Two scopes for post-passes:
+  ;;   * msg-append-start  → start of just-inserted user/system message(s).
+  ;;   * bench-touched-p   → bench markers/content changed this tick.
+  ;; Splitting them keeps the renderer from re-processing frozen turns
+  ;; just because point-max moved — the user's manual fold state above
+  ;; the bench survives forever.
+  (let ((msg-append-start nil)
+        (bench-touched-p nil)
         ;; Structural change → reset the org-element cache at the end.
         ;; Streaming chunks (`stream-update') don't qualify: they reshape
         ;; only the current assistant turn, and resetting on every token
-        ;; defeats the cache for the whole buffer.  Lifecycle boundaries
-        ;; (`stream-begin' / `stream-commit') and committed-message appends
-        ;; do qualify — they introduce new headlines/structure that other
-        ;; org consumers need to see.
+        ;; defeats the cache for the whole buffer.
         (structural-change nil))
-    (cl-flet ((bump (pos)
-                (when (and pos (or (null indent-refresh-start)
-                                   (< pos indent-refresh-start)))
-                  (setq indent-refresh-start pos))))
-      (with-silent-modifications
-        (save-excursion
-          ;; 1. Messages grew → append new tail messages.
-          (let* ((old-n (length (and old (hermes-state-messages old))))
-                 (new-n (length (hermes-state-messages new))))
-            (when (> new-n old-n)
-              (bump (point-max))
-              (setq structural-change t)
-              (cl-loop for i from old-n below new-n
-                       for msg = (aref (hermes-state-messages new) i)
-                       do (hermes--render-committed-message msg))))
-          ;; 2. Stream lifecycle.
-          (let ((os (and old (hermes-state-stream old)))
-                (ns (hermes-state-stream new)))
-            (cond ((and (null os) ns)
-                   (bump (point-max))
-                   (setq structural-change t)
-                   (hermes--stream-begin))
-                  ((and os (null ns))
-                   ;; `stream-commit' rewrites the :ID: line inside the
-                   ;; ** assistant property drawer, so refresh from the
-                   ;; headline marker, not the segment-region start.
-                   (bump (or (and (markerp hermes--stream-headline-marker)
-                                  (marker-position hermes--stream-headline-marker))
-                             (point-max)))
-                   (setq structural-change t)
-                   (hermes--stream-commit))
-                  ((not (eq os ns))
-                   (bump (or (and (markerp hermes--stream-segments-start)
-                                  (marker-position hermes--stream-segments-start))
-                             (point-max)))
-                   (hermes--stream-update os ns))))
-          ;; 3. Header line — session-info / connection / usage.
-          (unless (and old
-                        (eq (hermes-state-session-info old)
-                            (hermes-state-session-info new))
-                        (eq (hermes-state-connection old)
-                            (hermes-state-connection new))
-                        (eq (hermes-state-usage old)
-                            (hermes-state-usage new)))
-            (hermes--render-header new))
-          ;; 4. Queue length changed → refresh header-line :eval forms.
-          (unless (eq (and old (hermes-state-queue old))
-                       (hermes-state-queue new))
-            (force-mode-line-update)))))
+    (with-silent-modifications
+      (save-excursion
+        ;; 1. Messages grew → append new tail messages.
+        (let* ((old-n (length (and old (hermes-state-messages old))))
+               (new-n (length (hermes-state-messages new))))
+          (when (> new-n old-n)
+            (setq msg-append-start (point-max)
+                  structural-change t)
+            (cl-loop for i from old-n below new-n
+                     for msg = (aref (hermes-state-messages new) i)
+                     do (hermes--render-committed-message msg))))
+        ;; 2. Stream lifecycle.
+        (let ((os (and old (hermes-state-stream old)))
+              (ns (hermes-state-stream new)))
+          (cond ((and (null os) ns)
+                 (setq structural-change t bench-touched-p t)
+                 (hermes--stream-begin))
+                ((and os (null ns))
+                 (setq structural-change t bench-touched-p t)
+                 (hermes--stream-commit))
+                ((not (eq os ns))
+                 (setq bench-touched-p t)
+                 (hermes--stream-update os ns))))
+        ;; 3. Header line — session-info / connection / usage.
+        (unless (and old
+                      (eq (hermes-state-session-info old)
+                          (hermes-state-session-info new))
+                      (eq (hermes-state-connection old)
+                          (hermes-state-connection new))
+                      (eq (hermes-state-usage old)
+                          (hermes-state-usage new)))
+          (hermes--render-header new))
+        ;; 4. Queue length changed → refresh header-line :eval forms.
+        (unless (eq (and old (hermes-state-queue old))
+                     (hermes-state-queue new))
+          (force-mode-line-update))))
     (when (derived-mode-p 'org-mode)
       (when structural-change
         (org-element-cache-reset))
-      (when indent-refresh-start
-        (when (and (bound-and-true-p org-indent-mode)
-                   (fboundp 'org-indent-add-properties))
-          (ignore-errors
-            (org-indent-add-properties indent-refresh-start (point-max))))
-        (hermes--hide-drawers indent-refresh-start (point-max))))))
+      ;; Refresh just-appended message region (post-commit, after the
+      ;; bench has been torn down — committed-message inserts and
+      ;; `stream-commit' both bump point-max).
+      (when msg-append-start
+        (hermes--refresh-region msg-append-start (point-max)))
+      ;; Refresh the live bench, if any.
+      (when (and bench-touched-p
+                 (markerp hermes--bench-start)
+                 (marker-position hermes--bench-start)
+                 (markerp hermes--bench-end)
+                 (marker-position hermes--bench-end))
+        (hermes--refresh-region (marker-position hermes--bench-start)
+                                (marker-position hermes--bench-end))))))
+
+(defun hermes--refresh-region (start end)
+  "Run indent + drawer-hide passes over [START, END).
+These passes do the work that `after-change-functions' would have done
+were it not suppressed by `with-silent-modifications'."
+  (when (> end start)
+    (when (and (bound-and-true-p org-indent-mode)
+               (fboundp 'org-indent-add-properties))
+      (ignore-errors
+        (org-indent-add-properties start end)))
+    (hermes--hide-drawers start end)))
 
 (defun hermes--render-ui (_old new)
   "Re-render the header line from the ephemeral state NEW."
@@ -322,7 +341,8 @@ collapse them on insertion."
              (unless (and (markerp hermes--stream-subagents-marker)
                           (marker-position hermes--stream-subagents-marker))
                (setq hermes--stream-subagents-marker (copy-marker boundary))
-               (set-marker-insertion-type hermes--stream-subagents-marker nil)))))))
+               (set-marker-insertion-type hermes--stream-subagents-marker nil)))))
+    (hermes--bench-sync)))
 
 (defun hermes--tool-status-keyword (status)
   "Map a tool STATUS symbol to an org TODO keyword string."
@@ -416,7 +436,8 @@ per-tool formatter from `hermes-tool-formatters'."
           (unless (bolp)
             (insert "\n")))))
     (set-marker hermes--stream-segments-end (point))
-    (hermes--apply-tool-folds start (marker-position hermes--stream-segments-end))))
+    (hermes--apply-tool-folds start (marker-position hermes--stream-segments-end))
+    (hermes--bench-sync)))
 
 (defvar-local hermes--unfolded-tool-ids nil
   "Set (list) of fold-ids the user has manually expanded; never re-folded.
@@ -477,9 +498,14 @@ Skips tools whose id is in `hermes--unfolded-tool-ids'."
 ;;;; Stream lifecycle
 
 (defun hermes--stream-begin ()
-  "Insert a `** assistant' headline with a property drawer and prepare markers."
+  "Insert a `** assistant' headline with a property drawer and prepare markers.
+Also opens a bench overlay tinting the live region."
   (goto-char (point-max))
   (unless (bolp) (insert "\n"))
+  ;; Bench-start anchors here; bench-end advances with insertion so it
+  ;; tracks the growing live region.
+  (setq hermes--bench-start (copy-marker (point) nil)
+        hermes--bench-end   (copy-marker (point) t))
   (setq hermes--stream-headline-marker (point-marker))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
   (let ((hb (point))
@@ -498,22 +524,61 @@ Skips tools whose id is in `hermes--unfolded-tool-ids'."
   (set-marker-insertion-type hermes--stream-segments-start nil)
   (set-marker-insertion-type hermes--stream-segments-end   t)
   (setq hermes--stream-subagents-marker (copy-marker (point-marker)))
-  (set-marker-insertion-type hermes--stream-subagents-marker t))
+  (set-marker-insertion-type hermes--stream-subagents-marker t)
+  ;; Open the bench overlay.  rear-advance so it grows with streamed
+  ;; content; low priority so fontification / TODO faces sit on top.
+  (hermes--bench-sync)
+  (when hermes--bench-overlay (delete-overlay hermes--bench-overlay))
+  (setq hermes--bench-overlay
+        (make-overlay (marker-position hermes--bench-start)
+                      (marker-position hermes--bench-end)
+                      nil nil t))
+  (overlay-put hermes--bench-overlay 'face 'hermes-bench-face)
+  (overlay-put hermes--bench-overlay 'hermes-bench t)
+  (overlay-put hermes--bench-overlay 'priority -50))
+
+(defun hermes--bench-sync ()
+  "Pull `hermes--bench-end' up to the tail of the live content."
+  (when (and (markerp hermes--bench-end)
+             (marker-position hermes--bench-end))
+    (let ((tail (max (or (and (markerp hermes--stream-segments-end)
+                              (marker-position hermes--stream-segments-end))
+                         0)
+                     (or (and (markerp hermes--stream-subagents-marker)
+                              (marker-position hermes--stream-subagents-marker))
+                         0)
+                     (point))))
+      (set-marker hermes--bench-end tail))
+    (when (overlayp hermes--bench-overlay)
+      (move-overlay hermes--bench-overlay
+                    (marker-position hermes--bench-start)
+                    (marker-position hermes--bench-end)))))
 
 (defun hermes--stream-commit ()
-  "Stream finished: stamp Org :ID:s on the trail, drop markers."
+  "Stream finished: stamp Org :ID:s on the trail, drop markers and bench."
   (when (and (derived-mode-p 'org-mode)
              (markerp hermes--stream-headline-marker)
              (marker-position hermes--stream-headline-marker))
     (save-excursion
       (goto-char hermes--stream-headline-marker)
       (ignore-errors (org-id-get-create))))
-  (dolist (m (list hermes--stream-segments-start
+  ;; Tear down the bench: tint disappears, markers freed, the region
+  ;; below is now frozen.  Any folds the user opens in this region from
+  ;; here on persist trivially because nothing re-applies fold passes
+  ;; outside a bench.
+  (when (overlayp hermes--bench-overlay)
+    (delete-overlay hermes--bench-overlay))
+  (setq hermes--bench-overlay nil)
+  (dolist (m (list hermes--bench-start
+                    hermes--bench-end
+                    hermes--stream-segments-start
                     hermes--stream-segments-end
                     hermes--stream-subagents-marker
                     hermes--stream-headline-marker))
     (when (markerp m) (set-marker m nil)))
-  (setq hermes--stream-segments-start nil
+  (setq hermes--bench-start nil
+        hermes--bench-end nil
+        hermes--stream-segments-start nil
         hermes--stream-segments-end nil
         hermes--stream-subagents-marker nil
         hermes--stream-headline-marker nil

@@ -55,6 +55,17 @@
   "Face for the ERROR TODO keyword on tool headings."
   :group 'hermes)
 
+(defface hermes-bench-face
+  '((((class color) (background dark))
+     :background "#1c1f26" :extend t)
+    (((class color) (background light))
+     :background "#f4f4f4" :extend t)
+    (t :inherit shadow))
+  "Background tint for the live (in-flight) assistant turn region.
+Lets the user see at a glance which part of the buffer is being
+re-rendered.  Disappears when the turn commits."
+  :group 'hermes)
+
 ;;;; Application
 
 (defvar-local hermes-skin--remap-cookies nil
@@ -81,6 +92,7 @@
          (running   (hermes-skin--get skin "ui_accent"))
          (done      (hermes-skin--get skin "ui_label"))
          (errcol    (hermes-skin--get skin "ui_warn"))
+         (bench     (hermes-skin--get skin "ui_bench"))
          (remaps (list (cons 'hermes-assistant-face     assistant)
                        (cons 'hermes-user-face          user)
                        (cons 'hermes-tool-face          tool)
@@ -88,6 +100,11 @@
                        (cons 'hermes-tool-running-face  running)
                        (cons 'hermes-tool-done-face     done)
                        (cons 'hermes-tool-error-face    errcol))))
+    ;; Bench is a background — remap separately so we set :background
+    ;; rather than :foreground.
+    (when bench
+      (push (face-remap-add-relative 'hermes-bench-face :background bench)
+            hermes-skin--remap-cookies))
     (dolist (pair remaps)
       (when (cdr pair)
         (push (face-remap-add-relative (car pair) :foreground (cdr pair))

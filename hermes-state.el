@@ -21,6 +21,42 @@
   "Maximum number of past inputs retained in `hermes-state-history'."
   :type 'integer :group 'hermes)
 
+(defcustom hermes-log-max-lines 1000
+  "Maximum number of lines retained in the *hermes-log* buffer."
+  :type 'integer :group 'hermes)
+
+;;;; Diagnostic log buffer
+
+(defun hermes--log-buffer ()
+  "Return (creating if needed) the *hermes-log* buffer."
+  (or (get-buffer "*hermes-log*")
+      (with-current-buffer (get-buffer-create "*hermes-log*")
+        (special-mode)
+        (setq-local truncate-lines nil)
+        (current-buffer))))
+
+(defun hermes--log-write (fmt &rest args)
+  "Append a timestamped line to *hermes-log*, capped at `hermes-log-max-lines'."
+  (let ((line (apply #'format fmt args))
+        (ts (format-time-string "%H:%M:%S")))
+    (with-current-buffer (hermes--log-buffer)
+      (let ((inhibit-read-only t)
+            (was-at-tail (= (point) (point-max))))
+        (save-excursion
+          (goto-char (point-max))
+          (insert (format "[%s] %s\n" ts line))
+          ;; Cap: drop oldest lines if we exceed the limit.
+          (let ((excess (- (count-lines (point-min) (point-max))
+                           hermes-log-max-lines)))
+            (when (> excess 0)
+              (goto-char (point-min))
+              (forward-line excess)
+              (delete-region (point-min) (point)))))
+        (when was-at-tail
+          (goto-char (point-max))
+          (dolist (w (get-buffer-window-list (current-buffer) nil t))
+            (set-window-point w (point-max))))))))
+
 ;;;; Structs
 
 (cl-defstruct (hermes-segment (:copier hermes-segment-copy))
@@ -864,87 +900,48 @@ which case dispatch routes to the correct typed reconstructor."
              (setf (hermes-state-pending s) nil))
          state))
       ;; --- Errors --------------------------------------------------------
+      ;; Diagnostics never enter the Org buffer.  They go to *hermes-log*
+      ;; for inspection; the header-line status (set by the UI reducer)
+      ;; surfaces transient signals.  When an `error' arrives mid-stream,
+      ;; we still commit the partial assistant turn — losing it would
+      ;; silently drop work the user can see on screen.
       ("error"
        (let ((text (ansi-color-apply
                     (or (hermes--get p "message") "(unknown error)")))
              (str (hermes-state-stream state)))
+         (hermes--log-write "%s" text)
          (if (null str)
-             (let ((sysmsg (make-hermes-message
-                            :kind 'system
-                            :segments (vector
-                                       (make-hermes-segment
-                                        :type 'text :content text
-                                        :id (hermes--next-segment-id)))
-                            :timestamp (current-time))))
-               (hermes--push-pending state sysmsg))
+             state
            (let* ((amsg (hermes--message-from-stream str nil))
-                  (sysmsg (make-hermes-message
-                           :kind 'system
-                           :segments (vector
-                                      (make-hermes-segment
-                                       :type 'text :content text
-                                       :id (hermes--next-segment-id)))
-                           :timestamp (current-time)))
-                  (s1 (hermes--push-pending state amsg))
-                  (s2 (hermes--push-pending s1 sysmsg)))
-             (hermes--with-copy s2 hermes-state-copy s
+                  (s1 (hermes--push-pending state amsg)))
+             (hermes--with-copy s1 hermes-state-copy s
                (setf (hermes-state-stream s) nil))))))
       ;; --- Gateway diagnostics -------------------------------------------
       ("gateway.stderr"
-       (let* ((line (hermes--get p "line"))
-              (text (format "[stderr] %s"
-                            (substring line 0 (min 120 (length line)))))
-              (msg (make-hermes-message
-                    :kind 'system
-                    :segments (vector (make-hermes-segment
-                                       :type 'text :content text
-                                       :id (hermes--next-segment-id)))
-                    :timestamp (current-time))))
-         (hermes--push-pending state msg)))
+       (let* ((line (or (hermes--get p "line") ""))
+              (clipped (substring line 0 (min 120 (length line)))))
+         (hermes--log-write "[stderr] %s" clipped)
+         state))
       ("gateway.protocol_error"
-       (let* ((preview (hermes--get p "preview"))
-              (text (format "[protocol noise] %s" preview))
-              (msg (make-hermes-message
-                    :kind 'system
-                    :segments (vector (make-hermes-segment
-                                       :type 'text :content text
-                                       :id (hermes--next-segment-id)))
-                    :timestamp (current-time))))
-         (hermes--push-pending state msg)))
+       (let ((preview (hermes--get p "preview")))
+         (hermes--log-write "[protocol noise] %s" (or preview ""))
+         state))
       ("gateway.start_timeout"
-       (let* ((lines (hermes--get p "lines"))
-              (text (concat "[gateway start timeout]\n"
-                            (mapconcat (lambda (l) (format "  %s" l))
-                                       lines "\n")))
-              (msg (make-hermes-message
-                    :kind 'system
-                    :segments (vector (make-hermes-segment
-                                       :type 'text :content text
-                                       :id (hermes--next-segment-id)))
-                    :timestamp (current-time))))
-         (hermes--push-pending state msg)))
+       (let ((lines (hermes--get p "lines")))
+         (hermes--log-write "[gateway start timeout]")
+         (dolist (l (append lines nil))
+           (hermes--log-write "  %s" l))
+         state))
       ;; --- Background / review -------------------------------------------
       ("background.complete"
-       (let* ((tid (hermes--get p "task_id"))
-              (txt (hermes--get p "text"))
-              (text (format "[bg %s] %s" (or tid "?") (or txt "")))
-              (msg (make-hermes-message
-                    :kind 'system
-                    :segments (vector (make-hermes-segment
-                                       :type 'text :content text
-                                       :id (hermes--next-segment-id)))
-                    :timestamp (current-time))))
-         (hermes--push-pending state msg)))
+       (let ((tid (hermes--get p "task_id"))
+             (txt (hermes--get p "text")))
+         (hermes--log-write "[bg %s] %s" (or tid "?") (or txt ""))
+         state))
       ("review.summary"
-       (let* ((txt (hermes--get p "text"))
-              (text (format "[review] %s" (or txt "")))
-              (msg (make-hermes-message
-                    :kind 'system
-                    :segments (vector (make-hermes-segment
-                                       :type 'text :content text
-                                       :id (hermes--next-segment-id)))
-                    :timestamp (current-time))))
-         (hermes--push-pending state msg)))
+       (let ((txt (hermes--get p "text")))
+         (hermes--log-write "[review] %s" (or txt ""))
+         state))
       ;; --- Pass-through --------------------------------------------------
       (_ state))))
 
@@ -1022,7 +1019,8 @@ which case dispatch routes to the correct typed reconstructor."
                  (hermes-ui-state-thinking-text s) nil)))
          ("error"
          (hermes--with-copy state hermes-ui-state-copy s
-           (setf (hermes-ui-state-status-text s) nil
+           (setf (hermes-ui-state-status-text s)
+                 (or (hermes--get p "message") "(error)")
                  (hermes-ui-state-tool-previews s) nil
                  (hermes-ui-state-thinking-text s) nil)))
         ("gateway.start_timeout"

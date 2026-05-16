@@ -233,13 +233,46 @@ Thinking deltas no longer touch the persistent stream — see UI reducer tests."
 
 ;;;; Errors
 
-(ert-deftest hermes-state-test/error-event-appends-system-message ()
-  (let* ((s (hermes--reduce nil
-                            (cons "error"
-                                  (hermes-test--ht "message" "boom"))))
-         (m (hermes-test--last-pending s)))
-    (should (eq 'system (hermes-message-kind m)))
-    (should (equal "boom" (hermes-test--seg-text m)))))
+(defun hermes-test--log-text ()
+  "Return the full text of the *hermes-log* buffer."
+  (with-current-buffer (hermes--log-buffer)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defun hermes-test--clear-log ()
+  "Reset *hermes-log* between tests."
+  (let ((b (get-buffer "*hermes-log*")))
+    (when b
+      (with-current-buffer b
+        (let ((inhibit-read-only t))
+          (erase-buffer))))))
+
+(ert-deftest hermes-state-test/error-event-logs-and-sets-status ()
+  "Without a stream, `error' produces no pending message; it logs and
+the UI reducer sets the header-line status."
+  (hermes-test--clear-log)
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons "error"
+                                      (hermes-test--ht "message" "boom"))))
+         (ui (hermes--ui-reduce nil (cons "error"
+                                          (hermes-test--ht "message" "boom")))))
+    (should (eq s0 s1))
+    (should (string-match-p "boom" (hermes-test--log-text)))
+    (should (string-match-p "boom" (hermes-ui-state-status-text ui)))))
+
+(ert-deftest hermes-state-test/error-with-stream-commits-assistant-only ()
+  "Mid-stream `error' commits the partial assistant turn (no system msg)
+and writes the error text to the log."
+  (hermes-test--clear-log)
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "partial"))
+             (cons "error" (hermes-test--ht "message" "kaboom"))))
+         (turns (hermes-state-pending-turns s)))
+    (should (= 1 (length turns)))
+    (should (eq 'assistant (hermes-message-kind (aref turns 0))))
+    (should (null (hermes-state-stream s)))
+    (should (string-match-p "kaboom" (hermes-test--log-text)))))
 
 ;;;; Purity — old state is never mutated
 
@@ -752,54 +785,65 @@ Thinking deltas no longer touch the persistent stream — see UI reducer tests."
 
 ;;;; Gateway diagnostics
 
-(ert-deftest hermes-state-test/gateway-stderr-appends-system-message ()
-  (let* ((s (hermes--reduce nil (cons "gateway.stderr"
-                                      (hermes-test--ht "line" "some warning"))))
-         (msg (hermes-test--last-pending s)))
-    (should (eq 'system (hermes-message-kind msg)))
-    (should (string-match-p "\\[stderr\\] some warning"
-                            (hermes-test--seg-text msg)))))
+(ert-deftest hermes-state-test/gateway-stderr-logs-to-buffer ()
+  (hermes-test--clear-log)
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons "gateway.stderr"
+                                      (hermes-test--ht "line" "some warning")))))
+    (should (eq s0 s1))
+    (should (string-match-p "\\[stderr\\] some warning" (hermes-test--log-text)))))
 
-(ert-deftest hermes-state-test/gateway-stderr-clips-long-line ()
-  (let* ((long-line (make-string 200 ?x))
-         (s (hermes--reduce nil (cons "gateway.stderr"
-                                      (hermes-test--ht "line" long-line))))
-         (msg (hermes-test--last-pending s)))
-    (should (= 129 (length (hermes-test--seg-text msg))))))
+(ert-deftest hermes-state-test/gateway-stderr-clips-in-log-buffer ()
+  "Long stderr lines are clipped to 120 chars in the log."
+  (hermes-test--clear-log)
+  (let ((long-line (make-string 200 ?x)))
+    (hermes--reduce nil (cons "gateway.stderr"
+                              (hermes-test--ht "line" long-line)))
+    ;; Log line is "[HH:MM:SS] [stderr] <clipped>"; ensure the clipped
+    ;; payload is exactly 120 x's, not 200.
+    (let ((log (hermes-test--log-text)))
+      (should (string-match-p (format "\\[stderr\\] x\\{120\\}\n" ) log))
+      (should-not (string-match-p "x\\{121\\}" log)))))
 
-(ert-deftest hermes-state-test/gateway-protocol-error-appends-system-message ()
-  (let* ((s (hermes--reduce nil (cons "gateway.protocol_error"
+(ert-deftest hermes-state-test/gateway-protocol-error-logs-and-sets-status ()
+  (hermes-test--clear-log)
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons "gateway.protocol_error"
                                       (hermes-test--ht "preview" "not json"))))
-         (msg (hermes-test--last-pending s)))
-    (should (eq 'system (hermes-message-kind msg)))
-    (should (string-match-p "\\[protocol noise\\] not json"
-                            (hermes-test--seg-text msg)))))
+         (ui (hermes--ui-reduce nil (cons "gateway.protocol_error" nil))))
+    (should (eq s0 s1))
+    (should (string-match-p "\\[protocol noise\\] not json" (hermes-test--log-text)))
+    (should (string-match-p "Protocol noise" (hermes-ui-state-status-text ui)))))
 
-(ert-deftest hermes-state-test/gateway-start-timeout-appends-system-message ()
-  (let* ((s (hermes--reduce nil (cons "gateway.start_timeout"
+(ert-deftest hermes-state-test/gateway-start-timeout-logs-and-sets-status ()
+  (hermes-test--clear-log)
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons "gateway.start_timeout"
                                       (hermes-test--ht "lines" '("err1" "err2")))))
-         (msg (hermes-test--last-pending s)))
-    (should (eq 'system (hermes-message-kind msg)))
-    (should (string-match-p "\\[gateway start timeout\\]"
-                            (hermes-test--seg-text msg)))
-    (should (string-match-p "err1" (hermes-test--seg-text msg)))
-    (should (string-match-p "err2" (hermes-test--seg-text msg)))))
+         (ui (hermes--ui-reduce nil (cons "gateway.start_timeout" nil)))
+         (log (hermes-test--log-text)))
+    (should (eq s0 s1))
+    (should (string-match-p "\\[gateway start timeout\\]" log))
+    (should (string-match-p "err1" log))
+    (should (string-match-p "err2" log))
+    (should (string-match-p "failed to start" (hermes-ui-state-status-text ui)))))
 
-(ert-deftest hermes-state-test/background-complete-appends-system-message ()
-  (let* ((s (hermes--reduce nil (cons "background.complete"
+(ert-deftest hermes-state-test/background-complete-logs-to-buffer ()
+  (hermes-test--clear-log)
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons "background.complete"
                                       (hermes-test--ht "task_id" "t1"
-                                                       "text" "done"))))
-         (msg (hermes-test--last-pending s)))
-    (should (eq 'system (hermes-message-kind msg)))
-    (should (string-match-p "\\[bg t1\\] done" (hermes-test--seg-text msg)))))
+                                                       "text" "done")))))
+    (should (eq s0 s1))
+    (should (string-match-p "\\[bg t1\\] done" (hermes-test--log-text)))))
 
-(ert-deftest hermes-state-test/review-summary-appends-system-message ()
-  (let* ((s (hermes--reduce nil (cons "review.summary"
-                                      (hermes-test--ht "text" "looks good"))))
-         (msg (hermes-test--last-pending s)))
-    (should (eq 'system (hermes-message-kind msg)))
-    (should (string-match-p "\\[review\\] looks good"
-                            (hermes-test--seg-text msg)))))
+(ert-deftest hermes-state-test/review-summary-logs-to-buffer ()
+  (hermes-test--clear-log)
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons "review.summary"
+                                      (hermes-test--ht "text" "looks good")))))
+    (should (eq s0 s1))
+    (should (string-match-p "\\[review\\] looks good" (hermes-test--log-text)))))
 
 (ert-deftest hermes-state-test/ui-gateway-start-timeout-sets-status ()
   (let ((s (hermes--ui-reduce nil (cons "gateway.start_timeout" nil))))

@@ -57,7 +57,7 @@
    - Initializes reasoning block when `reasoning.available` arrives before `reasoning.delta`
 
 3. **Fix `error` turn reset** ✅
-   - Persistent reducer: when `"error"` arrives, commits in-flight stream as partial assistant message, appends error system message, clears stream
+    - Persistent reducer: when `"error"` arrives, logs error to `*hermes-log*`. If stream in-flight, commits it as partial assistant message (no system msg). Clears stream.
    - UI reducer: clears `tool-previews`, resets `status-text`
 
 ### Phase 2 — Tool Rendering Polish ✅ Completed
@@ -105,25 +105,29 @@
 **Files:** `hermes-state.el`, `hermes-render.el`, `hermes-mode.el`, `hermes-rpc.el`
 
 1. **Handle `gateway.stderr`** ✅
-   - Reducer appends `[stderr] <line>` system message (clipped to 120 chars)
+   - Logs `[stderr] <line>` to `*hermes-log*` (clipped to 120 chars)
    - Routed from `hermes-rpc-stderr-functions` hook
+   - Never enters the Org buffer
 
 2. **Handle `gateway.start_timeout`** ✅
    - Sentinel detects gateway exit during `starting` state
    - Collects up to 8 stderr tail lines
-   - Reducer appends `[gateway start timeout]` system message
+   - Logs them to `*hermes-log*`
    - UI reducer sets error status text
 
 3. **Handle `gateway.protocol_error`** ✅
-   - Reducer appends `[protocol noise] <preview>` system message
+   - Logs `[protocol noise] <preview>` to `*hermes-log*`
    - UI reducer sets warning status text
    - Routed from `hermes-rpc-protocol-error-functions` hook
+   - Never enters the Org buffer
 
 4. **Handle `background.complete`** ✅
-   - Reducer appends `[bg <id>] <text>` system message
+   - Logs `[bg <id>] <text>` to `*hermes-log*`
+   - Never enters the Org buffer
 
 5. **Handle `review.summary`** ✅
-   - Reducer appends `[review] <text>` system message
+   - Logs `[review] <text>` to `*hermes-log*`
+   - Never enters the Org buffer
 
 ### Phase 4.5 — Session Info & Usage ✅ Completed
 

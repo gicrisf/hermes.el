@@ -30,11 +30,11 @@
 - `error` → resets turn state, pushes activity, handles "No provider" setup overlay
 
 **Emacs:**
-- `gateway.start_timeout` → no handler
-- `gateway.protocol_error` → `message` call only
-- `gateway.stderr` → separate hook, never in chat buffer
-- `error` → appends system message, does not reset turn state
+- `gateway.start_timeout` → logs stderr tail + timeout message to `*hermes-log*`
+- `gateway.protocol_error` → logs protocol preview to `*hermes-log*`
+- `gateway.stderr` → logs clipped line to `*hermes-log*`. Routed via `hermes-rpc-stderr-functions` hook
+- `error` → logs error text to `*hermes-log*`. Commits in-flight stream (no system msg). Sets header-line status
 
-**Gap:** Critical debug info is invisible or insufficient.
+**Gap:** None — all diagnostics are inspectable in `*hermes-log*` and surfaced transiently via header-line status.
 
 ---

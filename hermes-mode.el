@@ -136,6 +136,7 @@ without this cache, the very first buffer would never see the skin.")
     (define-key m (kbd "C-c C-i") #'hermes-send)
     (define-key m (kbd "C-c C-l") #'hermes-compose)
     (define-key m (kbd "C-c C-k") #'hermes-interrupt)
+    (define-key m (kbd "C-c C-v") #'hermes-view-log)
     m)
   "Keymap for `hermes-mode'.")
 
@@ -267,6 +268,11 @@ queued input is drained."
                         (list :session_id sid)
                         (lambda (_r e)
                           (when e (message "hermes: interrupt error: %S" e))))))
+
+(defun hermes-view-log ()
+  "Pop to the *hermes-log* diagnostic buffer."
+  (interactive)
+  (pop-to-buffer (hermes--log-buffer)))
 
 ;;;; Buffer parsing — read canonical history back from the Org buffer
 

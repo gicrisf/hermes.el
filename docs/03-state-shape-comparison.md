@@ -76,14 +76,16 @@ The TUI splits state across **three nanostore atoms** plus local React state.
   session-id
   session-info        ; hash-table or nil
   usage               ; hash-table or nil — accumulated tokens/cost
-  (messages [])       ; vector of hermes-message
-  stream              ; hermes-stream or nil
+  stream              ; hermes-stream or nil (in-flight only)
   pending             ; hermes-pending or nil
+  (pending-turns [])  ; vector of hermes-message — drained into buffer by renderer
   slash-catalog
   (queue nil)
-  (history nil)
+  (history nil)       ; minibuffer recall ring (kept in state for speed)
   skin)
 ```
+
+**Note:** `messages` was removed. Committed history lives in the Org buffer; `pending-turns` is a transient staging vector drained by the renderer on every tick.
 
 #### Ephemeral UI State (`hermes-ui-state`)
 ```elisp
@@ -98,14 +100,12 @@ The TUI splits state across **three nanostore atoms** plus local React state.
 ```elisp
 (cl-defstruct (hermes-message (:copier hermes-message-copy))
   kind        ; 'user | 'assistant | 'system
-  text        ; DEPRECATED — derive from segments
-  thinking    ; DEPRECATED — derive from segments
-  reasoning   ; DEPRECATED — derive from segments
-  tools       ; DEPRECATED — derive from segments
   segments    ; vector of hermes-segment — committed turn narrative
   usage timestamp
   subagents)  ; vector of hermes-subagent — delegation tree
 ```
+
+The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. The full struct is serialized to a `:HERMES_RAW:` Elisp plist drawer at the end of each turn's Org subtree.
 
 #### Stream State (`hermes-stream`)
 ```elisp
@@ -147,6 +147,7 @@ The TUI splits state across **three nanostore atoms** plus local React state.
 
 | Aspect | TUI | Emacs |
 |--------|-----|-------|
+| **Canonical history** | `messages` array in TUI state | **Org buffer** — each turn stores a `:HERMES_RAW:` drawer with full Elisp plist |
 | **Busy flag** | `uiState.busy` — explicit boolean | Implicit: `(hermes-state-stream state)` |
 | **Activity feed** | `turnState.activity` — array of items, capped at 8 | Not present |
 | **Tool active list** | `turnState.tools` — active tools with context, tokens | `segments` — all tools in stream as typed tool segments |

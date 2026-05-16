@@ -6,6 +6,8 @@
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).
 >
 > **Recent changes reflected in this version:**
+> - **Org buffer is now the canonical source of truth** — committed history lives in the buffer, not in `hermes-state-messages`. Each turn stores a `:HERMES_RAW:` drawer containing a serialized Elisp plist for round-trip save/load.
+> - State atom is ephemeral only: connection, in-flight stream, queue, pending prompts, history. No committed message duplication.
 > - Segmented stream rendering: stream state uses typed `segments` vector; renderer does full rewrite
 > - Tool rendering moved into segments (tool blocks are interleaved in arrival order, not appended after text)
 > - Thinking/reasoning rendered as typed segments (not separate marker-managed blocks)

@@ -6,11 +6,11 @@
 
 ;;; Commentary:
 
-;; Two buffer-local atoms per session: `hermes--state' (persistent, mirrored
-;; in the Org buffer) and `hermes--ui-state' (ephemeral).  Mutations go
-;; through `hermes-dispatch' / `hermes-ui-dispatch', which call a pure
-;; reducer and swap the var atomically, then run a change hook for the
-;; renderer to subscribe to.
+;; Two buffer-local atoms per session: `hermes--state' (ephemeral; the
+;; canonical history lives in the Org buffer) and `hermes--ui-state'
+;; (ephemeral).  Mutations go through `hermes-dispatch' /
+;; `hermes-ui-dispatch', which call a pure reducer and swap the var
+;; atomically, then run a change hook for the renderer to subscribe to.
 
 ;;; Code:
 
@@ -21,7 +21,7 @@
   "Maximum number of past inputs retained in `hermes-state-history'."
   :type 'integer :group 'hermes)
 
-;;;; Persistent state — mirrored in the Org buffer
+;;;; Structs
 
 (cl-defstruct (hermes-segment (:copier hermes-segment-copy))
   type        ; 'text | 'thinking | 'reasoning | 'tool | 'system
@@ -49,10 +49,6 @@
 
 (cl-defstruct (hermes-message (:copier hermes-message-copy))
   kind        ; 'user | 'assistant | 'system
-  text        ; DEPRECATED: derive from segments
-  thinking    ; DEPRECATED: derive from segments
-  reasoning   ; DEPRECATED: derive from segments
-  tools       ; DEPRECATED: derive from segments
   segments    ; vector of hermes-segment
   usage timestamp
   subagents)  ; vector of hermes-subagent
@@ -71,9 +67,9 @@
   session-id
   session-info       ; hash-table or nil
   usage              ; hash-table or nil — accumulated tokens/cost
-  (messages [])      ; vector — COMMITTED only
-  stream             ; hermes-stream or nil
+  stream             ; hermes-stream or nil (in-flight only)
   pending            ; hermes-pending or nil
+  (pending-turns []) ; vector of hermes-message structs awaiting buffer insert
   slash-catalog
   (queue nil)
   (history nil)
@@ -198,21 +194,213 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
           (equal id (hermes-subagent-id sa))))
    subagents))
 
-(defun hermes--segments-derive-deprecated (segments)
-  "Derive deprecated slots from SEGMENTS.
-Returns a plist with :text :thinking :reasoning :tools."
-  (let (text-parts thinking-parts reasoning-parts tools-vec)
-    (dotimes (i (length segments))
-      (let ((seg (aref segments i)))
-        (pcase (hermes-segment-type seg)
-          ('text (push (hermes-segment-content seg) text-parts))
-          ('thinking (push (hermes-segment-content seg) thinking-parts))
-          ('reasoning (push (hermes-segment-content seg) reasoning-parts))
-          ('tool (push (hermes-segment-content seg) tools-vec)))))
-    (list :text (apply #'concat (nreverse text-parts))
-          :thinking (apply #'concat (nreverse thinking-parts))
-          :reasoning (apply #'concat (nreverse reasoning-parts))
-          :tools (vconcat (nreverse tools-vec)))))
+;;;; Pending-turns helper
+
+(defun hermes--push-pending (state msg)
+  "Return a new STATE with MSG pushed onto `pending-turns'."
+  (hermes--with-copy state hermes-state-copy s
+    (setf (hermes-state-pending-turns s)
+          (hermes--vector-append (hermes-state-pending-turns state) msg))))
+
+;;;; Serialization — struct ↔ plist
+
+(defun hermes--hash-to-plist (h)
+  "Convert hash-table H to a flat plist with keyword keys."
+  (let (acc)
+    (maphash
+     (lambda (k v)
+       (let ((kw (cond ((keywordp k) k)
+                       ((symbolp k) (intern (concat ":" (symbol-name k))))
+                       ((stringp k) (intern (concat ":" k)))
+                       (t (intern (format ":%s" k))))))
+         (push (hermes--to-plist v) acc)
+         (push kw acc)))
+     h)
+    acc))
+
+(defun hermes--to-plist (val)
+  "Walk VAL: structs → plists, hash-tables → plists, vectors/lists element-wise."
+  (cond
+   ((null val) nil)
+   ((hermes-segment-p val) (hermes--segment-to-plist val))
+   ((hermes-tool-p val) (hermes--tool-to-plist val))
+   ((hermes-subagent-p val) (hermes--subagent-to-plist val))
+   ((hermes-message-p val) (hermes--message-to-plist val))
+   ((hash-table-p val) (hermes--hash-to-plist val))
+   ((vectorp val) (apply #'vector (mapcar #'hermes--to-plist (append val nil))))
+   ((and (consp val) (not (consp (cdr val))))
+    ;; cons cell
+    (cons (hermes--to-plist (car val)) (hermes--to-plist (cdr val))))
+   ((listp val) (mapcar #'hermes--to-plist val))
+   (t val)))
+
+(defun hermes--tool-to-plist (tool)
+  "Serialize a `hermes-tool' TOOL to a plist."
+  (list :id (hermes-tool-id tool)
+        :name (hermes-tool-name tool)
+        :status (hermes-tool-status tool)
+        :context (hermes-tool-context tool)
+        :preview (hermes-tool-preview tool)
+        :inline-diff (hermes-tool-inline-diff tool)
+        :todos (hermes--to-plist (hermes-tool-todos tool))
+        :output (hermes-tool-output tool)
+        :error (hermes-tool-error tool)
+        :duration (hermes-tool-duration tool)))
+
+(defun hermes--plist-to-tool (p)
+  "Reconstruct a `hermes-tool' from plist P."
+  (make-hermes-tool
+   :id (plist-get p :id)
+   :name (plist-get p :name)
+   :status (plist-get p :status)
+   :context (plist-get p :context)
+   :preview (plist-get p :preview)
+   :inline-diff (plist-get p :inline-diff)
+   :todos (plist-get p :todos)
+   :output (plist-get p :output)
+   :error (plist-get p :error)
+   :duration (plist-get p :duration)))
+
+(defun hermes--segment-to-plist (seg)
+  "Serialize a `hermes-segment' SEG to a plist."
+  (let ((type (hermes-segment-type seg))
+        (content (hermes-segment-content seg)))
+    (list :type type
+          :content (if (eq type 'tool)
+                       (and (hermes-tool-p content)
+                            (hermes--tool-to-plist content))
+                     content)
+          :id (hermes-segment-id seg))))
+
+(defun hermes--plist-to-segment (p)
+  "Reconstruct a `hermes-segment' from plist P."
+  (let* ((type (plist-get p :type))
+         (raw (plist-get p :content))
+         (content (if (and (eq type 'tool) (listp raw) raw)
+                      (hermes--plist-to-tool raw)
+                    raw)))
+    (make-hermes-segment :type type :content content :id (plist-get p :id))))
+
+(defun hermes--subagent-to-plist (sa)
+  "Serialize a `hermes-subagent' SA to a plist."
+  (list :id (hermes-subagent-id sa)
+        :goal (hermes-subagent-goal sa)
+        :status (hermes-subagent-status sa)
+        :thinking (hermes-subagent-thinking sa)
+        :tools (hermes--to-plist (hermes-subagent-tools sa))
+        :notes (hermes-subagent-notes sa)
+        :summary (hermes-subagent-summary sa)
+        :duration (hermes-subagent-duration sa)))
+
+(defun hermes--plist-to-subagent (p)
+  "Reconstruct a `hermes-subagent' from plist P."
+  (make-hermes-subagent
+   :id (plist-get p :id)
+   :goal (plist-get p :goal)
+   :status (plist-get p :status)
+   :thinking (plist-get p :thinking)
+   :tools (or (plist-get p :tools) [])
+   :notes (or (plist-get p :notes) [])
+   :summary (plist-get p :summary)
+   :duration (plist-get p :duration)))
+
+(defun hermes--message-text (msg)
+  "Concatenate the text-segment content of MSG into a single string."
+  (let ((segs (hermes-message-segments msg))
+        parts)
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (let ((s (aref segs i)))
+          (when (eq 'text (hermes-segment-type s))
+            (push (or (hermes-segment-content s) "") parts)))))
+    (apply #'concat (nreverse parts))))
+
+(defun hermes--message-to-plist (msg)
+  "Serialize a `hermes-message' MSG to a printable plist.
+Handles nested `hermes-segment', `hermes-tool', `hermes-subagent', and
+hash-tables (usage)."
+  (let* ((segs (or (hermes-message-segments msg) []))
+         (seg-plists (apply #'vector
+                            (mapcar #'hermes--segment-to-plist
+                                    (append segs nil))))
+         (sas (or (hermes-message-subagents msg) []))
+         (sa-plists (apply #'vector
+                           (mapcar #'hermes--subagent-to-plist
+                                   (append sas nil))))
+         (usage (hermes-message-usage msg))
+         (usage-plist (cond ((null usage) nil)
+                            ((hash-table-p usage) (hermes--hash-to-plist usage))
+                            (t usage)))
+         (ts (hermes-message-timestamp msg))
+         (ts-str (cond ((stringp ts) ts)
+                       ((null ts) nil)
+                       (t (format-time-string "%Y-%m-%dT%H:%M:%S%z" ts)))))
+    (list :kind (hermes-message-kind msg)
+          :text (hermes--message-text msg)
+          :segments seg-plists
+          :subagents sa-plists
+          :usage usage-plist
+          :timestamp ts-str)))
+
+(defun hermes--plist-to-message (plist)
+  "Reconstruct a `hermes-message' from PLIST.
+Inverse of `hermes--message-to-plist'."
+  (let* ((segs-raw (plist-get plist :segments))
+         (segs (cond ((vectorp segs-raw)
+                      (apply #'vector
+                             (mapcar #'hermes--plist-to-segment
+                                     (append segs-raw nil))))
+                     ((listp segs-raw)
+                      (apply #'vector
+                             (mapcar #'hermes--plist-to-segment segs-raw)))
+                     (t [])))
+         (sas-raw (plist-get plist :subagents))
+         (sas (cond ((vectorp sas-raw)
+                     (apply #'vector
+                            (mapcar #'hermes--plist-to-subagent
+                                    (append sas-raw nil))))
+                    ((listp sas-raw)
+                     (apply #'vector
+                            (mapcar #'hermes--plist-to-subagent sas-raw)))
+                    (t []))))
+    (make-hermes-message
+     :kind (plist-get plist :kind)
+     :segments segs
+     :subagents sas
+     :usage (plist-get plist :usage)
+     :timestamp (plist-get plist :timestamp))))
+
+(defun hermes--struct-to-plist (struct)
+  "Convert STRUCT (a cl-defstruct instance) to a plist.
+Dispatches by struct type for the known hermes-* structs."
+  (cond
+   ((hermes-message-p struct) (hermes--message-to-plist struct))
+   ((hermes-segment-p struct) (hermes--segment-to-plist struct))
+   ((hermes-tool-p struct) (hermes--tool-to-plist struct))
+   ((hermes-subagent-p struct) (hermes--subagent-to-plist struct))
+   (t (error "hermes--struct-to-plist: unsupported %S" struct))))
+
+(defun hermes--plist-to-struct (plist constructor &optional _slot-specs)
+  "Reconstruct a struct from PLIST using CONSTRUCTOR.
+CONSTRUCTOR may be a symbol naming one of the known hermes-* makers, in
+which case dispatch routes to the correct typed reconstructor."
+  (pcase constructor
+    ('make-hermes-message  (hermes--plist-to-message plist))
+    ('make-hermes-segment  (hermes--plist-to-segment plist))
+    ('make-hermes-tool     (hermes--plist-to-tool plist))
+    ('make-hermes-subagent (hermes--plist-to-subagent plist))
+    (_ (apply constructor plist))))
+
+;;;; Build a hermes-message from an in-flight stream
+
+(defun hermes--message-from-stream (stream usage)
+  "Build an assistant `hermes-message' from STREAM and USAGE."
+  (make-hermes-message
+   :kind 'assistant
+   :segments (or (hermes-stream-segments stream) [])
+   :subagents (or (hermes-stream-subagents stream) [])
+   :usage usage
+   :timestamp (current-time)))
 
 ;;;; Persistent reducer
 ;;
@@ -237,15 +425,17 @@ Returns a plist with :text :thinking :reasoning :tools."
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-connection s) 'disconnected)))
       (:user-submit
-       (let ((text (plist-get p :text)))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message :kind 'user
-                                       :text text
-                                       :timestamp (current-time)))
-                 (hermes-state-history s)
+       (let* ((text (plist-get p :text))
+              (msg (make-hermes-message
+                    :kind 'user
+                    :segments (vector
+                               (make-hermes-segment
+                                :type 'text :content text
+                                :id (hermes--next-segment-id)))
+                    :timestamp (current-time)))
+              (s1 (hermes--push-pending state msg)))
+         (hermes--with-copy s1 hermes-state-copy s
+           (setf (hermes-state-history s)
                  (let ((h (cons text (hermes-state-history state))))
                    (if (> (length h) hermes-history-max)
                        (cl-subseq h 0 hermes-history-max)
@@ -264,6 +454,9 @@ Returns a plist with :text :thinking :reasoning :tools."
       (:slash-catalog
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-slash-catalog s) (plist-get p :catalog))))
+      (:pending-turns-clear
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-pending-turns s) [])))
       ;; --- Gateway lifecycle ---------------------------------------------
       ("gateway.ready"
        (hermes--with-copy state hermes-state-copy s
@@ -368,18 +561,7 @@ Returns a plist with :text :thinking :reasoning :tools."
            (let* ((sent (hermes--get p "tokens_sent"))
                   (received (hermes--get p "tokens_received"))
                   (msg-usage (make-hash-table :test 'equal))
-                  (segs (hermes-stream-segments str))
-                  (deprecated (hermes--segments-derive-deprecated segs))
-                   (msg (make-hermes-message
-                         :kind 'assistant
-                         :segments segs
-                         :text (plist-get deprecated :text)
-                         :thinking (plist-get deprecated :thinking)
-                         :reasoning (plist-get deprecated :reasoning)
-                         :tools (plist-get deprecated :tools)
-                         :subagents (or (hermes-stream-subagents str) [])
-                         :usage msg-usage
-                         :timestamp (current-time)))
+                  (msg (hermes--message-from-stream str msg-usage))
                   (acc-usage (or (hermes-state-usage state)
                                  (make-hash-table :test 'equal))))
              (when sent
@@ -389,149 +571,148 @@ Returns a plist with :text :thinking :reasoning :tools."
                (puthash "tokens_received" (+ (or (gethash "tokens_received" acc-usage) 0)
                                              received)
                         acc-usage))
-              (hermes--with-copy state hermes-state-copy s
-                (setf (hermes-state-messages s)
-                      (hermes--vector-append (hermes-state-messages state) msg)
-                      (hermes-state-usage s) acc-usage
-                      (hermes-state-stream s) nil))))))
-       ;; --- Subagents -----------------------------------------------------
-       ("subagent.spawn_requested"
-        (let ((str (hermes-state-stream state))
-              (sid (hermes--get p "subagent_id"))
-              (goal (hermes--get p "goal")))
-          (if (or (null str) (null sid))
-              state
-            (let* ((subagents (or (hermes-stream-subagents str) []))
-                   (idx (hermes--find-subagent subagents sid)))
-              (if idx
-                  state
-                (let ((sa (make-hermes-subagent :id sid :goal goal
-                                                :status 'queued
-                                                :tools [] :notes [])))
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-subagents ns)
-                                  (hermes--vector-append subagents sa)))))))))))
-       ("subagent.start"
-        (let ((str (hermes-state-stream state))
-              (sid (hermes--get p "subagent_id"))
-              (goal (hermes--get p "goal")))
-          (if (or (null str) (null sid))
-              state
-            (let* ((subagents (or (hermes-stream-subagents str) []))
-                   (idx (hermes--find-subagent subagents sid)))
-              (if idx
-                  (let* ((old-sa (aref subagents idx))
-                         (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
-                                   (setf (hermes-subagent-status sa) 'running
-                                         (hermes-subagent-goal sa) (or goal ""))))
-                         (new-sas (copy-sequence subagents)))
-                    (aset new-sas idx new-sa)
-                    (hermes--with-copy state hermes-state-copy s
-                      (setf (hermes-state-stream s)
-                            (hermes--with-copy str hermes-stream-copy ns
-                              (setf (hermes-stream-subagents ns) new-sas)))))
-                (let ((sa (make-hermes-subagent :id sid :goal (or goal "")
-                                                :status 'running
-                                                :tools [] :notes [])))
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-subagents ns)
-                                  (hermes--vector-append subagents sa)))))))))))
-       ("subagent.thinking"
-        (let ((str (hermes-state-stream state))
-              (sid (hermes--get p "subagent_id"))
-              (text (or (hermes--get p "text") "")))
-          (if (or (null str) (null sid))
-              state
-            (let* ((subagents (or (hermes-stream-subagents str) []))
-                   (idx (hermes--find-subagent subagents sid)))
-              (if (null idx)
-                  state
-                (let* ((old-sa (aref subagents idx))
-                       (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
-                                 (setf (hermes-subagent-thinking sa)
-                                       (concat (hermes-subagent-thinking old-sa) text))))
-                       (new-sas (copy-sequence subagents)))
-                  (aset new-sas idx new-sa)
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-subagents ns) new-sas))))))))))
-       ("subagent.tool"
-        (let ((str (hermes-state-stream state))
-              (sid (hermes--get p "subagent_id"))
-              (tname (hermes--get p "tool_name"))
-              (args (hermes--get p "args")))
-          (if (or (null str) (null sid))
-              state
-            (let* ((subagents (or (hermes-stream-subagents str) []))
-                   (idx (hermes--find-subagent subagents sid)))
-              (if (null idx)
-                  state
-                (let* ((old-sa (aref subagents idx))
-                       (new-tool (list :name tname :args args
+             (let ((s1 (hermes--push-pending state msg)))
+               (hermes--with-copy s1 hermes-state-copy s
+                 (setf (hermes-state-usage s) acc-usage
+                       (hermes-state-stream s) nil)))))))
+      ;; --- Subagents -----------------------------------------------------
+      ("subagent.spawn_requested"
+       (let ((str (hermes-state-stream state))
+             (sid (hermes--get p "subagent_id"))
+             (goal (hermes--get p "goal")))
+         (if (or (null str) (null sid))
+             state
+           (let* ((subagents (or (hermes-stream-subagents str) []))
+                  (idx (hermes--find-subagent subagents sid)))
+             (if idx
+                 state
+               (let ((sa (make-hermes-subagent :id sid :goal goal
+                                               :status 'queued
+                                               :tools [] :notes [])))
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-subagents ns)
+                                 (hermes--vector-append subagents sa)))))))))))
+      ("subagent.start"
+       (let ((str (hermes-state-stream state))
+             (sid (hermes--get p "subagent_id"))
+             (goal (hermes--get p "goal")))
+         (if (or (null str) (null sid))
+             state
+           (let* ((subagents (or (hermes-stream-subagents str) []))
+                  (idx (hermes--find-subagent subagents sid)))
+             (if idx
+                 (let* ((old-sa (aref subagents idx))
+                        (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
+                                  (setf (hermes-subagent-status sa) 'running
+                                        (hermes-subagent-goal sa) (or goal ""))))
+                        (new-sas (copy-sequence subagents)))
+                   (aset new-sas idx new-sa)
+                   (hermes--with-copy state hermes-state-copy s
+                     (setf (hermes-state-stream s)
+                           (hermes--with-copy str hermes-stream-copy ns
+                             (setf (hermes-stream-subagents ns) new-sas)))))
+               (let ((sa (make-hermes-subagent :id sid :goal (or goal "")
+                                               :status 'running
+                                               :tools [] :notes [])))
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-subagents ns)
+                                 (hermes--vector-append subagents sa)))))))))))
+      ("subagent.thinking"
+       (let ((str (hermes-state-stream state))
+             (sid (hermes--get p "subagent_id"))
+             (text (or (hermes--get p "text") "")))
+         (if (or (null str) (null sid))
+             state
+           (let* ((subagents (or (hermes-stream-subagents str) []))
+                  (idx (hermes--find-subagent subagents sid)))
+             (if (null idx)
+                 state
+               (let* ((old-sa (aref subagents idx))
+                      (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
+                                (setf (hermes-subagent-thinking sa)
+                                      (concat (hermes-subagent-thinking old-sa) text))))
+                      (new-sas (copy-sequence subagents)))
+                 (aset new-sas idx new-sa)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-subagents ns) new-sas))))))))))
+      ("subagent.tool"
+       (let ((str (hermes-state-stream state))
+             (sid (hermes--get p "subagent_id"))
+             (tname (hermes--get p "tool_name"))
+             (args (hermes--get p "args")))
+         (if (or (null str) (null sid))
+             state
+           (let* ((subagents (or (hermes-stream-subagents str) []))
+                  (idx (hermes--find-subagent subagents sid)))
+             (if (null idx)
+                 state
+               (let* ((old-sa (aref subagents idx))
+                      (new-tool (list :name tname :args args
                                       :timestamp (current-time)))
-                       (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
-                                 (setf (hermes-subagent-tools sa)
-                                       (hermes--vector-append
-                                        (hermes-subagent-tools old-sa) new-tool))))
-                       (new-sas (copy-sequence subagents)))
-                  (aset new-sas idx new-sa)
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-subagents ns) new-sas))))))))))
-       ("subagent.progress"
-        (let ((str (hermes-state-stream state))
-              (sid (hermes--get p "subagent_id"))
-              (note (hermes--get p "note")))
-          (if (or (null str) (null sid))
-              state
-            (let* ((subagents (or (hermes-stream-subagents str) []))
-                   (idx (hermes--find-subagent subagents sid)))
-              (if (null idx)
-                  state
-                (let* ((old-sa (aref subagents idx))
-                       (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
-                                 (setf (hermes-subagent-notes sa)
-                                       (hermes--vector-append
-                                        (hermes-subagent-notes old-sa) note))))
-                       (new-sas (copy-sequence subagents)))
-                  (aset new-sas idx new-sa)
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-subagents ns) new-sas))))))))))
-       ("subagent.complete"
-        (let ((str (hermes-state-stream state))
-              (sid (hermes--get p "subagent_id"))
-              (status (hermes--get p "status"))
-              (summary (hermes--get p "summary"))
-              (dur (hermes--get p "duration_s")))
-          (if (or (null str) (null sid))
-              state
-            (let* ((subagents (or (hermes-stream-subagents str) []))
-                   (idx (hermes--find-subagent subagents sid)))
-              (if (null idx)
-                  state
-                (let* ((old-sa (aref subagents idx))
-                       (status-kw (cond ((equal status "error") 'error)
-                                        ((equal status "complete") 'complete)
-                                        (t (or status 'complete))))
-                       (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
-                                 (setf (hermes-subagent-status sa) status-kw
-                                       (hermes-subagent-summary sa) summary
-                                       (hermes-subagent-duration sa) dur)))
-                       (new-sas (copy-sequence subagents)))
-                  (aset new-sas idx new-sa)
-                  (hermes--with-copy state hermes-state-copy s
-                    (setf (hermes-state-stream s)
-                          (hermes--with-copy str hermes-stream-copy ns
-                            (setf (hermes-stream-subagents ns) new-sas))))))))))
-       ;; --- Tools ---------------------------------------------------------
+                      (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
+                                (setf (hermes-subagent-tools sa)
+                                      (hermes--vector-append
+                                       (hermes-subagent-tools old-sa) new-tool))))
+                      (new-sas (copy-sequence subagents)))
+                 (aset new-sas idx new-sa)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-subagents ns) new-sas))))))))))
+      ("subagent.progress"
+       (let ((str (hermes-state-stream state))
+             (sid (hermes--get p "subagent_id"))
+             (note (hermes--get p "note")))
+         (if (or (null str) (null sid))
+             state
+           (let* ((subagents (or (hermes-stream-subagents str) []))
+                  (idx (hermes--find-subagent subagents sid)))
+             (if (null idx)
+                 state
+               (let* ((old-sa (aref subagents idx))
+                      (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
+                                (setf (hermes-subagent-notes sa)
+                                      (hermes--vector-append
+                                       (hermes-subagent-notes old-sa) note))))
+                      (new-sas (copy-sequence subagents)))
+                 (aset new-sas idx new-sa)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-subagents ns) new-sas))))))))))
+      ("subagent.complete"
+       (let ((str (hermes-state-stream state))
+             (sid (hermes--get p "subagent_id"))
+             (status (hermes--get p "status"))
+             (summary (hermes--get p "summary"))
+             (dur (hermes--get p "duration_s")))
+         (if (or (null str) (null sid))
+             state
+           (let* ((subagents (or (hermes-stream-subagents str) []))
+                  (idx (hermes--find-subagent subagents sid)))
+             (if (null idx)
+                 state
+               (let* ((old-sa (aref subagents idx))
+                      (status-kw (cond ((equal status "error") 'error)
+                                       ((equal status "complete") 'complete)
+                                       (t (or status 'complete))))
+                      (new-sa (hermes--with-copy old-sa hermes-subagent-copy sa
+                                (setf (hermes-subagent-status sa) status-kw
+                                      (hermes-subagent-summary sa) summary
+                                      (hermes-subagent-duration sa) dur)))
+                      (new-sas (copy-sequence subagents)))
+                 (aset new-sas idx new-sa)
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-stream s)
+                         (hermes--with-copy str hermes-stream-copy ns
+                           (setf (hermes-stream-subagents ns) new-sas))))))))))
+      ;; --- Tools ---------------------------------------------------------
       ("tool.generating"
        (let ((str (hermes-state-stream state))
              (tid (or (hermes--get p "tool_id")
@@ -564,10 +745,10 @@ Returns a plist with :text :thinking :reasoning :tools."
                (let* ((old-seg (aref segs idx))
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                 (setf (hermes-tool-status nt) 'running
-                                       (hermes-tool-context nt) ctx)))
+                                  (setf (hermes-tool-status nt) 'running
+                                        (hermes-tool-context nt) ctx)))
                       (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
-                                (setf (hermes-segment-content ns) new-tool)))
+                                 (setf (hermes-segment-content ns) new-tool)))
                       (new-segs (copy-sequence segs)))
                  (aset new-segs idx new-seg)
                  (hermes--with-copy state hermes-state-copy s
@@ -628,15 +809,15 @@ Returns a plist with :text :thinking :reasoning :tools."
                (let* ((old-seg (aref segs idx))
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                 (setf (hermes-tool-status nt)
-                                       (if err 'error 'complete)
-                                       (hermes-tool-output nt) output
-                                       (hermes-tool-error nt) err
-                                       (hermes-tool-duration nt) dur
-                                       (hermes-tool-inline-diff nt) inline-diff
-                                       (hermes-tool-todos nt) todos-raw)))
+                                  (setf (hermes-tool-status nt)
+                                        (if err 'error 'complete)
+                                        (hermes-tool-output nt) output
+                                        (hermes-tool-error nt) err
+                                        (hermes-tool-duration nt) dur
+                                        (hermes-tool-inline-diff nt) inline-diff
+                                        (hermes-tool-todos nt) todos-raw)))
                       (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
-                                (setf (hermes-segment-content ns) new-tool)))
+                                 (setf (hermes-segment-content ns) new-tool)))
                       (new-segs (copy-sequence segs)))
                  (aset new-segs idx new-seg)
                  (hermes--with-copy state hermes-state-copy s
@@ -669,13 +850,15 @@ Returns a plist with :text :thinking :reasoning :tools."
                                     :request-id (hermes--get p "request_id")
                                     :payload p))))
       (:system-message
-       (let ((text (plist-get p :text)))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message :kind 'system :text text
-                                       :timestamp (current-time)))))))
+       (let* ((text (plist-get p :text))
+              (msg (make-hermes-message
+                    :kind 'system
+                    :segments (vector
+                               (make-hermes-segment
+                                :type 'text :content text
+                                :id (hermes--next-segment-id)))
+                    :timestamp (current-time))))
+         (hermes--push-pending state msg)))
       (:pending-clear
        (if (hermes-state-pending state)
            (hermes--with-copy state hermes-state-copy s
@@ -687,87 +870,82 @@ Returns a plist with :text :thinking :reasoning :tools."
                     (or (hermes--get p "message") "(unknown error)")))
              (str (hermes-state-stream state)))
          (if (null str)
-             (hermes--with-copy state hermes-state-copy s
-               (setf (hermes-state-messages s)
-                     (hermes--vector-append
-                      (hermes-state-messages state)
-                      (make-hermes-message :kind 'system :text text
-                                           :timestamp (current-time)))))
-           (let* ((segs (hermes-stream-segments str))
-                  (deprecated (hermes--segments-derive-deprecated segs))
-                   (msg (make-hermes-message
-                         :kind 'assistant
-                         :segments segs
-                         :text (plist-get deprecated :text)
-                         :thinking (plist-get deprecated :thinking)
-                         :reasoning (plist-get deprecated :reasoning)
-                         :tools (plist-get deprecated :tools)
-                         :subagents (or (hermes-stream-subagents str) [])
-                         :usage nil
-                         :timestamp (current-time))))
-             (hermes--with-copy state hermes-state-copy s
-               (setf (hermes-state-messages s)
-                     (hermes--vector-append
-                      (hermes--vector-append (hermes-state-messages state) msg)
-                      (make-hermes-message :kind 'system :text text
-                                           :timestamp (current-time)))
-                     (hermes-state-stream s) nil))))))
+             (let ((sysmsg (make-hermes-message
+                            :kind 'system
+                            :segments (vector
+                                       (make-hermes-segment
+                                        :type 'text :content text
+                                        :id (hermes--next-segment-id)))
+                            :timestamp (current-time))))
+               (hermes--push-pending state sysmsg))
+           (let* ((amsg (hermes--message-from-stream str nil))
+                  (sysmsg (make-hermes-message
+                           :kind 'system
+                           :segments (vector
+                                      (make-hermes-segment
+                                       :type 'text :content text
+                                       :id (hermes--next-segment-id)))
+                           :timestamp (current-time)))
+                  (s1 (hermes--push-pending state amsg))
+                  (s2 (hermes--push-pending s1 sysmsg)))
+             (hermes--with-copy s2 hermes-state-copy s
+               (setf (hermes-state-stream s) nil))))))
       ;; --- Gateway diagnostics -------------------------------------------
       ("gateway.stderr"
-       (let ((line (hermes--get p "line")))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message
-                   :kind 'system
-                   :text (format "[stderr] %s"
-                                 (substring line 0 (min 120 (length line))))
-                   :timestamp (current-time)))))))
+       (let* ((line (hermes--get p "line"))
+              (text (format "[stderr] %s"
+                            (substring line 0 (min 120 (length line)))))
+              (msg (make-hermes-message
+                    :kind 'system
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content text
+                                       :id (hermes--next-segment-id)))
+                    :timestamp (current-time))))
+         (hermes--push-pending state msg)))
       ("gateway.protocol_error"
-       (let ((preview (hermes--get p "preview")))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message
-                   :kind 'system
-                   :text (format "[protocol noise] %s" preview)
-                   :timestamp (current-time)))))))
+       (let* ((preview (hermes--get p "preview"))
+              (text (format "[protocol noise] %s" preview))
+              (msg (make-hermes-message
+                    :kind 'system
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content text
+                                       :id (hermes--next-segment-id)))
+                    :timestamp (current-time))))
+         (hermes--push-pending state msg)))
       ("gateway.start_timeout"
-       (let ((lines (hermes--get p "lines")))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message
-                   :kind 'system
-                   :text (concat "[gateway start timeout]\n"
-                                 (mapconcat (lambda (l) (format "  %s" l))
-                                            lines "\n"))
-                   :timestamp (current-time)))))))
+       (let* ((lines (hermes--get p "lines"))
+              (text (concat "[gateway start timeout]\n"
+                            (mapconcat (lambda (l) (format "  %s" l))
+                                       lines "\n")))
+              (msg (make-hermes-message
+                    :kind 'system
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content text
+                                       :id (hermes--next-segment-id)))
+                    :timestamp (current-time))))
+         (hermes--push-pending state msg)))
       ;; --- Background / review -------------------------------------------
       ("background.complete"
-       (let ((tid (hermes--get p "task_id"))
-             (text (hermes--get p "text")))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message
-                   :kind 'system
-                   :text (format "[bg %s] %s" (or tid "?") (or text ""))
-                   :timestamp (current-time)))))))
+       (let* ((tid (hermes--get p "task_id"))
+              (txt (hermes--get p "text"))
+              (text (format "[bg %s] %s" (or tid "?") (or txt "")))
+              (msg (make-hermes-message
+                    :kind 'system
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content text
+                                       :id (hermes--next-segment-id)))
+                    :timestamp (current-time))))
+         (hermes--push-pending state msg)))
       ("review.summary"
-       (let ((text (hermes--get p "text")))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-messages s)
-                 (hermes--vector-append
-                  (hermes-state-messages state)
-                  (make-hermes-message
-                   :kind 'system
-                   :text (format "[review] %s" (or text ""))
-                   :timestamp (current-time)))))))
+       (let* ((txt (hermes--get p "text"))
+              (text (format "[review] %s" (or txt "")))
+              (msg (make-hermes-message
+                    :kind 'system
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content text
+                                       :id (hermes--next-segment-id)))
+                    :timestamp (current-time))))
+         (hermes--push-pending state msg)))
       ;; --- Pass-through --------------------------------------------------
       (_ state))))
 

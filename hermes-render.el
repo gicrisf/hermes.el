@@ -71,31 +71,32 @@
   ;; the bench survives forever.
   (let ((msg-append-start nil)
         (bench-touched-p nil)
+        (drain-pending nil)
         ;; Structural change → reset the org-element cache at the end.
         ;; Streaming chunks (`stream-update') don't qualify: they reshape
         ;; only the current assistant turn, and resetting on every token
         ;; defeats the cache for the whole buffer.
-        (structural-change nil))
+        (structural-change nil)
+        (old-stream-snapshot (and old (hermes-state-stream old))))
     (with-silent-modifications
       (save-excursion
-        ;; 1. Messages grew → append new tail messages.
-        (let* ((old-n (length (and old (hermes-state-messages old))))
-               (new-n (length (hermes-state-messages new))))
-          (when (> new-n old-n)
+        ;; 1. Drain pending-turns vector into the buffer.
+        (let ((turns (hermes-state-pending-turns new)))
+          (when (and (vectorp turns) (> (length turns) 0))
             (setq msg-append-start (point-max)
-                  structural-change t)
-            (cl-loop for i from old-n below new-n
-                     for msg = (aref (hermes-state-messages new) i)
-                     do (hermes--render-committed-message msg))))
+                  structural-change t
+                  drain-pending t)
+            (dotimes (i (length turns))
+              (hermes--insert-committed-turn (aref turns i)))))
         ;; 2. Stream lifecycle.
-        (let ((os (and old (hermes-state-stream old)))
+        (let ((os old-stream-snapshot)
               (ns (hermes-state-stream new)))
           (cond ((and (null os) ns)
                  (setq structural-change t bench-touched-p t)
                  (hermes--stream-begin))
                 ((and os (null ns))
                  (setq structural-change t bench-touched-p t)
-                 (hermes--stream-commit))
+                 (hermes--stream-commit os))
                 ((not (eq os ns))
                  (setq bench-touched-p t)
                  (hermes--stream-update os ns))))
@@ -112,6 +113,9 @@
         (unless (eq (and old (hermes-state-queue old))
                      (hermes-state-queue new))
           (force-mode-line-update))))
+    ;; Clear pending-turns once they've been written to the buffer.
+    (when drain-pending
+      (hermes-dispatch '(:pending-turns-clear)))
     (when (derived-mode-p 'org-mode)
       ;; Drop the org-element cache table whenever the bench shifted or
       ;; a committed message landed.  `with-silent-modifications'
@@ -163,45 +167,122 @@ has a chance to repopulate cleanly."
 
 ;;;; Committed messages
 
-(defun hermes--render-committed-message (msg)
-  "Append MSG to the buffer.  Skip assistant messages — those are streamed."
-  (pcase (hermes-message-kind msg)
-    ('user      (hermes--insert-turn-headline 'user   'hermes-user-face
-                                              (hermes-message-text msg)))
-    ('system    (hermes--insert-turn-headline 'system 'hermes-system-face
-                                              (hermes-message-text msg)))
-    ('assistant nil)))
+(defun hermes--message-text-for-display (msg)
+  "Extract concatenated text from MSG's text segments for headline preview."
+  (let ((segs (hermes-message-segments msg))
+        parts)
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (let ((s (aref segs i)))
+          (when (eq 'text (hermes-segment-type s))
+            (push (or (hermes-segment-content s) "") parts)))))
+    (apply #'concat (nreverse parts))))
 
-(defun hermes--insert-turn-headline (kind face text)
-  "Insert a level-1 heading for a new turn (user or system message)."
-  (goto-char (point-max))
-  (unless (bolp) (insert "\n"))
-  (let* ((prefix   (hermes--first-line (or text "")))
+(defun hermes--insert-committed-turn (msg)
+  "Insert a committed MSG into the buffer at point-max.
+For user/system: calls `hermes--insert-turn-headline' then appends raw drawer.
+For assistant: empty-response edge case — creates a minimal `** assistant'
+subtree with raw drawer."
+  (pcase (hermes-message-kind msg)
+    ('user      (hermes--insert-turn-headline msg 'hermes-user-face))
+    ('system    (hermes--insert-turn-headline msg 'hermes-system-face))
+    ('assistant
+     ;; TODO: In the future, consider routing empty assistant turns
+     ;; through the committed-message path (Option 2) — uniform with
+     ;; user/system rather than the streaming path.
+     (goto-char (point-max))
+     (unless (bolp) (insert "\n"))
+     (let ((hb (point))
+           (heading "** assistant")
+           (spacer  (make-string (- 74 (length "** assistant")) ?\s)))
+       (insert (format "%s %s :hermes:\n" heading spacer))
+       (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face))
+     (hermes--insert-properties
+      `(("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
+     (hermes--insert-raw-drawer msg))))
+
+(defun hermes--insert-turn-headline (msg face)
+  "Insert a level-1 heading for a new turn (user or system MSG)."
+  (let* ((kind     (hermes-message-kind msg))
+         (text     (hermes--message-text-for-display msg))
+         (prefix   (hermes--first-line (or text "")))
          (tag      (symbol-name kind))
          (heading  (format "* %s: %s" tag prefix))
          (sid      (or (hermes-state-session-id hermes--state) ""))
          (info     (hermes-state-session-info hermes--state))
-         (model    (and (hash-table-p info) (gethash "model" info)))
-         (hb       (point)))
-    (insert (format "%s %s\n" heading (hermes--tag-spacer heading)))
-    (hermes--face-overlay hb (1- (point)) face)
-    (hermes--insert-properties
-     `(("HERMES_SESSION" . ,sid)
-       ("HERMES_MODEL" . ,model)
-       ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
+         (model    (and (hash-table-p info) (gethash "model" info))))
+    (goto-char (point-max))
+    (unless (bolp) (insert "\n"))
+    (let ((hb (point)))
+      (insert (format "%s %s\n" heading (hermes--tag-spacer heading)))
+      (hermes--face-overlay hb (1- (point)) face)
+      (hermes--insert-properties
+       `(("HERMES_SESSION" . ,sid)
+         ("HERMES_MODEL" . ,model)
+         ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
+      (when (derived-mode-p 'org-mode)
+        ;; Local cache reset before `org-id-get-create' parses: the cache
+        ;; is stale here because `with-silent-modifications' suppressed
+        ;; `after-change-functions' across the streamed turn.
+        (org-element-cache-reset)
+        (goto-char hb)
+        (ignore-errors (org-id-get-create))
+        (goto-char (point-max)))
+      (when (and text (not (string-empty-p text)))
+        (insert text)
+        (unless (eq (char-before) ?\n) (insert "\n")))
+      (hermes--insert-raw-drawer msg))))
+
+;;;; Raw drawer I/O
+
+(defun hermes--insert-raw-drawer (msg)
+  "Insert a :HERMES_RAW: drawer containing the serialized MSG at point.
+After insertion, the drawer is automatically collapsed via
+`org-fold-hide-drawer-toggle' (or `outline-hide-subtree' fallback)."
+  (let ((plist (hermes--message-to-plist msg))
+        (start (point)))
+    (unless (bolp) (insert "\n"))
+    (insert ":HERMES_RAW:\n")
+    (let ((print-length nil)
+          (print-level nil)
+          (print-quoted t)
+          (print-escape-newlines t))
+      (insert (prin1-to-string plist)))
+    (insert "\n:END:\n")
     (when (derived-mode-p 'org-mode)
-      ;; Local cache reset before `org-id-get-create' parses: the cache
-      ;; is stale here because `with-silent-modifications' suppressed
-      ;; `after-change-functions' across the streamed turn.  Safe to do
-      ;; — `insert-turn-headline' only runs on committed-message append,
-      ;; not on the hot streaming path.
-      (org-element-cache-reset)
-      (goto-char hb)
-      (ignore-errors (org-id-get-create))
-      (goto-char (point-max)))
-    (when (and text (not (string-empty-p text)))
-      (insert text)
-      (unless (eq (char-before) ?\n) (insert "\n")))))
+      (save-excursion
+        (goto-char start)
+        (when (re-search-forward "^:HERMES_RAW:" nil t)
+          (cond
+           ((fboundp 'org-fold-hide-drawer-toggle)
+            (ignore-errors (org-fold-hide-drawer-toggle t)))
+           ((fboundp 'outline-hide-subtree)
+            (ignore-errors (outline-hide-subtree)))))))))
+
+(defun hermes--extract-raw-drawer (&optional pos)
+  "Find the :HERMES_RAW: drawer at POS (or point) and return its plist.
+Returns nil if no drawer is found or the contents are unreadable.
+Does not move point."
+  (save-excursion
+    (when pos (goto-char pos))
+    ;; Compute bound as the next top-level heading AFTER the current
+    ;; line — moving forward one char before searching avoids matching
+    ;; the heading the drawer belongs to.
+    (let ((bound (save-excursion
+                   (forward-line 1)
+                   (or (and (re-search-forward "^\\* " nil t)
+                            (match-beginning 0))
+                       (point-max)))))
+      (when (re-search-forward "^:HERMES_RAW:[ \t]*$" bound t)
+        (let ((body-start (line-end-position)))
+          (when (re-search-forward "^:END:[ \t]*$" bound t)
+            (let* ((body-end (line-beginning-position))
+                   (raw (buffer-substring-no-properties body-start body-end))
+                   (trimmed (string-trim raw)))
+              (when (and trimmed (> (length trimmed) 0))
+                (condition-case nil
+                    (car (read-from-string trimmed))
+                  (error nil))))))))))
 ;; NB: outline-fold repair for the just-inserted region now lives in
 ;; `hermes--refresh-region', invoked from `hermes--render' after
 ;; `with-silent-modifications' has exited.
@@ -565,14 +646,31 @@ Also opens a bench overlay tinting the live region."
                     (marker-position hermes--bench-start)
                     (marker-position hermes--bench-end)))))
 
-(defun hermes--stream-commit ()
-  "Stream finished: stamp Org :ID:s on the trail, drop markers and bench."
+(defun hermes--stream-commit (&optional old-stream)
+  "Stream finished: stamp Org :ID:s on the trail, drop markers and bench.
+If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
+`** assistant' subtree describing the just-completed message."
   (when (and (derived-mode-p 'org-mode)
              (markerp hermes--stream-headline-marker)
              (marker-position hermes--stream-headline-marker))
     (save-excursion
       (goto-char hermes--stream-headline-marker)
       (ignore-errors (org-id-get-create))))
+  ;; Write the raw drawer at the end of the assistant subtree before
+  ;; tearing down the markers — we still need bench-end to know where.
+  (when (and old-stream
+             (hermes-stream-p old-stream)
+             (markerp hermes--bench-end)
+             (marker-position hermes--bench-end))
+    (let* ((msg (hermes--message-from-stream
+                 old-stream
+                 (and (boundp 'hermes--state)
+                      hermes--state
+                      (hermes-state-usage hermes--state)))))
+      (save-excursion
+        (goto-char (marker-position hermes--bench-end))
+        (unless (bolp) (insert "\n"))
+        (hermes--insert-raw-drawer msg))))
   ;; Tear down the bench: tint disappears, markers freed, the region
   ;; below is now frozen.  Any folds the user opens in this region from
   ;; here on persist trivially because nothing re-applies fold passes
@@ -595,8 +693,8 @@ Also opens a bench overlay tinting the live region."
         hermes--stream-headline-marker nil
         hermes--unfolded-tool-ids nil))
 
-(defun hermes--stream-update (old-stream new-stream)
-  "Reflect OLD-STREAM → NEW-STREAM into the buffer."
+(defun hermes--stream-update (_old-stream new-stream)
+  "Reflect _OLD-STREAM → NEW-STREAM into the buffer."
   (when (or (null hermes--stream-segments-start)
             (null hermes--stream-segments-end))
     (hermes--stream-begin))

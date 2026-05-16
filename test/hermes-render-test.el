@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'hermes-state)
 (require 'hermes-render)
+(require 'hermes-mode)
 
 (defun hermes-render-test--setup ()
   "Initialise an in-flight stream in the current buffer.
@@ -280,6 +281,80 @@ position right after the heading line."
                      hermes--stream-segments-end
                      hermes--stream-headline-marker))
       (should (null m)))))
+
+;;;; Raw drawer I/O
+
+(ert-deftest hermes-render-test/raw-drawer-insert-and-extract ()
+  "Insert a :HERMES_RAW: drawer and read the plist back."
+  (with-temp-buffer
+    (org-mode)
+    (let ((msg (make-hermes-message
+                :kind 'user
+                :segments (vector (make-hermes-segment
+                                   :type 'text :content "Hello" :id "s1"))
+                :timestamp "2024-01-15T10:00:00+0000")))
+      (insert "* user: hi\n")
+      (hermes--insert-raw-drawer msg))
+    (goto-char (point-min))
+    (let ((plist (hermes--extract-raw-drawer)))
+      (should plist)
+      (should (eq 'user (plist-get plist :kind)))
+      (should (equal "Hello" (plist-get plist :text))))))
+
+(ert-deftest hermes-render-test/raw-drawer-auto-folded ()
+  "After insertion, the drawer body is hidden by org folding/overlays."
+  (with-temp-buffer
+    (org-mode)
+    (let ((msg (make-hermes-message
+                :kind 'user
+                :segments (vector (make-hermes-segment
+                                   :type 'text :content "x" :id "s1")))))
+      (insert "* user: hi\n")
+      (hermes--insert-raw-drawer msg))
+    ;; Either an org-fold invisibility region covers the drawer body, or
+    ;; the body line carries an invisible text/overlay property.  Look
+    ;; for any invisible coverage somewhere between :HERMES_RAW: and :END:.
+    (goto-char (point-min))
+    (should (re-search-forward "^:HERMES_RAW:" nil t))
+    (let* ((body-start (1+ (line-end-position)))
+           (body-end (save-excursion
+                       (re-search-forward "^:END:" nil t)
+                       (line-beginning-position)))
+           (any-invis nil))
+      (save-excursion
+        (goto-char body-start)
+        (while (< (point) body-end)
+          (when (or (get-text-property (point) 'invisible)
+                    (cl-some (lambda (o) (overlay-get o 'invisible))
+                             (overlays-at (point))))
+            (setq any-invis t))
+          (forward-char 1)))
+      (should any-invis))))
+
+(ert-deftest hermes-render-test/pending-turns-drained-correctly ()
+  "Render writes pending-turn messages into the buffer and dispatches a clear."
+  (with-temp-buffer
+    (hermes-mode)
+    (let* ((msg (make-hermes-message
+                 :kind 'user
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "ping" :id "s1"))
+                 :timestamp "2024-01-15T10:00:00+0000"))
+           (old hermes--state)
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s)
+                        (vector msg)))))
+      ;; Mirror how the state-change hook is invoked: state is swapped
+      ;; first, then the renderer runs.  The renderer's own dispatch
+      ;; of :pending-turns-clear then operates on the swapped state.
+      (setq hermes--state new)
+      (hermes--render old new))
+    ;; Buffer now contains a `* user:' heading with the body.
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "^\\* user: ping" body))
+      (should (string-match-p ":HERMES_RAW:" body)))
+    ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
+    (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

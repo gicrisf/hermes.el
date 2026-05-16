@@ -16,10 +16,22 @@
   "Fold STATE through MSGS via `hermes--reduce'."
   (dolist (m msgs state) (setq state (hermes--reduce state m))))
 
-(defun hermes-test--last-msg (state)
-  "Return the last `hermes-message' in STATE."
-  (let ((v (hermes-state-messages state)))
-    (aref v (1- (length v)))))
+(defun hermes-test--last-pending (state)
+  "Return the last `hermes-message' pushed into pending-turns."
+  (let ((v (hermes-state-pending-turns state)))
+    (and (vectorp v) (> (length v) 0)
+         (aref v (1- (length v))))))
+
+(defun hermes-test--seg-text (msg)
+  "Concatenate text-segment content from MSG."
+  (let ((segs (hermes-message-segments msg))
+        parts)
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (let ((s (aref segs i)))
+          (when (eq 'text (hermes-segment-type s))
+            (push (or (hermes-segment-content s) "") parts)))))
+    (apply #'concat (nreverse parts))))
 
 ;;;; Connection transitions
 
@@ -27,7 +39,7 @@
   (let ((s (hermes--reduce nil '(:noop))))
     (should (eq 'disconnected (hermes-state-connection s)))
     (should (null (hermes-state-stream s)))
-    (should (equal [] (hermes-state-messages s)))))
+    (should (equal [] (hermes-state-pending-turns s)))))
 
 (ert-deftest hermes-state-test/connection-transitions ()
   (let* ((s0 (hermes--reduce nil '(:connecting)))
@@ -52,7 +64,6 @@
     (should (equal "opus" (gethash "model" (hermes-state-session-info s))))))
 
 (ert-deftest hermes-state-test/session-info-merges-on-re-emit ()
-  ;; Mirrors createGatewayEventHandler.ts:279-292: spread, don't replace.
   (let* ((p1 (hermes-test--ht "session_id" "abc" "model" "opus" "cwd" "/tmp"))
          (s1 (hermes--reduce nil (cons "session.info" p1)))
          (p2 (hermes-test--ht "model" "sonnet"))
@@ -69,14 +80,19 @@
     (should (hash-table-p usage))
     (should (= 100 (gethash "tokens_sent" usage)))))
 
-;;;; User submit (optimistic)
+;;;; User submit (optimistic) — pushes to pending-turns
 
-(ert-deftest hermes-state-test/user-submit-appends-message ()
+(ert-deftest hermes-state-test/user-submit-pushes-pending-turn ()
   (let* ((s (hermes--reduce nil (cons :user-submit '(:text "hi"))))
-         (m (hermes-test--last-msg s)))
-    (should (= 1 (length (hermes-state-messages s))))
+         (m (hermes-test--last-pending s)))
+    (should (= 1 (length (hermes-state-pending-turns s))))
     (should (eq 'user (hermes-message-kind m)))
-    (should (equal "hi" (hermes-message-text m)))))
+    (should (equal "hi" (hermes-test--seg-text m)))))
+
+(ert-deftest hermes-state-test/pending-turns-clear ()
+  (let* ((s0 (hermes--reduce nil (cons :user-submit '(:text "hi"))))
+         (s1 (hermes--reduce s0 '(:pending-turns-clear))))
+    (should (equal [] (hermes-state-pending-turns s1)))))
 
 ;;;; Stream lifecycle
 
@@ -88,7 +104,6 @@
       (should (= 0 (length segs))))))
 
 (ert-deftest hermes-state-test/message-start-discards-in-flight ()
-  ;; Edge case #1: turnController.ts:746-757 silently discards.
   (let* ((s1 (hermes--reduce nil (cons "message.start" nil)))
          (s2 (hermes--reduce s1 (cons "message.delta"
                                       (hermes-test--ht "text" "stale"))))
@@ -128,12 +143,10 @@
              (cons "message.start" nil)
              (cons "message.delta" (hermes-test--ht "text" "Hi"))
              (cons "message.complete" nil)))
-         (m (hermes-test--last-msg s)))
+         (m (hermes-test--last-pending s)))
     (should (null (hermes-state-stream s)))
     (should (eq 'assistant (hermes-message-kind m)))
-    (should (equal "Hi" (hermes-message-text m)))
-    (should (equal "" (hermes-message-thinking m)))
-     (should (equal "" (hermes-message-reasoning m)))))
+    (should (equal "Hi" (hermes-test--seg-text m)))))
 
 (ert-deftest hermes-state-test/message-complete-accumulates-usage ()
   (let* ((s1 (hermes-test--reduce*
@@ -157,28 +170,15 @@
          (s1 (hermes--reduce s0 (cons "message.complete" nil))))
     (should (eq s0 s1))))
 
-(ert-deftest hermes-state-test/thinking-and-reasoning-committed ()
-  (let* ((s (hermes-test--reduce*
-             nil
-             (cons "message.start" nil)
-             (cons "message.delta" (hermes-test--ht "text" "Hi"))
-             (cons "thinking.delta" (hermes-test--ht "text" "hmm "))
-             (cons "thinking.delta" (hermes-test--ht "text" "maybe"))
-             (cons "reasoning.delta" (hermes-test--ht "text" "because"))
-             (cons "message.complete" nil)))
-         (m (hermes-test--last-msg s)))
-    (should (equal "hmm maybe" (hermes-message-thinking m)))
-    (should (equal "because" (hermes-message-reasoning m)))))
-
 ;;;; Errors
 
 (ert-deftest hermes-state-test/error-event-appends-system-message ()
   (let* ((s (hermes--reduce nil
                             (cons "error"
                                   (hermes-test--ht "message" "boom"))))
-         (m (hermes-test--last-msg s)))
+         (m (hermes-test--last-pending s)))
     (should (eq 'system (hermes-message-kind m)))
-    (should (equal "boom" (hermes-message-text m)))))
+    (should (equal "boom" (hermes-test--seg-text m)))))
 
 ;;;; Purity — old state is never mutated
 
@@ -210,11 +210,14 @@
              (cons "message.complete" nil))))
     (should (eq 'connected (hermes-state-connection s)))
     (should (equal "abc" (hermes-state-session-id s)))
-    (should (= 2 (length (hermes-state-messages s))))
-    (should (eq 'user      (hermes-message-kind (aref (hermes-state-messages s) 0))))
-    (should (eq 'assistant (hermes-message-kind (aref (hermes-state-messages s) 1))))
+    (should (= 2 (length (hermes-state-pending-turns s))))
+    (should (eq 'user
+                (hermes-message-kind (aref (hermes-state-pending-turns s) 0))))
+    (should (eq 'assistant
+                (hermes-message-kind (aref (hermes-state-pending-turns s) 1))))
     (should (equal "Hello world"
-                   (hermes-message-text (aref (hermes-state-messages s) 1))))
+                   (hermes-test--seg-text
+                    (aref (hermes-state-pending-turns s) 1))))
     (should (null (hermes-state-stream s)))))
 
 ;;;; UI reducer
@@ -250,7 +253,6 @@
       (should (eq 'generating (hermes-tool-status tool))))))
 
 (ert-deftest hermes-state-test/tool-generating-without-stream-dropped ()
-  ;; Edge case #2: tool events with no stream are dropped (turnController.ts:620).
   (let* ((s0 (hermes--reduce nil '(:connected)))
          (s1 (hermes--reduce s0 (cons "tool.generating"
                                       (hermes-test--ht "tool_id" "t1"
@@ -304,22 +306,6 @@
                                                        "output" "?")))))
     (should (eq s0 s1))))
 
-(ert-deftest hermes-state-test/tools-commit-with-message ()
-  (let* ((s (hermes-test--reduce*
-             nil
-             (cons "message.start" nil)
-             (cons "message.delta" (hermes-test--ht "text" "ok"))
-             (cons "tool.generating"
-                   (hermes-test--ht "tool_id" "t1" "name" "bash"))
-             (cons "tool.complete"
-                   (hermes-test--ht "tool_id" "t1" "output" "done"))
-             (cons "message.complete" nil)))
-         (msg (hermes-test--last-msg s)))
-    (should (null (hermes-state-stream s)))
-    (should (eq 'assistant (hermes-message-kind msg)))
-    (should (= 1 (length (hermes-message-tools msg))))
-    (should (eq 'complete (hermes-tool-status (aref (hermes-message-tools msg) 0))))))
-
 (ert-deftest hermes-state-test/tool-progress-updates-persistent-preview ()
   (let* ((s (hermes-test--reduce*
              nil
@@ -358,6 +344,25 @@
          (tool (hermes-segment-content seg)))
     (should (equal '(("text" . "fix bug") ("done" . t))
                    (hermes-tool-todos tool)))))
+
+(ert-deftest hermes-state-test/tools-commit-with-message ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "ok"))
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "bash"))
+             (cons "tool.complete"
+                   (hermes-test--ht "tool_id" "t1" "output" "done"))
+             (cons "message.complete" nil)))
+         (msg (hermes-test--last-pending s))
+         (segs (hermes-message-segments msg))
+         (tool-seg (cl-find-if (lambda (s) (eq 'tool (hermes-segment-type s)))
+                                segs)))
+    (should (null (hermes-state-stream s)))
+    (should (eq 'assistant (hermes-message-kind msg)))
+    (should tool-seg)
+    (should (eq 'complete (hermes-tool-status (hermes-segment-content tool-seg))))))
 
 ;;;; Subagents
 
@@ -488,7 +493,7 @@
                                     "status" "complete"
                                     "summary" "done"))
              (cons "message.complete" nil)))
-         (msg (hermes-test--last-msg s)))
+         (msg (hermes-test--last-pending s)))
     (should (null (hermes-state-stream s)))
     (should (eq 'assistant (hermes-message-kind msg)))
     (let ((sas (hermes-message-subagents msg)))
@@ -529,7 +534,6 @@
     (should (equal "r1" (hermes-pending-request-id pend)))))
 
 (ert-deftest hermes-state-test/second-pending-replaces-first ()
-  ;; Edge case #3: single overlay slot (createGatewayEventHandler.ts:519).
   (let* ((s1 (hermes--reduce nil
                              (cons "approval.request"
                                    (hermes-test--ht "request_id" "r1"))))
@@ -641,7 +645,6 @@
              nil
              (cons :user-submit '(:text "one"))
              (cons :user-submit '(:text "two")))))
-    ;; Most-recent-first.
     (should (equal '("two" "one") (hermes-state-history s)))))
 
 (ert-deftest hermes-state-test/history-capped ()
@@ -650,20 +653,6 @@
     (dolist (t* '("a" "b" "c" "d" "e"))
       (setq s (hermes--reduce s (cons :user-submit (list :text t*)))))
     (should (equal '("e" "d" "c") (hermes-state-history s)))))
-
-(ert-deftest hermes-state-test/user-submit-commits-regardless-of-queue ()
-  ;; Optimistic commit happens even while a turn is live and items queued.
-  (let* ((s (hermes-test--reduce*
-             nil
-             (cons :user-submit '(:text "first"))
-             (cons "message.start" nil)
-             (cons :user-submit '(:text "second"))
-             (cons :enqueue     '(:text "second")))))
-    (should (= 2 (length (hermes-state-messages s))))
-    (should (equal "second"
-                   (hermes-message-text
-                    (aref (hermes-state-messages s) 1))))
-    (should (equal '("second") (hermes-state-queue s)))))
 
 (ert-deftest hermes-state-test/slash-catalog-stores-payload ()
   (let* ((cat (hermes-test--ht "pairs" [["help" "show help"]]))
@@ -675,51 +664,51 @@
 (ert-deftest hermes-state-test/gateway-stderr-appends-system-message ()
   (let* ((s (hermes--reduce nil (cons "gateway.stderr"
                                       (hermes-test--ht "line" "some warning"))))
-         (msg (hermes-test--last-msg s)))
+         (msg (hermes-test--last-pending s)))
     (should (eq 'system (hermes-message-kind msg)))
     (should (string-match-p "\\[stderr\\] some warning"
-                            (hermes-message-text msg)))))
+                            (hermes-test--seg-text msg)))))
 
 (ert-deftest hermes-state-test/gateway-stderr-clips-long-line ()
   (let* ((long-line (make-string 200 ?x))
          (s (hermes--reduce nil (cons "gateway.stderr"
                                       (hermes-test--ht "line" long-line))))
-         (msg (hermes-test--last-msg s)))
-    (should (= 129 (length (hermes-message-text msg))))))
+         (msg (hermes-test--last-pending s)))
+    (should (= 129 (length (hermes-test--seg-text msg))))))
 
 (ert-deftest hermes-state-test/gateway-protocol-error-appends-system-message ()
   (let* ((s (hermes--reduce nil (cons "gateway.protocol_error"
                                       (hermes-test--ht "preview" "not json"))))
-         (msg (hermes-test--last-msg s)))
+         (msg (hermes-test--last-pending s)))
     (should (eq 'system (hermes-message-kind msg)))
     (should (string-match-p "\\[protocol noise\\] not json"
-                            (hermes-message-text msg)))))
+                            (hermes-test--seg-text msg)))))
 
 (ert-deftest hermes-state-test/gateway-start-timeout-appends-system-message ()
   (let* ((s (hermes--reduce nil (cons "gateway.start_timeout"
                                       (hermes-test--ht "lines" '("err1" "err2")))))
-         (msg (hermes-test--last-msg s)))
+         (msg (hermes-test--last-pending s)))
     (should (eq 'system (hermes-message-kind msg)))
     (should (string-match-p "\\[gateway start timeout\\]"
-                            (hermes-message-text msg)))
-    (should (string-match-p "err1" (hermes-message-text msg)))
-    (should (string-match-p "err2" (hermes-message-text msg)))))
+                            (hermes-test--seg-text msg)))
+    (should (string-match-p "err1" (hermes-test--seg-text msg)))
+    (should (string-match-p "err2" (hermes-test--seg-text msg)))))
 
 (ert-deftest hermes-state-test/background-complete-appends-system-message ()
   (let* ((s (hermes--reduce nil (cons "background.complete"
                                       (hermes-test--ht "task_id" "t1"
                                                        "text" "done"))))
-         (msg (hermes-test--last-msg s)))
+         (msg (hermes-test--last-pending s)))
     (should (eq 'system (hermes-message-kind msg)))
-    (should (string-match-p "\\[bg t1\\] done" (hermes-message-text msg)))))
+    (should (string-match-p "\\[bg t1\\] done" (hermes-test--seg-text msg)))))
 
 (ert-deftest hermes-state-test/review-summary-appends-system-message ()
   (let* ((s (hermes--reduce nil (cons "review.summary"
                                       (hermes-test--ht "text" "looks good"))))
-         (msg (hermes-test--last-msg s)))
+         (msg (hermes-test--last-pending s)))
     (should (eq 'system (hermes-message-kind msg)))
     (should (string-match-p "\\[review\\] looks good"
-                            (hermes-message-text msg)))))
+                            (hermes-test--seg-text msg)))))
 
 (ert-deftest hermes-state-test/ui-gateway-start-timeout-sets-status ()
   (let ((s (hermes--ui-reduce nil (cons "gateway.start_timeout" nil))))
@@ -737,6 +726,100 @@
   (let ((after-once (length hermes-rpc-stderr-functions)))
     (hermes--install-hooks)
     (should (= (length hermes-rpc-stderr-functions) after-once))))
+
+;;;; Round-trip serialization
+
+(ert-deftest hermes-state-test/round-trip-text-message ()
+  (let* ((msg (make-hermes-message
+               :kind 'user
+               :segments (vector (make-hermes-segment
+                                  :type 'text :content "Hello" :id "s1"))
+               :timestamp "2024-01-15T10:00:00+0000"))
+         (plist (hermes--message-to-plist msg))
+         (rt (hermes--plist-to-message plist)))
+    (should (eq 'user (hermes-message-kind rt)))
+    (should (equal "Hello"
+                   (hermes-segment-content
+                    (aref (hermes-message-segments rt) 0))))
+    (should (equal "s1" (hermes-segment-id
+                         (aref (hermes-message-segments rt) 0))))))
+
+(ert-deftest hermes-state-test/round-trip-tool-message ()
+  (let* ((tool (make-hermes-tool
+                :id "t1" :name "Read" :status 'complete
+                :context "{\"file\":\"x.py\"}"
+                :preview nil :inline-diff "- a\n+ b"
+                :todos '((:text "fix" :done t))
+                :output "OK" :error nil :duration 0.5))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s2"))
+               :timestamp "2024-01-15T10:00:00+0000"))
+         (plist (hermes--message-to-plist msg))
+         (rt (hermes--plist-to-message plist))
+         (rt-tool (hermes-segment-content
+                   (aref (hermes-message-segments rt) 0))))
+    (should (hermes-tool-p rt-tool))
+    (should (equal "t1" (hermes-tool-id rt-tool)))
+    (should (eq 'complete (hermes-tool-status rt-tool)))
+    (should (equal "- a\n+ b" (hermes-tool-inline-diff rt-tool)))
+    (should (equal "OK" (hermes-tool-output rt-tool)))
+    (should (equal 0.5 (hermes-tool-duration rt-tool)))))
+
+(ert-deftest hermes-state-test/round-trip-subagent-message ()
+  (let* ((sa (make-hermes-subagent
+              :id "sa1" :goal "fix" :status 'complete
+              :thinking "let me think"
+              :tools (vector (list :name "bash" :args "ls"))
+              :notes (vector "searching" "found")
+              :summary "done" :duration 2.0))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments []
+               :subagents (vector sa)
+               :timestamp "2024-01-15T10:00:00+0000"))
+         (plist (hermes--message-to-plist msg))
+         (rt (hermes--plist-to-message plist))
+         (rt-sa (aref (hermes-message-subagents rt) 0)))
+    (should (hermes-subagent-p rt-sa))
+    (should (equal "sa1" (hermes-subagent-id rt-sa)))
+    (should (eq 'complete (hermes-subagent-status rt-sa)))
+    (should (equal "done" (hermes-subagent-summary rt-sa)))
+    (should (= 2 (length (hermes-subagent-notes rt-sa))))))
+
+(ert-deftest hermes-state-test/round-trip-mixed-assistant-turn ()
+  (let* ((tool (make-hermes-tool :id "t1" :name "Bash" :status 'complete
+                                 :output "ok" :duration 0.1))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector
+                          (make-hermes-segment :type 'text
+                                               :content "Result:" :id "s1")
+                          (make-hermes-segment :type 'thinking
+                                               :content "hmm" :id "s2")
+                          (make-hermes-segment :type 'tool
+                                               :content tool :id "s3"))
+               :timestamp "2024-01-15T10:00:00+0000"))
+         (plist (hermes--message-to-plist msg))
+         (rt (hermes--plist-to-message plist))
+         (segs (hermes-message-segments rt)))
+    (should (= 3 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))
+    (should (eq 'thinking (hermes-segment-type (aref segs 1))))
+    (should (eq 'tool (hermes-segment-type (aref segs 2))))
+    (should (hermes-tool-p (hermes-segment-content (aref segs 2))))))
+
+(ert-deftest hermes-state-test/struct-to-plist-preserves-types ()
+  (let* ((seg (make-hermes-segment :type 'text :content "hi" :id "s1"))
+         (plist (hermes--struct-to-plist seg)))
+    (should (eq 'text (plist-get plist :type)))
+    (should (equal "hi" (plist-get plist :content)))
+    (should (equal "s1" (plist-get plist :id))))
+  (let* ((tool (make-hermes-tool :id "t" :name "n" :status 'running))
+         (plist (hermes--struct-to-plist tool)))
+    (should (eq 'running (plist-get plist :status)))
+    (should (equal "t" (plist-get plist :id)))))
 
 (provide 'hermes-state-test)
 ;;; hermes-state-test.el ends here

@@ -23,6 +23,7 @@
 (require 'hermes-rpc)
 
 (defvar hermes--session-buffers)        ; defined in hermes-mode.el
+(declare-function hermes--buffer-message-count "hermes-mode" ())
 
 (defconst hermes-sessions-buffer-name "*Hermes Sessions*")
 
@@ -41,7 +42,7 @@
            (info  (and st (hermes-state-session-info st)))
            (model (or (and (hash-table-p info) (gethash "model" info)) "?"))
            (cwd   (or (and (hash-table-p info) (gethash "cwd"   info)) ""))
-           (msgs  (length (and st (hermes-state-messages st))))
+           (msgs  (hermes--buffer-message-count))
            (q     (length (and st (hermes-state-queue st))))
            (status (cond ((and st (eq (hermes-state-connection st)
                                       'disconnected))      "dead")

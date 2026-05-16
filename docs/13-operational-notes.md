@@ -12,9 +12,13 @@
 ```
 
 The copier created by `cl-defstruct` uses `copy-sequence`, which is **shallow**.
-A copied `hermes-state` struct shares the same `session-info`, `messages`,
-`stream`, `queue` objects as the original.  The reducer replaces specific slots
+A copied `hermes-state` struct shares the same `session-info`, `stream`,
+`queue` objects as the original.  The reducer replaces specific slots
 via `setf` to break sharing before returning.
+
+**Note:** `messages` was removed in the buffer-as-truth refactor. The only
+vectors now are `pending-turns` (drained immediately by the renderer) and
+`history` (minibuffer recall ring).
 
 #### `hermes--vector-append` = always new vector
 
@@ -68,11 +72,29 @@ crashes in non-Org buffers (e.g. test buffers in `fundamental-mode`):
 | `hermes--insert-turn-headline` | `org-id-get-create` | `(derived-mode-p 'org-mode)` + `ignore-errors` |
 | `hermes--stream-begin` | `org-id-get-create` | `(derived-mode-p 'org-mode)` + `ignore-errors` |
 | `hermes--stream-commit` | `org-id-get-create` | `(derived-mode-p 'org-mode)` + `ignore-errors` |
-| `hermes--render` (end) | `org-element-cache-reset` | `(derived-mode-p 'org-mode)` |
+| `hermes--render` (post-pass) | `org-element-cache-reset` | `(derived-mode-p 'org-mode)` |
 
 Additional guards:
 - `(hash-table-p info)` before `(gethash "model" info)` — `session-info` can be nil before `session.info` arrives
 - `org-hide-leading-stars` and `org-startup-folded` set buffer-locally in `hermes-mode` init
+
+#### `with-silent-modifications` and post-passes
+
+All buffer edits run inside `with-silent-modifications`, which suppresses
+`after-change-functions`. This breaks `org-indent-mode` and `org-fold-core`
+because they rely on those hooks to update text properties and fold boundaries.
+
+The fix is a two-phase architecture:
+
+1. **Silent phase:** Batch all mutations without hooks.
+2. **Post phase:** After exiting the silent block, reset the org-element cache
+   and run targeted repairs (`org-indent-add-properties`, `org-fold-region`,
+   `hermes--hide-drawers`) only on the regions that actually changed:
+   - `msg-append-start` → `point-max` for newly committed turns
+   - `hermes--bench-start` → `hermes--bench-end` for the live stream region
+
+This keeps streaming fast (no per-tick hook overhead) while preserving correct
+indentation and fold boundaries.
 
 ### 13.4 Debugging Lessons
 

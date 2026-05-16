@@ -268,5 +268,61 @@ queued input is drained."
                         (lambda (_r e)
                           (when e (message "hermes: interrupt error: %S" e))))))
 
+;;;; Buffer parsing — read canonical history back from the Org buffer
+
+(defun hermes--buffer-message-count ()
+  "Count level-1 headings in the current buffer."
+  (let ((count 0))
+    (when (derived-mode-p 'org-mode)
+      (org-map-entries (lambda () (cl-incf count)) "LEVEL=1"))
+    count))
+
+(defun hermes--parse-buffer-messages ()
+  "Walk the buffer and return a vector of `hermes-message' structs.
+Reads :HERMES_RAW: drawers under level-1 headings (* user, * system)."
+  (let (messages)
+    (when (derived-mode-p 'org-mode)
+      (org-map-entries
+       (lambda ()
+         (when (= 1 (org-current-level))
+           (let ((raw (save-excursion (hermes--extract-raw-drawer))))
+             (when raw
+               (push (hermes--plist-to-message raw) messages)))))
+       nil nil 'file))
+    (vconcat (nreverse messages))))
+
+(defun hermes-resume-buffer ()
+  "Connect to gateway and resume conversation from the current buffer.
+Parses buffer turns; attempts to seed history into a fresh session.
+
+FIXME: The Hermes gateway may not currently accept a history list in
+`session.create'.  If gateway rejects the `history' field, this will
+silently fall back to a cold start (session created with no seeded
+context).  The parsed history is still useful as a local read-only
+reference.  Verify with the gateway spec before relying on resume."
+  (interactive)
+  (unless (derived-mode-p 'hermes-mode)
+    (user-error "Not in a Hermes buffer"))
+  (let* ((history (hermes--parse-buffer-messages))
+         (history-plists (mapcar #'hermes--message-to-plist
+                                 (append history nil))))
+    (hermes--install-hooks)
+    (unless (hermes-rpc-live-p)
+      (hermes-rpc-start))
+    (hermes-rpc-request
+     "session.create"
+     ;; FIXME: gateway may ignore :history — confirm protocol support.
+     (list :cols 100 :history (vconcat history-plists))
+     (lambda (result error)
+       (cond
+        (error (message "hermes: resume session.create failed: %S" error))
+        (result
+         (let ((sid (gethash "session_id" result)))
+           (when sid
+             (setf (hermes-state-session-id hermes--state) sid)
+             (puthash sid (current-buffer) hermes--session-buffers)
+             (message "hermes: resumed as %s (%d turns parsed)"
+                      sid (length history))))))))))
+
 (provide 'hermes-mode)
 ;;; hermes-mode.el ends here

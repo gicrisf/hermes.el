@@ -8,9 +8,9 @@ Communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway`.
 ```
 hermes-rpc.el        JSON-RPC 2.0 transport (make-process, NDJSON, pending callback map)
 hermes-events.el     Event/method name registry (single source of truth)
-hermes-state.el      TEA-style state atoms + pure reducers (persistent + UI)
-hermes-render.el     Diff-based Org buffer renderer (typed segments, full rewrite)
-hermes-mode.el       Org-mode derived major mode, event routing, entry point
+hermes-state.el      TEA-style ephemeral state atoms + pure reducers (in-flight stream, queue, pending)
+hermes-render.el     Org buffer renderer (typed segments, full rewrite, :HERMES_RAW: drawers)
+hermes-mode.el       Org-mode derived major mode, event routing, entry point, buffer parser
 hermes-input.el      Input queue, slash commands, history ring
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
@@ -19,6 +19,13 @@ hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
 hermes-dashboard.el  Vanilla Emacs dashboard (special-mode, no dependencies)
 ```
+
+**Key design principle:** The Org buffer is the canonical source of truth for
+committed conversation history. The state atom (`hermes-state`) only holds
+ephemeral data: connection, in-flight stream, pending prompts, queue, and
+minibuffer history. Every committed turn stores a `:HERMES_RAW:` drawer
+(containing a serialized Elisp plist) at the end of its subtree, enabling
+round-trip save/load/resume without a separate serialization format.
 
 **Doom Emacs integration (separate files, optional):**
 
@@ -173,11 +180,11 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 
 | File | Tests | Scope |
 |------|-------|-------|
-| `test/hermes-state-test.el` | 56 | Reducers (persistent + UI) |
-| `test/hermes-render-test.el` | 12 | Segmented renderer + subagent blocks |
+| `test/hermes-state-test.el` | 66 | Reducers (persistent + UI) + serialization round-trip |
+| `test/hermes-render-test.el` | 16 | Segmented renderer + subagent blocks + raw drawer I/O |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
 
-**104/104 green, 0 unexpected** — all tests pass.
+**114/114 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

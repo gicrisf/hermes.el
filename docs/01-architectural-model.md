@@ -54,9 +54,10 @@ The Emacs frontend follows an Elm architecture pattern:
 Event/action → dispatch → reducer → new state → render hook → Org buffer
 ```
 
-- **State** — two buffer-local atoms: persistent `hermes-state` + ephemeral `hermes-ui-state`
+- **State** — two buffer-local atoms: ephemeral `hermes-state` (connection, in-flight stream, queue, pending) + ephemeral `hermes-ui-state` (header-line text, spinner)
+- **Canonical history** — the Org buffer itself. Every committed turn stores a `:HERMES_RAW:` drawer with a full Elisp plist snapshot, so the buffer is self-contained for save/load/resume.
 - **Message (Msg)** — every event and user action is a tagged pair `(type . payload)` where `type` is a string (gateway event) or keyword (client action) and `payload` is a hash-table, alist, or plist
-- **Update (reducer)** — pure `hermes--reduce(state, msg) → new-state`. Returns the same object (via `eq`) when nothing changes, so render hooks don't fire on no-ops
+- **Update (reducer)** — pure `hermes--reduce(state, msg) → new-state`. Returns the same object (via `eq`) when nothing changes, so render hooks don't fire on no-ops. The reducer pushes committed turns into a `pending-turns` staging vector; the renderer drains them into the buffer.
 - **View (render)** — `hermes--render(old, new)` diffs old vs new state and applies minimal changes to the Org buffer. Two render hooks: one for persistent state, one for ephemeral UI state
 
 ---

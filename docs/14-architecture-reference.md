@@ -1,8 +1,7 @@
 # emacs-hermes — Architecture (Supplementary Reference)
 
-> **Note:** This document is a comprehensive architecture dump from 2026-05-14.
-> Some low-level details (marker names, unhandled events list) are slightly stale
-> after the segmented rendering and subagent refactors. For current struct shapes
+> **Note:** This document is a comprehensive architecture dump from 2026-05-14,
+> updated 2026-05-16 after the buffer-as-truth refactor. For current struct shapes
 > see [03-state-shape-comparison.md](03-state-shape-comparison.md), for rendering
 > see [08-message-stream-segmentation.md](08-message-stream-segmentation.md).
 
@@ -82,34 +81,53 @@ hermes-state
 ├── connection        :: 'disconnected | 'connecting | 'connected
 ├── session-id        :: string or nil     (set by session.create response)
 ├── session-info      :: hash-table or nil (set by session.info event)
-├── messages []       :: vector of hermes-message (COMMITTED messages only)
-├── stream            :: hermes-stream or nil
+├── usage             :: hash-table or nil — accumulated tokens/cost
+├── stream            :: hermes-stream or nil (in-flight only)
 ├── pending           :: hermes-pending or nil (blocking prompt)
+├── pending-turns []  :: vector of hermes-message — drained into buffer by renderer
 ├── slash-catalog     :: from commands.catalog response
 ├── queue []          :: queued user submissions (when stream is live)
 ├── history []        :: input history (capped at hermes-history-max)
 └── skin              :: from gateway.ready payload
 
 hermes-message
-├── kind    :: 'user | 'assistant | 'system
-├── text    :: markdown string
-├── tools   :: vector of hermes-tool (tool trail)
-├── usage   :: token usage
-└── timestamp
+├── kind      :: 'user | 'assistant | 'system
+├── segments  :: vector of hermes-segment — committed turn narrative
+├── usage     :: token usage
+├── timestamp :: ISO-8601 string
+└── subagents :: vector of hermes-subagent — delegation tree
 
 hermes-stream
-├── text        :: accumulated message.delta text
-├── thinking    :: accumulated thinking.delta text
-├── reasoning   :: accumulated reasoning.delta text
-└── tools []    :: vector of hermes-tool (in-flight tools)
+├── segments    :: vector of hermes-segment, ordered by arrival
+├── tools       :: DEPRECATED — kept for backward compat
+└── subagents   :: vector of hermes-subagent — live delegation tree
+
+hermes-segment
+├── type    :: 'text | 'thinking | 'reasoning | 'tool | 'system
+├── content :: string (for text/thinking/reasoning/system) or hermes-tool
+└── id      :: unique segment id (for stable updates)
 
 hermes-tool
-├── id       :: string (tool_id from gateway, or falls back to name)
-├── name     :: string
-├── status   :: 'generating | 'running | 'complete | 'error
-├── output   :: string or nil
-├── error    :: string or nil
-└── duration :: number or nil
+├── id          :: string (tool_id from gateway, or falls back to name)
+├── name        :: string
+├── status      :: 'generating | 'running | 'complete | 'error
+├── context     :: tool args preview from tool.start
+├── preview     :: live preview from tool.progress
+├── inline-diff :: diff output from tool.complete
+├── todos       :: list of plists (:text :done)
+├── output      :: string or nil
+├── error       :: string or nil
+└── duration    :: number or nil
+
+hermes-subagent
+├── id        :: string
+├── goal      :: string
+├── status    :: 'queued | 'running | 'complete | 'error
+├── thinking  :: string
+├── tools     :: vector of plists (:name :args :timestamp)
+├── notes     :: vector of strings
+├── summary   :: string
+└── duration  :: number
 
 hermes-pending
 ├── kind       :: 'approval | 'clarify | 'secret | 'sudo
@@ -212,22 +230,54 @@ sub-renderers:
 (defun hermes--render (old new)
   (with-silent-modifications
     (save-excursion
-      ;; 1. Messages grew → append committed messages
+      ;; 1. Drain pending-turns vector → append committed turns
       ;; 2. Stream lifecycle (begin / commit / update)
       ;; 3. Session info / connection → header line + root properties
       ;; 4. Queue length changed → refresh header-line
       ))
+  ;; Post-passes: run *after* exiting with-silent-modifications so
+  ;; org-element cache is valid and after-change-functions are not suppressed.
   (when (derived-mode-p 'org-mode)
-    (org-element-cache-reset)))   ; restore Org cache after silent mods
+    (org-element-cache-reset)
+    (hermes--refresh-region msg-append-start (point-max))        ; committed tail
+    (hermes--refresh-region bench-start bench-end)))             ; live bench
 ```
 
+### Bench architecture
 
+The **bench** is the live (in-flight) assistant turn region. Renderers mutate
+inside the bench every stream tick; everything outside is frozen — never touched
+after the previous turn committed. This means:
 
-### Tick integration
+- The user's manual fold state above the bench survives forever.
+- Post-passes scope their work to only the changed tail, not the whole buffer.
 
-`org-element-cache-reset` is called at the end of every render (when
-`derived-mode-p` is `org-mode`). This compensates for the suppression of
-Org change hooks by `with-silent-modifications`.
+### `hermes--refresh-region` — post-pass repairs
+
+These passes do the work that `after-change-functions` would have done were it
+not suppressed by `with-silent-modifications`:
+
+1. `org-fold-region` — reveals any stale outline fold that erroneously spans
+   into the new region (e.g. a folded `*** Reasoning` from the previous turn
+   swallowing a new `* user` headline onto its ellipsis line).
+2. `org-indent-add-properties` — attaches `line-prefix` / `wrap-prefix` text
+   properties so new sub-headlines get correct virtual indentation.
+3. `hermes--hide-drawers` — collapses `:PROPERTIES:` drawers with plain overlays.
+
+### Raw drawer I/O
+
+Every committed turn gets a `:HERMES_RAW:` drawer at the end of its subtree:
+
+```elisp
+(defun hermes--insert-raw-drawer (msg)
+  "Serialize MSG to a plist, insert :HERMES_RAW:...:END:, auto-fold.")
+
+(defun hermes--extract-raw-drawer (&optional pos)
+  "Find :HERMES_RAW: drawer at POS and return its plist.")
+```
+
+The drawer is auto-folded after insertion so it stays out of the user's way.
+It is only visible when the user explicitly expands it.
 
 ---
 
@@ -402,6 +452,15 @@ inheriting from font-lock faces.
 :END:
 what is 2+2?
 
+:HERMES_RAW:
+(:kind user
+ :text "what is 2+2?"
+ :segments [(:type text :content "what is 2+2?" :id "seg-1")]
+ :subagents []
+ :usage nil
+ :timestamp "2026-05-14T03:56:12+0200")
+:END:
+
 ** assistant                                            :hermes:
 :PROPERTIES:
 :HERMES_TIMESTAMP: 2026-05-14T03:56:12+0200
@@ -418,6 +477,21 @@ Sure, 2+2 is 4.
 4
 #+end_example
 
+:HERMES_RAW:
+(:kind assistant
+ :text "Sure, 2+2 is 4."
+ :segments
+ [(:type text :content "Sure, 2+2 is 4." :id "seg-1")
+  (:type tool
+   :content
+   (:id "calc-01" :name "calculator" :status complete
+    :output "4" :error nil :duration 0.3)
+   :id "seg-2")]
+ :subagents []
+ :usage (:tokens_sent 1450 :tokens_received 892)
+ :timestamp "2026-05-14T03:56:12+0200")
+:END:
+
 * user: now 3+3?                                        :hermes:
 :PROPERTIES:
 :HERMES_SESSION: a1b2c3d4
@@ -427,12 +501,20 @@ Sure, 2+2 is 4.
 :END:
 now 3+3?
 
+:HERMES_RAW:
+(:kind user ...)
+:END:
+
 ** assistant                                            :hermes:
 :PROPERTIES:
 :HERMES_TIMESTAMP: 2026-05-14T03:57:00+0200
 :ID: jkl012
 :END:
 It's 6.
+
+:HERMES_RAW:
+(:kind assistant ...)
+:END:
 \```
 
 ### Property rules
@@ -461,6 +543,40 @@ It's 6.
 - Assistant heading always shows bare `** assistant` (no truncation)
 
 ---
+
+## Save, Load, and Resume
+
+Because the Org buffer is the canonical source of truth, saving a conversation
+is just `(write-region (point-min) (point-max) "chat.org")`.
+
+### `hermes-resume-buffer`
+
+`M-x hermes-resume-buffer` (in a `hermes-mode` buffer) parses all level-1
+headings, extracts their `:HERMES_RAW:` drawers, reconstructs `hermes-message`
+structs via `hermes--plist-to-message`, and sends them as a `:history` field
+in `session.create`:
+
+```elisp
+(let* ((history (hermes--parse-buffer-messages))
+       (history-plists (mapcar #'hermes--message-to-plist (append history nil))))
+  (hermes-rpc-request
+   "session.create"
+   (list :cols 100 :history (vconcat history-plists))
+   ...))
+```
+
+**Caveat:** The gateway may not currently accept `:history` in `session.create`.
+If ignored, the session starts cold (no seeded context) but the buffer still
+contains the full conversation for local reference. Verify with the gateway spec
+before relying on resume.
+
+### Manual editing safety
+
+`:HERMES_RAW:` drawers are human-readable Elisp plists. A user can manually edit
+the rendered body (e.g. fix a typo in the assistant's response) and the drawer
+will still contain the original raw data. If the drawer is corrupted (unreadable
+plist), `hermes--extract-raw-drawer` returns `nil` and that turn is simply skipped
+during parse — the buffer remains valid.
 
 ## Doom Integration
 
@@ -509,23 +625,38 @@ The gateway sends `tool.generating` and `tool.complete` with `{"name":"terminal"
 — no `"tool_id"` key. The reducer falls back to `(or tool_id id name)` to
 identify tools. (See [13-operational-notes.md](13-operational-notes.md) for details.)
 
-### org-element-cache-reset on every render
+### org-element-cache-reset on structural changes
 
-`with-silent-modifications` suppresses Org change hooks. The cache reset
-at the end of every render ensures Org operations (org-id-get-create,
-org-entry-put) work correctly on the next call. This is safe because
-hermes buffers are modest in size.
+`with-silent-modifications` suppresses Org change hooks. The cache is reset
+after the render exits the silent block, but only when `structural-change` or
+`bench-touched-p` is true. Streaming ticks (`stream-update`) do **not** reset
+the cache — they only reshape the live bench, so the cache stays valid for
+the frozen portion of the buffer. This is a major performance win in long
+conversations.
 
 ### Guarding org-id-get-create
 
 All `org-id-get-create` calls are guarded with `(when (derived-mode-p 'org-mode) ...)`
 to prevent Org warnings on fundamental-mode temp buffers in tests.
 
+### Buffer as canonical source of truth
+
+The state atom no longer stores committed messages. Instead, every turn writes
+a `:HERMES_RAW:` drawer to the Org buffer. Benefits:
+- No duplication — conversation text exists only once (in the buffer).
+- Natural persistence — save the `.org` file, close Emacs, reopen it.
+- Resume — `hermes-resume-buffer` parses drawers and seeds history into the gateway.
+
+Trade-off: `hermes-md-to-org` is one-way (markdown→Org). A reverse converter
+would be needed to send raw markdown back to the gateway from a loaded buffer.
+For now, the gateway receives the Elisp plist history, which it may or may
+not understand.
+
 ### `with-silent-modifications` in render
 
 All buffer edits run inside `with-silent-modifications` and `save-excursion`
 to prevent:
-- Org change hooks from firing (cache goes stale, reset at end)
+- Org change hooks from firing (cache goes stale, repaired in post-passes)
 - Point jumping during streaming
 - Modification state changes in the read-only buffer
 

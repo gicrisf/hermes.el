@@ -26,6 +26,7 @@
 (declare-function hermes "hermes-mode" ())
 (declare-function hermes-new-session "hermes-mode" (&optional callback))
 (declare-function hermes-interrupt "hermes-mode" ())
+(declare-function hermes--buffer-message-count "hermes-mode" ())
 
 (defcustom hermes-dashboard-logo nil
   "If non-nil, a string used as the dashboard banner instead of the builtin.
@@ -201,7 +202,8 @@ Returns LOGO unchanged when STATUS is empty."
            (let* ((st (buffer-local-value 'hermes--state buf))
                   (info (and st (hermes-state-session-info st)))
                   (model (or (and (hash-table-p info) (gethash "model" info)) "?"))
-                  (msgs (length (and st (hermes-state-messages st))))
+                  (msgs (with-current-buffer buf
+                          (hermes--buffer-message-count)))
                   (status (cond ((and st (eq (hermes-state-connection st)
                                              'disconnected)) "dead")
                                 ((and st (hermes-state-pending st)) "blocked")

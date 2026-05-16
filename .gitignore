@@ -3,3 +3,4 @@ Eldev-local
 *.elc
 hermes-agent/
 .claude/
+pi-coding-agent/

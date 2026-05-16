@@ -113,7 +113,14 @@
                      (hermes-state-queue new))
           (force-mode-line-update))))
     (when (derived-mode-p 'org-mode)
-      (when structural-change
+      ;; Drop the org-element cache table whenever the bench shifted or
+      ;; a committed message landed.  `with-silent-modifications'
+      ;; suppresses `after-change-functions', so the cache otherwise
+      ;; accumulates stale parent links and `org-element--cache: Got
+      ;; empty parent while parsing' eventually fires.  The reset is
+      ;; cheap — just discards tables; subsequent queries re-parse on
+      ;; demand.
+      (when (or structural-change bench-touched-p)
         (org-element-cache-reset))
       ;; Refresh just-appended message region (post-commit, after the
       ;; bench has been torn down — committed-message inserts and
@@ -130,10 +137,18 @@
                                 (marker-position hermes--bench-end))))))
 
 (defun hermes--refresh-region (start end)
-  "Run indent + drawer-hide passes over [START, END).
+  "Run indent + drawer-hide + fold-repair passes over [START, END).
 These passes do the work that `after-change-functions' would have done
-were it not suppressed by `with-silent-modifications'."
+were it not suppressed by `with-silent-modifications'.  Lives outside
+the silent block so the org-element cache (just reset by the caller)
+has a chance to repopulate cleanly."
   (when (> end start)
+    ;; Clear any stale outline fold that erroneously spans into this
+    ;; region — e.g. a folded `*** Reasoning' from the previous
+    ;; assistant turn that would otherwise swallow the new headline
+    ;; onto the ellipsis line.
+    (when (fboundp 'org-fold-region)
+      (ignore-errors (org-fold-region start end nil 'outline)))
     (when (and (bound-and-true-p org-indent-mode)
                (fboundp 'org-indent-add-properties))
       (ignore-errors
@@ -175,25 +190,21 @@ were it not suppressed by `with-silent-modifications'."
        ("HERMES_MODEL" . ,model)
        ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
     (when (derived-mode-p 'org-mode)
+      ;; Local cache reset before `org-id-get-create' parses: the cache
+      ;; is stale here because `with-silent-modifications' suppressed
+      ;; `after-change-functions' across the streamed turn.  Safe to do
+      ;; — `insert-turn-headline' only runs on committed-message append,
+      ;; not on the hot streaming path.
+      (org-element-cache-reset)
       (goto-char hb)
       (ignore-errors (org-id-get-create))
       (goto-char (point-max)))
     (when (and text (not (string-empty-p text)))
       (insert text)
-      (unless (eq (char-before) ?\n) (insert "\n")))
-    ;; Repair fold boundaries.  `with-silent-modifications' suppressed
-    ;; `after-change-functions', so `org-fold-core' never re-validated the
-    ;; tail of the previous assistant turn (which may have a folded
-    ;; `*** Reasoning' / `*** Thinking' subtree).  Without this, the new
-    ;; `* user' headline can be rendered merged onto the preceding
-    ;; ellipsis line.  Unfold anything covering the new turn's region.
-    (when (derived-mode-p 'org-mode)
-      (ignore-errors
-        (cond
-         ((fboundp 'org-fold-region)
-          (org-fold-region hb (point) nil 'outline))
-         ((fboundp 'org-flag-region)
-          (org-flag-region hb (point) nil 'outline)))))))
+      (unless (eq (char-before) ?\n) (insert "\n")))))
+;; NB: outline-fold repair for the just-inserted region now lives in
+;; `hermes--refresh-region', invoked from `hermes--render' after
+;; `with-silent-modifications' has exited.
 
 (defun hermes--tag-spacer (heading)
   "Return enough spaces to right-align a :HERMES: tag at column 80."

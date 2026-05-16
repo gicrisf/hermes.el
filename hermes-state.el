@@ -80,7 +80,8 @@
 (cl-defstruct (hermes-ui-state (:copier hermes-ui-state-copy))
   status-text status-kind
   spinner-frame
-  (tool-previews nil))  ; alist tool-id → preview string
+  (tool-previews nil)   ; alist tool-id → preview string
+  thinking-text)        ; accumulated thinking.delta text for current turn
 
 ;;;; Atoms and dispatchers
 
@@ -506,22 +507,6 @@ which case dispatch routes to the correct typed reconstructor."
                                  (concat (hermes-segment-content seg) chunk)))))
                    (hermes--append-segment old-stream
                      (make-hermes-segment :type 'text :content chunk
-                                          :id (hermes--next-segment-id))))))))
-      ("thinking.delta"
-       (let* ((old-stream (or (hermes-state-stream state)
-                              (make-hermes-stream :segments [] :tools [])))
-              (chunk (or (hermes--get p "text") ""))
-              (last (hermes--last-segment old-stream)))
-         (hermes--with-copy state hermes-state-copy s
-           (setf (hermes-state-stream s)
-                 (if (and last (eq 'thinking (hermes-segment-type last)))
-                     (hermes--update-last-segment old-stream
-                       (lambda (seg)
-                         (hermes--with-copy seg hermes-segment-copy ns
-                           (setf (hermes-segment-content ns)
-                                 (concat (hermes-segment-content seg) chunk)))))
-                   (hermes--append-segment old-stream
-                     (make-hermes-segment :type 'thinking :content chunk
                                           :id (hermes--next-segment-id))))))))
       ("reasoning.available"
        (let* ((old-stream (or (hermes-state-stream state)
@@ -961,24 +946,35 @@ which case dispatch routes to the correct typed reconstructor."
       ("status.update"
        (hermes--with-copy state hermes-ui-state-copy s
          (setf (hermes-ui-state-status-text s) (hermes--get p "text")
-               (hermes-ui-state-status-kind s) (hermes--get p "kind"))))
+               (hermes-ui-state-status-kind s) (hermes--get p "kind")
+               (hermes-ui-state-thinking-text s) nil)))
+      ("thinking.delta"
+       (let* ((chunk (or (hermes--get p "text") ""))
+              (acc (concat (or (hermes-ui-state-thinking-text state) "") chunk)))
+         (hermes--with-copy state hermes-ui-state-copy s
+           (setf (hermes-ui-state-thinking-text s) acc
+                 (hermes-ui-state-status-text s) acc))))
       ("message.start"
        (hermes--with-copy state hermes-ui-state-copy s
-         (setf (hermes-ui-state-status-text s) "Responding…")))
+         (setf (hermes-ui-state-status-text s) "Responding…"
+               (hermes-ui-state-thinking-text s) nil)))
       ("message.complete"
        (hermes--with-copy state hermes-ui-state-copy s
          (setf (hermes-ui-state-status-text s) nil
-               (hermes-ui-state-tool-previews s) nil)))
+               (hermes-ui-state-tool-previews s) nil
+               (hermes-ui-state-thinking-text s) nil)))
        ("tool.generating"
         (let ((name (hermes--get p "name")))
           (hermes--with-copy state hermes-ui-state-copy s
             (setf (hermes-ui-state-status-text s)
-                  (format "Running %s…" (or name "tool"))))))
+                  (format "Running %s…" (or name "tool"))
+                  (hermes-ui-state-thinking-text s) nil))))
        ("tool.start"
         (let ((name (hermes--get p "name")))
           (hermes--with-copy state hermes-ui-state-copy s
             (setf (hermes-ui-state-status-text s)
-                  (format "Running %s…" (or name "tool"))))))
+                  (format "Running %s…" (or name "tool"))
+                  (hermes-ui-state-thinking-text s) nil))))
        ("tool.progress"
         (let ((tid (hermes--get p "tool_id"))
               (preview (hermes--get p "preview")))
@@ -1004,22 +1000,27 @@ which case dispatch routes to the correct typed reconstructor."
                    (format "Delegating to %s…"
                            (if goal
                                (truncate-string-to-width goal 40 nil nil t)
-                             "subagent"))))))
+                             "subagent"))
+                   (hermes-ui-state-thinking-text s) nil))))
         ("subagent.complete"
          (hermes--with-copy state hermes-ui-state-copy s
-           (setf (hermes-ui-state-status-text s) nil)))
+           (setf (hermes-ui-state-status-text s) nil
+                 (hermes-ui-state-thinking-text s) nil)))
          ("error"
          (hermes--with-copy state hermes-ui-state-copy s
            (setf (hermes-ui-state-status-text s) nil
-                 (hermes-ui-state-tool-previews s) nil)))
+                 (hermes-ui-state-tool-previews s) nil
+                 (hermes-ui-state-thinking-text s) nil)))
         ("gateway.start_timeout"
          (hermes--with-copy state hermes-ui-state-copy s
            (setf (hermes-ui-state-status-text s)
-                 "Gateway failed to start (see chat buffer)")))
+                 "Gateway failed to start (see chat buffer)"
+                 (hermes-ui-state-thinking-text s) nil)))
         ("gateway.protocol_error"
          (hermes--with-copy state hermes-ui-state-copy s
            (setf (hermes-ui-state-status-text s)
-                 "Protocol noise from gateway (see chat buffer)")))
+                 "Protocol noise from gateway (see chat buffer)"
+                 (hermes-ui-state-thinking-text s) nil)))
         (_ state))))
 
 (provide 'hermes-state)

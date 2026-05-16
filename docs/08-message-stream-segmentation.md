@@ -21,14 +21,14 @@ On `message.complete`, the TUI:
 **Emacs now uses a typed segment model matching the TUI's approach:**
 
 - `stream.segments` — vector of `hermes-segment` objects, each with `type`, `content`, `id`
-- Segment types: `text`, `thinking`, `reasoning`, `tool`, `system`
+- Segment types: `text`, `reasoning`, `tool`, `system` (`thinking` is UI-only, not persisted)
 - Segments are appended in arrival order as events arrive from the gateway
 - Renderer does a **full rewrite** of the segment region on every stream update (simple, correct)
-- On `message.complete`, segments are committed to `message.segments` (the deprecated `text`/`thinking`/`tools` slots are populated from segments for backward compat)
+- On `message.complete`, segments are committed to `message.segments` (the deprecated `text`/`tools` slots are populated from segments for backward compat)
 
 **Formatting per segment type:**
 - `text` → markdown-to-Org conversion via `hermes-md-to-org`
-- `thinking` → `#+begin_example Thinking` block
+- `thinking` → not rendered (UI-only via header-line status)
 - `reasoning` → `#+begin_example Reasoning` block
 - `tool` → `*** name (status)` sub-headline with context, output, diff, todos
 - `system` → `#+begin_comment` block

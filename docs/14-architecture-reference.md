@@ -664,7 +664,7 @@ to prevent:
 
 `hermes--with-copy` uses `copy-<struct>` from `cl-defstruct`, which is a
 shallow copy. This means the tools vector is shared between old and new
-streams during `thinking.delta` / `reasoning.delta` — only `tool.generating`
+streams during `reasoning.delta` — only `tool.generating`
 and `tool.complete` create new tool vectors via `hermes--vector-append` or
 `copy-sequence`. The `eq` comparison in `hermes--stream-update` correctly
 detects tool changes because these events produce structurally new vectors.

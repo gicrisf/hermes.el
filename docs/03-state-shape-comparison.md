@@ -118,8 +118,8 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
 #### Segment State (`hermes-segment`)
 ```elisp
 (cl-defstruct hermes-segment
-  type        ; 'text | 'thinking | 'reasoning | 'tool | 'system
-  content     ; string for text/thinking/reasoning/system; hermes-tool for tool segments
+  type        ; 'text | 'reasoning | 'tool | 'system  ('thinking is UI-only, not persisted)
+  content     ; string for text/reasoning/system; hermes-tool for tool segments
   id)         ; unique segment id (for stable updates)
 ```
 

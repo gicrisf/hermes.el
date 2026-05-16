@@ -500,7 +500,7 @@ per-tool formatter from `hermes-tool-formatters'."
         (sid (aref seg 3)))
     (pcase type
       ('text (hermes--format-response content))
-      ('thinking (hermes--format-cot-block "Thinking" content sid))
+      ('thinking "")
       ('reasoning (hermes--format-cot-block "Reasoning" content sid))
       ('tool (hermes--format-tool content))
       ('system (format "#+begin_comment\n%s\n#+end_comment\n" content))

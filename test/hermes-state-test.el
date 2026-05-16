@@ -123,19 +123,22 @@
       (should (equal "Hello world" (hermes-segment-content seg))))))
 
 (ert-deftest hermes-state-test/thinking-and-reasoning-accumulate ()
+  "Reasoning deltas still accumulate as a stream segment.
+Thinking deltas no longer touch the persistent stream — see UI reducer tests."
+  (let* ((s0 (hermes--reduce nil (cons "message.start" nil)))
+         (s1 (hermes--reduce s0 (cons "reasoning.delta"
+                                      (hermes-test--ht "text" "why")))))
+    (let ((segs (hermes-stream-segments (hermes-state-stream s1))))
+      (should (= 1 (length segs)))
+      (should (eq 'reasoning (hermes-segment-type (aref segs 0))))
+      (should (equal "why" (hermes-segment-content (aref segs 0)))))))
+
+(ert-deftest hermes-state-test/thinking-delta-does-not-touch-persistent-stream ()
+  "thinking.delta is UI-only; the persistent reducer ignores it."
   (let* ((s0 (hermes--reduce nil (cons "message.start" nil)))
          (s1 (hermes--reduce s0 (cons "thinking.delta"
-                                      (hermes-test--ht "text" "think "))))
-         (s2 (hermes--reduce s1 (cons "thinking.delta"
-                                      (hermes-test--ht "text" "more"))))
-         (s3 (hermes--reduce s2 (cons "reasoning.delta"
-                                      (hermes-test--ht "text" "why")))))
-    (let ((segs (hermes-stream-segments (hermes-state-stream s3))))
-      (should (= 2 (length segs)))
-      (should (eq 'thinking (hermes-segment-type (aref segs 0))))
-      (should (equal "think more" (hermes-segment-content (aref segs 0))))
-      (should (eq 'reasoning (hermes-segment-type (aref segs 1))))
-      (should (equal "why" (hermes-segment-content (aref segs 1)))))))
+                                      (hermes-test--ht "text" "hmm")))))
+    (should (equal s0 s1))))
 
 (ert-deftest hermes-state-test/message-complete-commits-and-clears ()
   (let* ((s (hermes-test--reduce*
@@ -235,6 +238,36 @@
          (s2 (hermes--ui-reduce s1 (cons "message.complete" nil))))
     (should (equal "Responding…" (hermes-ui-state-status-text s1)))
     (should (null (hermes-ui-state-status-text s2)))))
+
+(ert-deftest hermes-state-test/ui-thinking-delta-accumulates-and-sets-status ()
+  "thinking.delta chunks concatenate into thinking-text and status-text."
+  (let* ((s1 (hermes--ui-reduce nil
+                                (cons "thinking.delta"
+                                      (hermes-test--ht "text" "synthesizing"))))
+         (s2 (hermes--ui-reduce s1
+                                (cons "thinking.delta"
+                                      (hermes-test--ht "text" "…")))))
+    (should (equal "synthesizing" (hermes-ui-state-thinking-text s1)))
+    (should (equal "synthesizing" (hermes-ui-state-status-text s1)))
+    (should (equal "synthesizing…" (hermes-ui-state-thinking-text s2)))
+    (should (equal "synthesizing…" (hermes-ui-state-status-text s2)))))
+
+(ert-deftest hermes-state-test/ui-status-update-resets-thinking-text ()
+  "After status.update, a fresh thinking.delta starts from scratch."
+  (let* ((s1 (hermes--ui-reduce nil
+                                (cons "thinking.delta"
+                                      (hermes-test--ht "text" "old"))))
+         (s2 (hermes--ui-reduce s1
+                                (cons "status.update"
+                                      (hermes-test--ht "kind" "info"
+                                                       "text" "Running bash…"))))
+         (s3 (hermes--ui-reduce s2
+                                (cons "thinking.delta"
+                                      (hermes-test--ht "text" "new")))))
+    (should (null (hermes-ui-state-thinking-text s2)))
+    (should (equal "Running bash…" (hermes-ui-state-status-text s2)))
+    (should (equal "new" (hermes-ui-state-thinking-text s3)))
+    (should (equal "new" (hermes-ui-state-status-text s3)))))
 
 ;;;; Tools
 
@@ -796,19 +829,16 @@
                :segments (vector
                           (make-hermes-segment :type 'text
                                                :content "Result:" :id "s1")
-                          (make-hermes-segment :type 'thinking
-                                               :content "hmm" :id "s2")
                           (make-hermes-segment :type 'tool
-                                               :content tool :id "s3"))
+                                               :content tool :id "s2"))
                :timestamp "2024-01-15T10:00:00+0000"))
          (plist (hermes--message-to-plist msg))
          (rt (hermes--plist-to-message plist))
          (segs (hermes-message-segments rt)))
-    (should (= 3 (length segs)))
+    (should (= 2 (length segs)))
     (should (eq 'text (hermes-segment-type (aref segs 0))))
-    (should (eq 'thinking (hermes-segment-type (aref segs 1))))
-    (should (eq 'tool (hermes-segment-type (aref segs 2))))
-    (should (hermes-tool-p (hermes-segment-content (aref segs 2))))))
+    (should (eq 'tool (hermes-segment-type (aref segs 1))))
+    (should (hermes-tool-p (hermes-segment-content (aref segs 1))))))
 
 (ert-deftest hermes-state-test/struct-to-plist-preserves-types ()
   (let* ((seg (make-hermes-segment :type 'text :content "hi" :id "s1"))

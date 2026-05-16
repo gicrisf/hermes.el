@@ -46,14 +46,14 @@ Tools appear inline in the transcript as collapsible segments.
 
 **Before:** Tools were interleaved into `stream-text` as plain text (`-> running name\n`, `-> done name (0.5s)\n`). This polluted the assistant's prose and broke the stable/unstable split.
 
-**After (v1):** Tools were rendered as **separate Org sub-headlines** after the text region, independent of `stream-text`. Thinking/reasoning were managed as separate marker-tracked blocks before text.
+**After (v1):** Tools were rendered as **separate Org sub-headlines** after the text region, independent of `stream-text`. Reasoning was managed as separate marker-tracked blocks before text.
 
 **After (v2 — segmented):** All content lives in a single `segments` vector as typed `hermes-segment` objects. The renderer does a **full rewrite of the segment region** on every stream update (Option A from the plan). No stable/unstable split, no per-block markers:
 
 - `tool.generating` → reducer creates tool segment; renderer formats as `*** name (running…)`
 - `tool.start` → reducer updates segment in-place; renderer rewrites all segments
 - `tool.complete` → reducer updates status/output/etc; renderer rewrites
-- `thinki.ng.delta` / `reasoning.delta` → creates/appends typed segments
+- `reasoning.delta` → creates/appends typed segments; `thinking.delta` is UI-only (drives header-line status)
 - `message.delta` → creates/appends text segments
 - End of turn → `message.complete` commits segments to `message.segments`
 

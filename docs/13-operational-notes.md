@@ -32,7 +32,7 @@ vectors now are `pending-turns` (drained immediately by the renderer) and
 #### When `eq` comparison works correctly
 
 In `hermes--stream-update`, the renderer compares old and new stream via `eq`.
-If only `thinking.delta` arrives (which copies the stream but leaves `segments`
+If only `reasoning.delta` arrives (which copies the stream but leaves `segments`
 unchanged), the segments vector is shared — `eq` returns `t` → no re-render.
 For `message.delta` or `tool.generating`, a new vector is created → `eq` fails
 → re-render proceeds.  This is correct behaviour.

@@ -5,9 +5,10 @@
 **Files:** `hermes-state.el`, `hermes-render.el`
 
 1. **Text/reasoning/tool rendering basics**
-   - Thinking/reasoning rendered as `#+begin_example` Org blocks
+   - Reasoning rendered as `*** Reasoning` Org blocks
+   - Thinking is UI-only (drives header-line status text)
    - Tools rendered as `*** name (status)` Org sub-headlines
-   - `hermes--format-thinking-block`, `hermes--format-tool` created
+   - `hermes--format-cot-block`, `hermes--format-tool` created
 
 2. **Fix approval choices**
    - Changed to canonical `once`/`session`/`always`/`deny`
@@ -32,7 +33,7 @@
 
 2. **Reducer**
    - Segment helpers: `hermes--last-segment`, `hermes--append-segment`, `hermes--update-last-segment`, `hermes--find-tool-segment-index`, `hermes--segments-derive-deprecated`
-   - All events (`message.delta`, `thinking.delta`, `reasoning.delta`, `tool.*`) create/append typed segments
+    - All events (`message.delta`, `reasoning.delta`, `tool.*`) create/append typed segments; `thinking.delta` is UI-only
    - `message.complete` and `error` commit segments + populate deprecated slots
 
 3. **Renderer**

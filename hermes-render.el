@@ -361,7 +361,7 @@ collapse them on insertion."
            (heading (format "*** %s" label))
            (heading-line
             (concat (propertize heading
-                                'hermes-fold t
+                                'hermes-reasoning-fold t
                                 'hermes-fold-id fold-id)
                     "\n"))
            (props (concat ":PROPERTIES:\n"
@@ -544,10 +544,10 @@ per-tool formatter from `hermes-tool-formatters'."
           (unless (bolp)
             (insert "\n")))))
     (set-marker hermes--stream-segments-end (point))
-    (hermes--apply-tool-folds start (marker-position hermes--stream-segments-end))
+    (hermes--apply-stream-folds start (marker-position hermes--stream-segments-end))
     (hermes--bench-sync)))
 
-(defvar-local hermes--unfolded-tool-ids nil
+(defvar-local hermes--unfolded-ids nil
   "Set (list) of fold-ids the user has manually expanded; never re-folded.
 Covers tool blocks and chain-of-thought (thinking/reasoning) blocks.")
 
@@ -558,8 +558,8 @@ STATE is one of `folded', `children', `subtree', `all', etc."
     (let ((fid (save-excursion
                  (beginning-of-line)
                  (get-text-property (point) 'hermes-fold-id))))
-      (when (and fid (not (member fid hermes--unfolded-tool-ids)))
-        (push fid hermes--unfolded-tool-ids)))))
+      (when (and fid (not (member fid hermes--unfolded-ids)))
+        (push fid hermes--unfolded-ids)))))
 
 (defun hermes--hide-drawers (start end)
   "Collapse every PROPERTIES drawer between START and END.
@@ -584,9 +584,12 @@ cheap to call once per render even during streaming, where
                   (overlay-put ov 'isearch-open-invisible
                                 (lambda (o) (delete-overlay o))))))))))))
 
-(defun hermes--apply-tool-folds (start end)
-  "Hide subtrees marked with `hermes-fold' between START and END.
-Skips tools whose id is in `hermes--unfolded-tool-ids'."
+(defun hermes--apply-stream-folds (start end)
+  "Hide tool subtrees marked with `hermes-fold' between START and END.
+Reasoning blocks are intentionally left visible during streaming so the
+user can watch the thought process build in real-time; they get folded
+on commit by `hermes--fold-reasoning-in-region'.
+Skips ids in `hermes--unfolded-ids'."
   (when (derived-mode-p 'org-mode)
     (save-excursion
       (goto-char start)
@@ -595,12 +598,33 @@ Skips tools whose id is in `hermes--unfolded-tool-ids'."
                     (setq pos (text-property-any (point) end 'hermes-fold t)))
           (goto-char pos)
           (let ((fid (get-text-property pos 'hermes-fold-id)))
-            (unless (and fid (member fid hermes--unfolded-tool-ids))
+            (unless (and fid (member fid hermes--unfolded-ids))
               (ignore-errors
                 (if (fboundp 'org-fold-hide-subtree)
                     (org-fold-hide-subtree)
                   (outline-hide-subtree)))))
           ;; Move past this heading line so we don't loop forever.
+          (forward-line 1))))))
+
+(defun hermes--fold-reasoning-in-region (start end)
+  "Fold all reasoning subtrees marked with `hermes-reasoning-fold' between
+START and END.  Called from `hermes--stream-commit' to collapse reasoning
+blocks after the assistant turn is sealed.
+Skips ids in `hermes--unfolded-ids'."
+  (when (derived-mode-p 'org-mode)
+    (save-excursion
+      (goto-char start)
+      (let (pos)
+        (while (and (< (point) end)
+                    (setq pos (text-property-any
+                               (point) end 'hermes-reasoning-fold t)))
+          (goto-char pos)
+          (let ((fid (get-text-property pos 'hermes-fold-id)))
+            (unless (and fid (member fid hermes--unfolded-ids))
+              (ignore-errors
+                (if (fboundp 'org-fold-hide-subtree)
+                    (org-fold-hide-subtree)
+                  (outline-hide-subtree)))))
           (forward-line 1))))))
 
 ;;;; Stream lifecycle
@@ -687,6 +711,17 @@ If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
         (goto-char (marker-position hermes--bench-end))
         (unless (bolp) (insert "\n"))
         (hermes--insert-raw-drawer msg))))
+  ;; Collapse reasoning subtrees now that the turn is sealed.  During
+  ;; streaming they were left visible so the user could watch the
+  ;; thought process build; once committed the buffer should show only
+  ;; the assistant response with reasoning hidden behind `*** Reasoning'.
+  (when (and (markerp hermes--bench-start)
+             (marker-position hermes--bench-start)
+             (markerp hermes--bench-end)
+             (marker-position hermes--bench-end))
+    (hermes--fold-reasoning-in-region
+     (marker-position hermes--bench-start)
+     (marker-position hermes--bench-end)))
   ;; Tear down the bench: tint disappears, markers freed, the region
   ;; below is now frozen.  Any folds the user opens in this region from
   ;; here on persist trivially because nothing re-applies fold passes
@@ -707,7 +742,7 @@ If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
         hermes--stream-segments-end nil
         hermes--stream-subagents-marker nil
         hermes--stream-headline-marker nil
-        hermes--unfolded-tool-ids nil))
+        hermes--unfolded-ids nil))
 
 (defun hermes--stream-update (_old-stream new-stream)
   "Reflect _OLD-STREAM → NEW-STREAM into the buffer."

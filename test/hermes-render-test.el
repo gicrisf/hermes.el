@@ -277,6 +277,51 @@ position right after the heading line."
                      hermes--stream-headline-marker))
       (should (null m)))))
 
+;;;; Reasoning fold lifecycle
+
+(defun hermes-render-test--invisible-at (pos)
+  "Return non-nil if POS is covered by an org-fold invisibility overlay."
+  (cl-some (lambda (o)
+             (memq (overlay-get o 'invisible)
+                   '(outline org-fold-outline)))
+           (overlays-at pos)))
+
+(ert-deftest hermes-render-test/reasoning-visible-during-streaming ()
+  "Reasoning blocks are NOT folded while the stream is live."
+  (with-temp-buffer
+    (org-mode)
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'reasoning :content "thinking out loud"
+                                  :id "r1")))
+    (goto-char (marker-position hermes--stream-segments-start))
+    (should (re-search-forward "^\\*\\*\\* Reasoning" nil t))
+    ;; Body line below the heading must not be invisible.
+    (forward-line 1)
+    ;; Skip the properties drawer to the body line.
+    (while (and (not (eobp))
+                (looking-at "^[ \t]*:"))
+      (forward-line 1))
+    (should-not (hermes-render-test--invisible-at (point)))))
+
+(ert-deftest hermes-render-test/reasoning-folded-after-commit ()
+  "After stream-commit, reasoning blocks are collapsed."
+  (with-temp-buffer
+    (org-mode)
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'reasoning :content "because reasons"
+                                  :id "r1")))
+    (let ((reasoning-pos
+           (save-excursion
+             (goto-char (marker-position hermes--stream-segments-start))
+             (re-search-forward "^\\*\\*\\* Reasoning" nil t)
+             (line-end-position))))
+      (hermes--stream-commit)
+      ;; The position just past the Reasoning heading line should be hidden
+      ;; by an outline fold overlay.
+      (should (hermes-render-test--invisible-at reasoning-pos)))))
+
 ;;;; Raw drawer I/O
 
 (ert-deftest hermes-render-test/raw-drawer-insert-and-extract ()

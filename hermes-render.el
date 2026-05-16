@@ -53,7 +53,15 @@
   ;; `with-silent-modifications' suppresses `after-change-functions', which
   ;; is what `org-indent-mode' uses to attach line-prefix properties — so
   ;; without this, new sub-headlines fall back to their parent's indent.
-  (let ((indent-refresh-start nil))
+  (let ((indent-refresh-start nil)
+        ;; Structural change → reset the org-element cache at the end.
+        ;; Streaming chunks (`stream-update') don't qualify: they reshape
+        ;; only the current assistant turn, and resetting on every token
+        ;; defeats the cache for the whole buffer.  Lifecycle boundaries
+        ;; (`stream-begin' / `stream-commit') and committed-message appends
+        ;; do qualify — they introduce new headlines/structure that other
+        ;; org consumers need to see.
+        (structural-change nil))
     (cl-flet ((bump (pos)
                 (when (and pos (or (null indent-refresh-start)
                                    (< pos indent-refresh-start)))
@@ -65,6 +73,7 @@
                  (new-n (length (hermes-state-messages new))))
             (when (> new-n old-n)
               (bump (point-max))
+              (setq structural-change t)
               (cl-loop for i from old-n below new-n
                        for msg = (aref (hermes-state-messages new) i)
                        do (hermes--render-committed-message msg))))
@@ -73,6 +82,7 @@
                 (ns (hermes-state-stream new)))
             (cond ((and (null os) ns)
                    (bump (point-max))
+                   (setq structural-change t)
                    (hermes--stream-begin))
                   ((and os (null ns))
                    ;; `stream-commit' rewrites the :ID: line inside the
@@ -81,6 +91,7 @@
                    (bump (or (and (markerp hermes--stream-headline-marker)
                                   (marker-position hermes--stream-headline-marker))
                              (point-max)))
+                   (setq structural-change t)
                    (hermes--stream-commit))
                   ((not (eq os ns))
                    (bump (or (and (markerp hermes--stream-segments-start)
@@ -101,7 +112,8 @@
                        (hermes-state-queue new))
             (force-mode-line-update)))))
     (when (derived-mode-p 'org-mode)
-      (org-element-cache-reset)
+      (when structural-change
+        (org-element-cache-reset))
       (when indent-refresh-start
         (when (and (bound-and-true-p org-indent-mode)
                    (fboundp 'org-indent-add-properties))
@@ -149,7 +161,20 @@
       (goto-char (point-max)))
     (when (and text (not (string-empty-p text)))
       (insert text)
-      (unless (eq (char-before) ?\n) (insert "\n")))))
+      (unless (eq (char-before) ?\n) (insert "\n")))
+    ;; Repair fold boundaries.  `with-silent-modifications' suppressed
+    ;; `after-change-functions', so `org-fold-core' never re-validated the
+    ;; tail of the previous assistant turn (which may have a folded
+    ;; `*** Reasoning' / `*** Thinking' subtree).  Without this, the new
+    ;; `* user' headline can be rendered merged onto the preceding
+    ;; ellipsis line.  Unfold anything covering the new turn's region.
+    (when (derived-mode-p 'org-mode)
+      (ignore-errors
+        (cond
+         ((fboundp 'org-fold-region)
+          (org-fold-region hb (point) nil 'outline))
+         ((fboundp 'org-flag-region)
+          (org-flag-region hb (point) nil 'outline)))))))
 
 (defun hermes--tag-spacer (heading)
   "Return enough spaces to right-align a :HERMES: tag at column 80."

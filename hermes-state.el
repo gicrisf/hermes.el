@@ -189,15 +189,25 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
 
 ;;;; Segment helpers
 
-(defun hermes--reasoning-duplicate-p (chunk last-seg)
-  "Return t if CHUNK duplicates LAST-SEG's content (text or reasoning).
+(defun hermes--reasoning-duplicate-p (chunk stream)
+  "Return t if CHUNK duplicates the most recent text/reasoning segment in STREAM.
 Gateways occasionally emit a `reasoning.delta' whose payload is identical
-to the response text — likely a model echo.  Suppress at the reducer so
-the buffer doesn't grow a `*** Reasoning' block that mirrors the answer."
-  (and last-seg
-       (memq (hermes-segment-type last-seg) '(text reasoning))
-       (string= (string-trim (or (hermes-segment-content last-seg) ""))
-                (string-trim (or chunk "")))))
+to the response text — likely a model echo.  Tool segments between the
+echo and the original text are skipped, so a tool call interleaved
+between the assistant's response and the echo doesn't defeat dedup."
+  (let* ((segs (and stream (hermes-stream-segments stream)))
+         (trimmed-chunk (string-trim (or chunk "")))
+         (target nil))
+    (when segs
+      (let ((i (1- (length segs))))
+        (while (and (>= i 0) (not target))
+          (let ((seg (aref segs i)))
+            (when (memq (hermes-segment-type seg) '(text reasoning))
+              (setq target seg)))
+          (setq i (1- i)))))
+    (and target
+         (string= (string-trim (or (hermes-segment-content target) ""))
+                  trimmed-chunk))))
 
 (defun hermes--last-segment (stream)
   "Return the last segment in STREAM, or nil."
@@ -563,7 +573,7 @@ which case dispatch routes to the correct typed reconstructor."
                               (make-hermes-stream :segments [] :tools [])))
               (text (or (hermes--get p "text") ""))
               (last (hermes--last-segment old-stream)))
-         (if (hermes--reasoning-duplicate-p text last)
+         (if (hermes--reasoning-duplicate-p text old-stream)
              state
            (hermes--with-copy state hermes-state-copy s
              (setf (hermes-state-stream s)
@@ -580,7 +590,7 @@ which case dispatch routes to the correct typed reconstructor."
                               (make-hermes-stream :segments [] :tools [])))
               (chunk (or (hermes--get p "text") ""))
               (last (hermes--last-segment old-stream)))
-         (if (hermes--reasoning-duplicate-p chunk last)
+         (if (hermes--reasoning-duplicate-p chunk old-stream)
              state
            (hermes--with-copy state hermes-state-copy s
              (setf (hermes-state-stream s)

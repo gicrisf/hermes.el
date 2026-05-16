@@ -187,6 +187,24 @@ Thinking deltas no longer touch the persistent stream — see UI reducer tests."
     (should (= 1 (length segs)))
     (should (eq 'text (hermes-segment-type (aref segs 0))))))
 
+(ert-deftest hermes-state-test/reasoning-delta-suppressed-across-tool-gap ()
+  "Dedup skips over interleaved tool segments to find the prior text.
+A `text → tool → reasoning' sequence where reasoning echoes the text
+should still suppress the reasoning segment."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "Fair point"))
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "search_files"))
+             (cons "tool.complete"
+                   (hermes-test--ht "tool_id" "t1" "duration_s" 0.1))
+             (cons "reasoning.delta" (hermes-test--ht "text" "Fair point"))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 2 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))
+    (should (eq 'tool (hermes-segment-type (aref segs 1))))))
+
 (ert-deftest hermes-state-test/reasoning-available-suppressed-when-duplicate ()
   "`reasoning.available' is also guarded against duplicating prior text."
   (let* ((s (hermes-test--reduce*

@@ -293,7 +293,9 @@ queued input is drained."
 
 (defun hermes--parse-buffer-messages ()
   "Walk the buffer and return a vector of `hermes-message' structs.
-Reads :HERMES_RAW: drawers under level-1 headings (* user, * system)."
+Reads :HERMES_RAW: drawers under level-1 headings — the heading text
+itself is ignored, so older `* user: …' headings resume the same as the
+new content-first format (`* … :user:')."
   (let (messages)
     (when (derived-mode-p 'org-mode)
       (org-map-entries

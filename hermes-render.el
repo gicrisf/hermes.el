@@ -208,10 +208,15 @@ subtree with raw drawer."
      ;; user/system rather than the streaming path.
      (goto-char (point-max))
      (unless (bolp) (insert "\n"))
-     (let ((hb (point))
-           (heading "** assistant")
-           (spacer  (make-string (- 74 (length "** assistant")) ?\s)))
-       (insert (format "%s %s :hermes:\n" heading spacer))
+     (let* ((info    (hermes-state-session-info hermes--state))
+            (model   (and (hash-table-p info) (gethash "model" info)))
+            (text    (hermes--message-text-for-display msg))
+            (excerpt (hermes--heading-excerpt text))
+            (tags    (hermes--turn-tags 'assistant model))
+            (heading (format "** %s" excerpt))
+            (hb      (point)))
+       (insert (format "%s %s %s\n"
+                       heading (hermes--tag-spacer heading tags) tags))
        (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face))
      (hermes--insert-properties
       `(("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
@@ -221,16 +226,16 @@ subtree with raw drawer."
   "Insert a level-1 heading for a new turn (user or system MSG)."
   (let* ((kind     (hermes-message-kind msg))
          (text     (hermes--message-text-for-display msg))
-         (prefix   (hermes--first-line (or text "")))
-         (tag      (symbol-name kind))
-         (heading  (format "* %s: %s" tag prefix))
+         (excerpt  (hermes--heading-excerpt text))
+         (heading  (format "* %s" excerpt))
+         (tags     (hermes--turn-tags kind))
          (sid      (or (hermes-state-session-id hermes--state) ""))
          (info     (hermes-state-session-info hermes--state))
          (model    (and (hash-table-p info) (gethash "model" info))))
     (goto-char (point-max))
     (unless (bolp) (insert "\n"))
     (let ((hb (point)))
-      (insert (format "%s %s\n" heading (hermes--tag-spacer heading)))
+      (insert (format "%s %s %s\n" heading (hermes--tag-spacer heading tags) tags))
       (hermes--face-overlay hb (1- (point)) face)
       (hermes--insert-properties
        `(("HERMES_SESSION" . ,sid)
@@ -303,11 +308,70 @@ Does not move point."
 ;; `hermes--refresh-region', invoked from `hermes--render' after
 ;; `with-silent-modifications' has exited.
 
-(defun hermes--tag-spacer (heading)
-  "Return enough spaces to right-align a :HERMES: tag at column 80."
-  (let* ((width (string-width heading))
-         (pad   (- 77 width)))
+(defun hermes--tag-spacer (heading tags)
+  "Return spaces so HEADING + space + spacer + space + TAGS aligns near col 75.
+TAGS is the full tag string including surrounding colons, e.g.
+`:hermes:deepseek-v4:'.  Falls back to a single space when the heading
+plus tags already overflow the target width."
+  (let* ((target 75)
+         (used   (+ (string-width heading) 2 (string-width tags)))
+         (pad    (- target used)))
     (if (> pad 0) (make-string pad ?\s) " ")))
+
+(defun hermes--model-short-name (slug)
+  "Extract a short model name from SLUG.
+For `deepseek/deepseek-v4-flash:free' returns `deepseek-v4-flash'.
+Strips provider prefix (anything up to `/') and version suffix
+(anything from `:' onward)."
+  (when (and slug (stringp slug) (not (string-empty-p slug)))
+    (let* ((sans-provider (if (string-match "/" slug)
+                              (substring slug (1+ (match-beginning 0)))
+                            slug))
+           (sans-suffix (if (string-match ":" sans-provider)
+                            (substring sans-provider 0 (match-beginning 0))
+                          sans-provider)))
+      sans-suffix)))
+
+(defun hermes--heading-excerpt (text)
+  "Return a heading-friendly excerpt from TEXT.
+Skips leading blank lines, takes the first non-empty line, collapses
+internal whitespace, and truncates to 60 chars with an ellipsis.
+Returns `(empty)' when TEXT has no visible content."
+  (let* ((trimmed (string-trim (or text "")))
+         (first   (catch 'found
+                    (dolist (line (split-string trimmed "\n"))
+                      (let ((s (string-trim line)))
+                        (unless (string-empty-p s)
+                          (throw 'found s))))
+                    "")))
+    (cond
+     ((string-empty-p first) "(empty)")
+     ((> (length first) 60) (concat (substring first 0 57) "..."))
+     (t first))))
+
+(defun hermes--turn-tags (kind &optional _model)
+  "Build the tag string for a turn of KIND.
+KIND is one of `user', `assistant', `system'.  The MODEL arg is
+accepted for symmetry but currently ignored — see note below.
+
+NOTE: An earlier iteration appended the short model name as an extra
+tag on committed assistant turns, e.g. `:hermes:deepseek-v4:'.  It was
+removed because the resulting tag column felt too crowded next to the
+response excerpt, and the model is already discoverable via the
+streaming placeholder (`** deepseek-v4 :hermes:') and the
+`:HERMES_MODEL:' property drawer.  To re-enable, replace the
+`assistant' branch below with:
+
+  (\\='assistant
+   (let ((short (hermes--model-short-name _model)))
+     (if short (format \":hermes:%s:\" short) \":hermes:\")))
+
+and pass MODEL at the call sites (`hermes--finalize-assistant-heading'
+and the `assistant' branch of `hermes--insert-committed-turn')."
+  (pcase kind
+    ('user      ":user:")
+    ('system    ":system:")
+    ('assistant ":hermes:")))
 
 (defun hermes--face-overlay (beg end face)
   "Put a face overlay over the headline region [BEG, END)."
@@ -668,10 +732,16 @@ Also opens a bench overlay tinting the live region."
         hermes--bench-end   (copy-marker (point) t))
   (setq hermes--stream-headline-marker (point-marker))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
-  (let ((hb (point))
-        (heading "** assistant")
-        (spacer  (make-string (- 74 (length "** assistant")) ?\s)))
-    (insert (format "%s %s :hermes:\n" heading spacer))
+  (let* ((info    (and (boundp 'hermes--state)
+                       hermes--state
+                       (hermes-state-session-info hermes--state)))
+         (model   (and (hash-table-p info) (gethash "model" info)))
+         (short   (or (hermes--model-short-name model) ""))
+         (heading (format "** %s" short))
+         (tags    ":hermes:")
+         (hb      (point)))
+    (insert (format "%s %s %s\n"
+                    heading (hermes--tag-spacer heading tags) tags))
     (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face))
   (hermes--insert-properties
    `(("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
@@ -714,6 +784,35 @@ Also opens a bench overlay tinting the live region."
                     (marker-position hermes--bench-start)
                     (marker-position hermes--bench-end)))))
 
+(defun hermes--finalize-assistant-heading (msg)
+  "Rewrite the in-flight assistant heading to show a response excerpt.
+MSG is the committed `hermes-message'.  Replaces the line at
+`hermes--stream-headline-marker' with `** <excerpt> :hermes:<model>:'."
+  (when (and (markerp hermes--stream-headline-marker)
+             (marker-position hermes--stream-headline-marker))
+    (let* ((text     (hermes--message-text-for-display msg))
+           (excerpt  (hermes--heading-excerpt text))
+           (info     (and (boundp 'hermes--state)
+                          hermes--state
+                          (hermes-state-session-info hermes--state)))
+           (model    (and (hash-table-p info) (gethash "model" info)))
+           (tags     (hermes--turn-tags 'assistant model))
+           (heading  (format "** %s" excerpt))
+           (spacer   (hermes--tag-spacer heading tags)))
+      (save-excursion
+        (goto-char (marker-position hermes--stream-headline-marker))
+        (let ((line-beg (line-beginning-position))
+              (line-end (line-end-position)))
+          ;; Drop any existing headline face overlay covering the old line
+          ;; so the new line gets a fresh, correctly-sized one.
+          (dolist (ov (overlays-in line-beg (1+ line-end)))
+            (when (overlay-get ov 'hermes-headline)
+              (delete-overlay ov)))
+          (delete-region line-beg line-end)
+          (let ((hb (point)))
+            (insert (format "%s %s %s" heading spacer tags))
+            (hermes--face-overlay hb (point) 'hermes-assistant-face)))))))
+
 (defun hermes--stream-commit (&optional old-stream)
   "Stream finished: stamp Org :ID:s on the trail, drop markers and bench.
 If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
@@ -738,7 +837,10 @@ If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
       (save-excursion
         (goto-char (marker-position hermes--bench-end))
         (unless (bolp) (insert "\n"))
-        (hermes--insert-raw-drawer msg))))
+        (hermes--insert-raw-drawer msg))
+      ;; Rewrite the assistant heading from `** <model>' placeholder
+      ;; into `** <response excerpt> :hermes:<model>:'.
+      (hermes--finalize-assistant-heading msg)))
   ;; Collapse reasoning subtrees now that the turn is sealed.  During
   ;; streaming they were left visible so the user could watch the
   ;; thought process build; once committed the buffer should show only

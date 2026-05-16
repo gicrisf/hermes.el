@@ -277,6 +277,53 @@ position right after the heading line."
                      hermes--stream-headline-marker))
       (should (null m)))))
 
+;;;; Content-first headings — helpers
+
+(ert-deftest hermes-render-test/model-short-name-strips-provider-and-suffix ()
+  (should (equal "deepseek-v4-flash"
+                 (hermes--model-short-name "deepseek/deepseek-v4-flash:free")))
+  (should (equal "claude-sonnet-4-6"
+                 (hermes--model-short-name "anthropic/claude-sonnet-4-6")))
+  (should (equal "gpt-5"
+                 (hermes--model-short-name "gpt-5")))
+  (should (equal "gpt-5"
+                 (hermes--model-short-name "gpt-5:turbo")))
+  (should (null (hermes--model-short-name nil)))
+  (should (null (hermes--model-short-name ""))))
+
+(ert-deftest hermes-render-test/heading-excerpt-truncation ()
+  (let* ((s (make-string 80 ?x))
+         (out (hermes--heading-excerpt s)))
+    (should (= 60 (length out)))
+    (should (string-suffix-p "..." out))))
+
+(ert-deftest hermes-render-test/heading-excerpt-skips-blank-lines ()
+  (should (equal "Hello" (hermes--heading-excerpt "\n\nHello\nworld"))))
+
+(ert-deftest hermes-render-test/heading-excerpt-empty ()
+  (should (equal "(empty)" (hermes--heading-excerpt "")))
+  (should (equal "(empty)" (hermes--heading-excerpt "   \n\n\t")))
+  (should (equal "(empty)" (hermes--heading-excerpt nil))))
+
+(ert-deftest hermes-render-test/heading-excerpt-trims-internal-line ()
+  (should (equal "Hi there"
+                 (hermes--heading-excerpt "   Hi there   \nrest"))))
+
+(ert-deftest hermes-render-test/tag-spacer-keeps-line-under-target ()
+  (let* ((heading "** Hey there.")
+         (tags ":hermes:deepseek-v4:")
+         (spacer (hermes--tag-spacer heading tags))
+         (line (format "%s %s %s" heading spacer tags)))
+    ;; Spacer is at least one space, and the assembled line lands close
+    ;; to (but no longer than) the target column.
+    (should (>= (length spacer) 1))
+    (should (<= (length line) 78))))
+
+(ert-deftest hermes-render-test/tag-spacer-single-space-on-overflow ()
+  (let* ((heading (concat "** " (make-string 80 ?x)))
+         (tags ":hermes:"))
+    (should (equal " " (hermes--tag-spacer heading tags)))))
+
 ;;;; Compact tool heading
 
 (ert-deftest hermes-render-test/tool-heading-includes-gateway-summary ()
@@ -452,9 +499,10 @@ property drawer — just heading + drawer."
       ;; of :pending-turns-clear then operates on the swapped state.
       (setq hermes--state new)
       (hermes--render old new))
-    ;; Buffer now contains a `* user:' heading with the body.
+    ;; Buffer now contains a `* ping :user:' heading with the body.
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should (string-match-p "^\\* user: ping" body))
+      (should (string-match-p "^\\* ping " body))
+      (should (string-match-p ":user:" body))
       (should (string-match-p ":HERMES_RAW:" body)))
     ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
@@ -497,7 +545,8 @@ one assistant subtree with exactly one :HERMES_RAW: drawer."
                         (hermes-state-stream s) nil))))
       (setq hermes--state new)
       (hermes--render old new))
-    (should (= 1 (hermes-render-test--count "^\\*\\* assistant")))
+    (should (= 1 (hermes-render-test--count "^\\*\\* ")))
+    (should (= 1 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^:HERMES_RAW:")))
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
@@ -532,12 +581,13 @@ After render: one assistant subtree, one system heading, system appears
                         (hermes-state-stream s) nil))))
       (setq hermes--state new)
       (hermes--render old new))
-    (should (= 1 (hermes-render-test--count "^\\*\\* assistant")))
-    (should (= 1 (hermes-render-test--count "^\\* system:")))
+    (should (= 1 (hermes-render-test--count "^\\*\\* ")))
+    (should (= 1 (hermes-render-test--count ":hermes:")))
+    (should (= 1 (hermes-render-test--count ":system:")))
     (should (= 2 (hermes-render-test--count "^:HERMES_RAW:")))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should (< (string-match "^\\*\\* assistant" body)
-                 (string-match "^\\* system:" body))))))
+      (should (< (string-match "^\\*\\* " body)
+                 (string-match ":system:" body))))))
 
 (ert-deftest hermes-render-test/pending-turns-assistant-skipped ()
   "Drain with only an assistant in pending-turns inserts nothing,
@@ -554,7 +604,7 @@ but still clears the vector via :pending-turns-clear."
                   (setf (hermes-state-pending-turns s) (vector msg)))))
       (setq hermes--state new)
       (hermes--render old new))
-    (should (= 0 (hermes-render-test--count "^\\*\\* assistant")))
+    (should (= 0 (hermes-render-test--count "^\\*\\* ")))
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
 ;;;; Queue drain ordering — see PLAN.md "Debug: Queue Drain Corrupts Buffer Structure"
@@ -591,10 +641,10 @@ heading — i.e. inside the assistant subtree, not after it."
       ;; Inspect buffer.  Expected order: assistant heading → assistant
       ;; raw drawer → user heading for "next" → user raw drawer for "next".
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
-             (assist-head (string-match "^\\*\\* assistant" body))
-             (user-next (string-match "^\\* user: next" body))
+             (assist-head (string-match "^\\*\\* " body))
+             (user-next (string-match "^\\* next " body))
              ;; Find the *assistant's* raw drawer: the first :HERMES_RAW:
-             ;; that appears after the `** assistant' heading.
+             ;; that appears after the assistant heading.
              (raw-after-assistant
               (and assist-head
                    (string-match ":HERMES_RAW:" body assist-head))))

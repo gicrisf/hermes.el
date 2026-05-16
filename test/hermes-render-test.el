@@ -277,6 +277,69 @@ position right after the heading line."
                      hermes--stream-headline-marker))
       (should (null m)))))
 
+;;;; Compact tool heading
+
+(ert-deftest hermes-render-test/tool-heading-includes-gateway-summary ()
+  "Tool heading appends gateway-provided summary after `— '."
+  (let* ((tool (make-hermes-tool :id "t1" :name "web_search"
+                                 :status 'complete
+                                 :summary "Did 3 searches"
+                                 :duration 1.4))
+         (result (hermes--format-segment
+                  (make-hermes-segment :type 'tool :content tool :id "s1"))))
+    (should (string-match-p "— Did 3 searches" result))
+    (should (string-match-p "(1.4s)" result))))
+
+(ert-deftest hermes-render-test/tool-heading-without-summary ()
+  "Tool heading omits the `— ' separator when no gateway summary."
+  (let* ((tool (make-hermes-tool :id "t1" :name "web_search"
+                                 :status 'complete :duration 0.2))
+         (result (hermes--format-segment
+                  (make-hermes-segment :type 'tool :content tool :id "s1"))))
+    (should (string-match-p "^\\*\\*\\* DONE web_search" result))
+    (should-not (string-match-p "—" result))))
+
+(ert-deftest hermes-render-test/tool-heading-error-indicator ()
+  "Heading carries an `[error]' indicator when the tool errored."
+  (let* ((tool (make-hermes-tool :id "t1" :name "Bash"
+                                 :status 'error :error "boom"
+                                 :duration 0.1))
+         (result (hermes--format-segment
+                  (make-hermes-segment :type 'tool :content tool :id "s1"))))
+    (should (string-match-p "\\[error\\]" result))))
+
+(ert-deftest hermes-render-test/tool-heading-diff-indicator ()
+  "Heading carries a `[diff]' indicator when inline-diff is present."
+  (let* ((tool (make-hermes-tool :id "t1" :name "Write"
+                                 :status 'complete
+                                 :inline-diff "- old\n+ new"))
+         (result (hermes--format-segment
+                  (make-hermes-segment :type 'tool :content tool :id "s1"))))
+    (should (string-match-p "\\[diff\\]" result))))
+
+(ert-deftest hermes-render-test/tool-heading-todo-indicator ()
+  "Heading carries a `[N todo]' indicator counting the todos list."
+  (let* ((tool (make-hermes-tool :id "t1" :name "TodoWrite"
+                                 :status 'complete
+                                 :todos '((:text "a") (:text "b") (:text "c"))))
+         (result (hermes--format-segment
+                  (make-hermes-segment :type 'tool :content tool :id "s1"))))
+    (should (string-match-p "\\[3 todo\\]" result))))
+
+(ert-deftest hermes-render-test/tool-empty-body-when-no-content ()
+  "Tool with no output/error/diff/todos emits no body content after the
+property drawer — just heading + drawer."
+  (let* ((tool (make-hermes-tool :id "t1" :name "web_search"
+                                 :status 'complete
+                                 :summary "Did 3 searches"
+                                 :duration 1.4))
+         (result (hermes--format-segment
+                  (make-hermes-segment :type 'tool :content tool :id "s1"))))
+    ;; No `#+begin_example' (would indicate raw body content).
+    (should-not (string-match-p "#\\+begin_example" result))
+    ;; No diff src block either.
+    (should-not (string-match-p "#\\+begin_src diff" result))))
+
 ;;;; Reasoning fold lifecycle
 
 (defun hermes-render-test--invisible-at (pos)

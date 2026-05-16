@@ -442,6 +442,21 @@ and writes the error text to the log."
          (tool (hermes-segment-content seg)))
     (should (equal "ls /tmp" (hermes-tool-preview tool)))))
 
+(ert-deftest hermes-state-test/tool-complete-stores-summary ()
+  "Gateway-provided `summary' is extracted into the tool struct."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "web_search"))
+             (cons "tool.complete"
+                   (hermes-test--ht "tool_id" "t1"
+                                    "summary" "Did 3 searches"
+                                    "duration_s" 1.4))))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
+    (should (equal "Did 3 searches" (hermes-tool-summary tool)))))
+
 (ert-deftest hermes-state-test/tool-complete-stores-inline-diff ()
   (let* ((s (hermes-test--reduce*
              nil
@@ -885,7 +900,7 @@ and writes the error text to the log."
                 :context "{\"file\":\"x.py\"}"
                 :preview nil :inline-diff "- a\n+ b"
                 :todos '((:text "fix" :done t))
-                :output "OK" :error nil :duration 0.5))
+                :output "OK" :summary "Read 1 file" :error nil :duration 0.5))
          (msg (make-hermes-message
                :kind 'assistant
                :segments (vector (make-hermes-segment
@@ -900,6 +915,7 @@ and writes the error text to the log."
     (should (eq 'complete (hermes-tool-status rt-tool)))
     (should (equal "- a\n+ b" (hermes-tool-inline-diff rt-tool)))
     (should (equal "OK" (hermes-tool-output rt-tool)))
+    (should (equal "Read 1 file" (hermes-tool-summary rt-tool)))
     (should (equal 0.5 (hermes-tool-duration rt-tool)))))
 
 (ert-deftest hermes-state-test/round-trip-subagent-message ()

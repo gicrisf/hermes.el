@@ -71,7 +71,9 @@
   preview     ; live preview from tool.progress
   inline-diff ; diff output from tool.complete
   todos       ; list of plists (:text :done) from tool.complete
-  output error duration)
+  output      ; string or nil (raw tool result text — rarely populated)
+  summary     ; string or nil (human summary from gateway, e.g. "Did 3 searches")
+  error duration)
 
 (cl-defstruct (hermes-subagent (:copier hermes-subagent-copy))
   id          ; string — subagent_id from gateway
@@ -291,6 +293,7 @@ the buffer doesn't grow a `*** Reasoning' block that mirrors the answer."
         :inline-diff (hermes-tool-inline-diff tool)
         :todos (hermes--to-plist (hermes-tool-todos tool))
         :output (hermes-tool-output tool)
+        :summary (hermes-tool-summary tool)
         :error (hermes-tool-error tool)
         :duration (hermes-tool-duration tool)))
 
@@ -305,6 +308,7 @@ the buffer doesn't grow a `*** Reasoning' block that mirrors the answer."
    :inline-diff (plist-get p :inline-diff)
    :todos (plist-get p :todos)
    :output (plist-get p :output)
+   :summary (plist-get p :summary)
    :error (plist-get p :error)
    :duration (plist-get p :duration)))
 
@@ -826,6 +830,7 @@ which case dispatch routes to the correct typed reconstructor."
               (inline-diff (hermes--get p "inline_diff"))
               (todos-raw (hermes--get p "todos"))
               (output (hermes--get p "output"))
+              (summary (hermes--get p "summary"))
               (err    (hermes--get p "error"))
               (dur    (hermes--get p "duration_s")))
          (if (or (null str) (null tid))
@@ -847,6 +852,7 @@ which case dispatch routes to the correct typed reconstructor."
                                   (setf (hermes-tool-status nt)
                                         (if err 'error 'complete)
                                         (hermes-tool-output nt) output
+                                        (hermes-tool-summary nt) summary
                                         (hermes-tool-error nt) err
                                         (hermes-tool-duration nt) dur
                                         (hermes-tool-inline-diff nt) inline-diff

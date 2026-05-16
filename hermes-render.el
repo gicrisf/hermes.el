@@ -479,20 +479,46 @@ collapse them on insertion."
                        props "\n")
             "\n:END:\n")))
 
+(defun hermes--tool-heading-string (tool keyword formatter-summary)
+  "Build a compact heading string for TOOL with status KEYWORD.
+FORMATTER-SUMMARY is the per-tool formatter's `:summary' (e.g. `$ ls').
+Appends the gateway-provided summary, duration, and indicators for
+foldable content (diff, todos, error)."
+  (let* ((gw-summary (hermes-tool-summary tool))
+         (duration   (hermes-tool-duration tool))
+         (has-diff   (hermes-tool-inline-diff tool))
+         (todos      (hermes-tool-todos tool))
+         (err        (hermes-tool-error tool))
+         (indicators nil)
+         (head (concat "*** " keyword " " formatter-summary)))
+    (when (and gw-summary (not (string-empty-p gw-summary)))
+      (setq head (concat head " — " gw-summary)))
+    (when duration
+      (setq head (concat head (format " (%.1fs)" duration))))
+    (when has-diff (push "[diff]" indicators))
+    (when (and todos (> (length todos) 0))
+      (push (format "[%d todo]" (length todos)) indicators))
+    (when err (push "[error]" indicators))
+    (when indicators
+      (setq head (concat head " "
+                         (mapconcat #'identity (nreverse indicators) " "))))
+    head))
+
 (defun hermes--format-tool (tool)
   "Return an Org block string for a single TOOL.
-Heading uses an org TODO keyword for status; body is produced by a
-per-tool formatter from `hermes-tool-formatters'."
+Heading uses an org TODO keyword for status, plus gateway summary,
+duration, and indicators; body is produced by a per-tool formatter
+from `hermes-tool-formatters' and only inserted when non-empty."
   (let* ((name      (or (hermes-tool-name tool) "tool"))
          (status    (hermes-tool-status tool))
          (keyword   (hermes--tool-status-keyword status))
          (formatter (hermes-tool--lookup name))
          (parts     (funcall formatter tool))
-         (summary   (or (plist-get parts :summary) name))
+         (fmt-sum   (or (plist-get parts :summary) name))
          (body      (or (plist-get parts :body) ""))
          (fold-p    (and (eq status 'complete) (plist-get parts :fold)))
          (props     (hermes--tool-properties tool))
-         (heading   (format "*** %s %s" keyword summary))
+         (heading   (hermes--tool-heading-string tool keyword fmt-sum))
          ;; Tag the heading line with a text property so the renderer can
          ;; fold it after insertion without re-parsing org structure.
          (heading-line
@@ -502,9 +528,11 @@ per-tool formatter from `hermes-tool-formatters'."
                            'hermes-fold-id (hermes-tool-id tool))
                "\n")
             (concat heading "\n")))
+         (drawer    (hermes--format-property-drawer props))
+         (has-body  (and body (not (string-empty-p body))))
          (out (concat heading-line
-                      (hermes--format-property-drawer props)
-                      body)))
+                      drawer
+                      (if has-body body ""))))
     (if (> (length out) 0)
         (concat out (if (string-suffix-p "\n" out) "" "\n"))
       out)))

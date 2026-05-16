@@ -664,5 +664,36 @@ heading — i.e. inside the assistant subtree, not after it."
         (should (< assist-head raw-after-assistant))
         (should (< raw-after-assistant user-next))))))
 
+;;;; Relative turn levels
+
+(ert-deftest hermes-render-test/turn-level-follows-container ()
+  "Turn headings are rendered one level below `hermes--container-level'.
+With the default container at level 1, both user turns and the
+assistant stream heading are level 2.  Bump the container to level 3
+and they shift to level 4."
+  (dolist (clevel '(1 3))
+    (with-temp-buffer
+      (hermes-mode)
+      ;; Override the container level the major mode just set.  In real
+      ;; life this happens once at mode entry; here we simulate a deeper
+      ;; container.  We do NOT rewrite the buffer's existing container
+      ;; heading — the test only cares about what subsequent inserts use.
+      (setq-local hermes--container-level clevel)
+      (let* ((msg (make-hermes-message
+                   :kind 'user
+                   :segments (vector (make-hermes-segment
+                                      :type 'text :content "hello" :id "s1"))
+                   :timestamp "2024-01-15T10:00:00+0000"))
+             (old hermes--state)
+             (new (hermes--with-copy hermes--state hermes-state-copy s
+                    (setf (hermes-state-pending-turns s) (vector msg)))))
+        (setq hermes--state new)
+        (hermes--render old new))
+      (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
+             (expected-stars (make-string (1+ clevel) ?*)))
+        (should (string-match-p
+                 (format "^%s hello " (regexp-quote expected-stars))
+                 body))))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

@@ -59,6 +59,22 @@
 (defvar-local hermes--bench-overlay nil
   "Overlay tinting the bench so the user can see the live region.")
 
+;;;; Relative heading levels
+
+(defvar-local hermes--container-level 1
+  "Org level of the session container heading in this buffer.
+Turns are rendered as direct children (`container-level + 1') and the
+assistant's reasoning/response/tools sub-headings as grandchildren
+(`container-level + 2').  Set once by the major mode (Phase 1: always 1,
+since the container lives at point-min).  Phase 2 will derive this from
+the `:hermes:'-tagged ancestor of the session's anchor.")
+
+(defun hermes--stars (depth-offset)
+  "Return a string of `*' for a heading nested DEPTH-OFFSET below the container.
+DEPTH-OFFSET 1 → turn level; 2 → reasoning/response/tool level;
+3 → subagent level."
+  (make-string (+ hermes--container-level depth-offset) ?*))
+
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
@@ -213,7 +229,7 @@ subtree with raw drawer."
             (text    (hermes--message-text-for-display msg))
             (excerpt (hermes--heading-excerpt text))
             (tags    (hermes--turn-tags 'assistant model))
-            (heading (format "** %s" excerpt))
+            (heading (format "%s %s" (hermes--stars 1) excerpt))
             (hb      (point)))
        (insert (format "%s %s %s\n"
                        heading (hermes--tag-spacer heading tags) tags))
@@ -223,13 +239,13 @@ subtree with raw drawer."
      (hermes--insert-raw-drawer msg))))
 
 (defun hermes--insert-turn-headline (msg face)
-  "Insert a level-2 heading for a new turn (user or system MSG).
-Turns are siblings under the session container heading, so user,
-system, and assistant headings all live at level 2."
+  "Insert a turn heading for user or system MSG.
+The heading is one level below the session container, so user, system,
+and assistant turns are all siblings."
   (let* ((kind     (hermes-message-kind msg))
          (text     (hermes--message-text-for-display msg))
          (excerpt  (hermes--heading-excerpt text))
-         (heading  (format "** %s" excerpt))
+         (heading  (format "%s %s" (hermes--stars 1) excerpt))
          (tags     (hermes--turn-tags kind))
          (sid      (or (hermes-state-session-id hermes--state) ""))
          (info     (hermes-state-session-info hermes--state))
@@ -415,7 +431,7 @@ folded `*** Thinking' / `*** Reasoning' subtree."
   (if (or (null content) (string-empty-p content))
       ""
     (let ((body (hermes-md-to-org content)))
-      (concat "*** Response\n"
+      (concat (hermes--stars 2) " Response\n"
               body
               (if (string-suffix-p "\n" body) "" "\n")))))
 
@@ -428,7 +444,7 @@ collapse them on insertion."
   (if (or (null content) (string-empty-p content))
       ""
     (let* ((kind (downcase label))
-           (heading (format "*** %s" label))
+           (heading (format "%s %s" (hermes--stars 2) label))
            (heading-line
             (concat (propertize heading
                                 'hermes-reasoning-fold t
@@ -458,8 +474,8 @@ collapse them on insertion."
          (duration (hermes-subagent-duration sa))
          (id (hermes-subagent-id sa))
          parts)
-    (push (format "**** %s (%s)\n:PROPERTIES:\n:ID:       %s\n:END:\n"
-                  goal status-label id) parts)
+    (push (format "%s %s (%s)\n:PROPERTIES:\n:ID:       %s\n:END:\n"
+                  (hermes--stars 3) goal status-label id) parts)
     (when (and thinking (not (string-empty-p thinking)))
       (push (concat "#+begin_example Thinking\n"
                     thinking
@@ -560,7 +576,7 @@ foldable content (diff, todos, error)."
          (todos      (hermes-tool-todos tool))
          (err        (hermes-tool-error tool))
          (indicators nil)
-         (head (concat "*** " keyword " " formatter-summary)))
+         (head (concat (hermes--stars 2) " " keyword " " formatter-summary)))
     (when (and gw-summary (not (string-empty-p gw-summary)))
       (setq head (concat head " — " gw-summary)))
     (when duration
@@ -743,7 +759,7 @@ Also opens a bench overlay tinting the live region."
                        (hermes-state-session-info hermes--state)))
          (model   (and (hash-table-p info) (gethash "model" info)))
          (short   (or (hermes--model-short-name model) ""))
-         (heading (format "** %s" short))
+         (heading (format "%s %s" (hermes--stars 1) short))
          (tags    ":hermes:")
          (hb      (point)))
     (insert (format "%s %s %s\n"
@@ -803,7 +819,7 @@ MSG is the committed `hermes-message'.  Replaces the line at
                           (hermes-state-session-info hermes--state)))
            (model    (and (hash-table-p info) (gethash "model" info)))
            (tags     (hermes--turn-tags 'assistant model))
-           (heading  (format "** %s" excerpt))
+           (heading  (format "%s %s" (hermes--stars 1) excerpt))
            (spacer   (hermes--tag-spacer heading tags)))
       (save-excursion
         (goto-char (marker-position hermes--stream-headline-marker))

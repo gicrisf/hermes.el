@@ -204,10 +204,13 @@ session state, and inserts the session container heading."
   (hermes-state-init)
   (hermes-minor-mode 1)
   (setq buffer-read-only t)
+  ;; Phase 1: container always at level 1 (it lives at point-min).
+  (setq-local hermes--container-level 1)
   (let ((inhibit-read-only t))
     (save-excursion
       (goto-char (point-min))
-      (insert "* Hermes session :hermes:\n"))))
+      (insert (concat (make-string hermes--container-level ?*)
+                      " Hermes session :hermes:\n")))))
 
 ;;;; Public entry points
 
@@ -325,14 +328,15 @@ queued input is drained."
 
 (defun hermes--buffer-message-count ()
   "Count committed turns in the current buffer.
-A turn is a level-2 heading carrying a `:HERMES_RAW:' drawer — i.e.
-a direct child of the session container.  The container itself (level 1)
-and any nested sub-headings (reasoning/response/tools) are skipped."
-  (let ((count 0))
+A turn is a heading one level below the session container carrying a
+`:HERMES_RAW:' drawer.  The container itself and any deeper sub-headings
+\(reasoning/response/tools) are skipped."
+  (let ((count 0)
+        (turn-level (1+ hermes--container-level)))
     (when (derived-mode-p 'org-mode)
       (org-map-entries
        (lambda ()
-         (when (and (= 2 (org-current-level))
+         (when (and (= turn-level (org-current-level))
                     (save-excursion (hermes--extract-raw-drawer)))
            (cl-incf count)))
        nil nil 'file))
@@ -340,15 +344,16 @@ and any nested sub-headings (reasoning/response/tools) are skipped."
 
 (defun hermes--parse-buffer-messages ()
   "Walk the buffer and return a vector of `hermes-message' structs.
-Reads `:HERMES_RAW:' drawers under level-2 headings (turns are direct
-children of the session container).  The heading text itself is
-ignored, so older `** user: …' headings resume the same as the
-content-first format (`** … :user:')."
-  (let (messages)
+Reads `:HERMES_RAW:' drawers under turn headings (direct children of
+the session container, i.e. `hermes--container-level' + 1).  The
+heading text itself is ignored, so older `** user: …' headings resume
+the same as the content-first format (`** … :user:')."
+  (let (messages
+        (turn-level (1+ hermes--container-level)))
     (when (derived-mode-p 'org-mode)
       (org-map-entries
        (lambda ()
-         (when (= 2 (org-current-level))
+         (when (= turn-level (org-current-level))
            (let ((raw (save-excursion (hermes--extract-raw-drawer))))
              (when raw
                (push (hermes--plist-to-message raw) messages)))))

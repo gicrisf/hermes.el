@@ -48,37 +48,65 @@
 
 (defun hermes--render (old new)
   "Diff OLD vs NEW (both `hermes-state') and update the buffer."
-  (with-silent-modifications
-    (save-excursion
-      ;; 1. Messages grew → append new tail messages (skip assistant ones
-      ;;    that were already streamed).
-      (let* ((old-n (length (and old (hermes-state-messages old))))
-             (new-n (length (hermes-state-messages new))))
-        (when (> new-n old-n)
-          (cl-loop for i from old-n below new-n
-                   for msg = (aref (hermes-state-messages new) i)
-                   do (hermes--render-committed-message msg))))
-      ;; 2. Stream lifecycle.
-      (let ((os (and old (hermes-state-stream old)))
-            (ns (hermes-state-stream new)))
-        (cond ((and (null os) ns) (hermes--stream-begin))
-              ((and os (null ns)) (hermes--stream-commit))
-              ((not (eq os ns))   (hermes--stream-update os ns))))
-      ;; 3. Header line — session-info / connection / usage.
-      (unless (and old
-                    (eq (hermes-state-session-info old)
-                        (hermes-state-session-info new))
-                    (eq (hermes-state-connection old)
-                        (hermes-state-connection new))
-                    (eq (hermes-state-usage old)
-                        (hermes-state-usage new)))
-        (hermes--render-header new))
-      ;; 4. Queue length changed → refresh header-line :eval forms.
-      (unless (eq (and old (hermes-state-queue old))
-                   (hermes-state-queue new))
-        (force-mode-line-update))))
-  (when (derived-mode-p 'org-mode)
-    (org-element-cache-reset)))
+  ;; Track the earliest buffer position that any sub-renderer touches so we
+  ;; can refresh `org-indent-mode' over just the changed tail afterwards.
+  ;; `with-silent-modifications' suppresses `after-change-functions', which
+  ;; is what `org-indent-mode' uses to attach line-prefix properties — so
+  ;; without this, new sub-headlines fall back to their parent's indent.
+  (let ((indent-refresh-start nil)
+        (buffer-modified nil))
+    (cl-flet ((bump (pos)
+                (setq buffer-modified t)
+                (when (and pos (or (null indent-refresh-start)
+                                   (< pos indent-refresh-start)))
+                  (setq indent-refresh-start pos))))
+      (with-silent-modifications
+        (save-excursion
+          ;; 1. Messages grew → append new tail messages.
+          (let* ((old-n (length (and old (hermes-state-messages old))))
+                 (new-n (length (hermes-state-messages new))))
+            (when (> new-n old-n)
+              (bump (point-max))
+              (cl-loop for i from old-n below new-n
+                       for msg = (aref (hermes-state-messages new) i)
+                       do (hermes--render-committed-message msg))))
+          ;; 2. Stream lifecycle.
+          (let ((os (and old (hermes-state-stream old)))
+                (ns (hermes-state-stream new)))
+            (cond ((and (null os) ns)
+                   (bump (point-max))
+                   (hermes--stream-begin))
+                  ((and os (null ns))
+                   (bump (or (and (markerp hermes--stream-segments-start)
+                                  (marker-position hermes--stream-segments-start))
+                             (point-max)))
+                   (hermes--stream-commit))
+                  ((not (eq os ns))
+                   (bump (or (and (markerp hermes--stream-segments-start)
+                                  (marker-position hermes--stream-segments-start))
+                             (point-max)))
+                   (hermes--stream-update os ns))))
+          ;; 3. Header line — session-info / connection / usage.
+          (unless (and old
+                        (eq (hermes-state-session-info old)
+                            (hermes-state-session-info new))
+                        (eq (hermes-state-connection old)
+                            (hermes-state-connection new))
+                        (eq (hermes-state-usage old)
+                            (hermes-state-usage new)))
+            (hermes--render-header new))
+          ;; 4. Queue length changed → refresh header-line :eval forms.
+          (unless (eq (and old (hermes-state-queue old))
+                       (hermes-state-queue new))
+            (force-mode-line-update)))))
+    (when (derived-mode-p 'org-mode)
+      (org-element-cache-reset)
+      (when (and buffer-modified
+                 indent-refresh-start
+                 (bound-and-true-p org-indent-mode)
+                 (fboundp 'org-indent-add-properties))
+        (ignore-errors
+          (org-indent-add-properties indent-refresh-start (point-max)))))))
 
 (defun hermes--render-ui (_old new)
   "Re-render the header line from the ephemeral state NEW."

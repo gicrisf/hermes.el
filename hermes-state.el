@@ -189,14 +189,21 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
 
 ;;;; Segment helpers
 
+(defun hermes--normalize-for-dedup (s)
+  "Collapse all runs of whitespace in S to single spaces and trim.
+Used so dedup ignores cosmetic whitespace differences (tab vs space,
+`\\n\\n' vs two spaces, leading/trailing padding)."
+  (replace-regexp-in-string "[ \t\n\r]+" " " (string-trim (or s ""))))
+
 (defun hermes--reasoning-duplicate-p (chunk stream)
   "Return t if CHUNK duplicates the most recent text/reasoning segment in STREAM.
 Gateways occasionally emit a `reasoning.delta' whose payload is identical
 to the response text — likely a model echo.  Tool segments between the
 echo and the original text are skipped, so a tool call interleaved
-between the assistant's response and the echo doesn't defeat dedup."
+between the assistant's response and the echo doesn't defeat dedup.
+Comparison is whitespace-normalized."
   (let* ((segs (and stream (hermes-stream-segments stream)))
-         (trimmed-chunk (string-trim (or chunk "")))
+         (norm-chunk (hermes--normalize-for-dedup chunk))
          (target nil))
     (when segs
       (let ((i (1- (length segs))))
@@ -206,8 +213,9 @@ between the assistant's response and the echo doesn't defeat dedup."
               (setq target seg)))
           (setq i (1- i)))))
     (and target
-         (string= (string-trim (or (hermes-segment-content target) ""))
-                  trimmed-chunk))))
+         (string= (hermes--normalize-for-dedup
+                   (hermes-segment-content target))
+                  norm-chunk))))
 
 (defun hermes--last-segment (stream)
   "Return the last segment in STREAM, or nil."

@@ -205,6 +205,19 @@ should still suppress the reasoning segment."
     (should (eq 'text (hermes-segment-type (aref segs 0))))
     (should (eq 'tool (hermes-segment-type (aref segs 1))))))
 
+(ert-deftest hermes-state-test/reasoning-delta-suppressed-with-whitespace-variation ()
+  "Whitespace normalization: `\\n\\n' vs space, tab vs space all collapse."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta"
+                   (hermes-test--ht "text" "Hello\n\nworld\tagain"))
+             (cons "reasoning.delta"
+                   (hermes-test--ht "text" "  Hello world again  "))))
+         (segs (hermes-stream-segments (hermes-state-stream s))))
+    (should (= 1 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))))
+
 (ert-deftest hermes-state-test/reasoning-available-suppressed-when-duplicate ()
   "`reasoning.available' is also guarded against duplicating prior text."
   (let* ((s (hermes-test--reduce*

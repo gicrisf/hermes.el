@@ -158,11 +158,19 @@ without this cache, the very first buffer would never see the skin.")
     (save-excursion
       (goto-char (point-min))
       (insert "#+TITLE: hermes\n")))
-  (add-hook 'hermes-state-change-hook    #'hermes--render        nil t)
-  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  nil t)
-  (add-hook 'hermes-state-change-hook    #'hermes-input--drain   nil t)
-  (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     nil t)
-  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     nil t)
+  ;; Order matters: `hermes--render' MUST run before `hermes-input--drain'.
+  ;; If drain runs first, it dispatches `:user-submit' for the queued
+  ;; head; the recursive render inserts that user heading at point-max
+  ;; with stream already nil → `stream-commit' won't have fired yet, so
+  ;; when the outer render finally runs, `bench-end' has been rear-
+  ;; advanced past the user content and the assistant raw drawer lands
+  ;; at the end of the buffer.  `add-hook' with nil APPEND *prepends*,
+  ;; reversing insertion order — so we explicitly append.
+  (add-hook 'hermes-state-change-hook    #'hermes--render        t t)
+  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  t t)
+  (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t t)
+  (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t t)
+  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
   ;; Initial header line.
   (with-silent-modifications
     (hermes--render-header hermes--state)))

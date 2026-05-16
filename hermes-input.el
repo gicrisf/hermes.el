@@ -51,7 +51,11 @@ Subsequent items keep draining via the normal `message.complete' hook."
 ;;;; Drain hook — fires when an in-flight stream transitions to nil.
 
 (defun hermes-input--drain (old new)
-  "If a turn just finished and the queue is non-empty, dispatch its head."
+  "If a turn just finished and the queue is non-empty, dispatch its head.
+Display happens here — not at enqueue time — so the new `* user:'
+heading lands at point-max only after the previous turn has fully
+committed.  This is the pi-coding-agent pattern: invisible queue,
+deferred user-submit."
   (when (and old
              (hermes-state-stream old)
              (null (hermes-state-stream new))
@@ -59,6 +63,7 @@ Subsequent items keep draining via the normal `message.complete' hook."
     (let ((sid (hermes-state-session-id new))
           (head (car (hermes-state-queue new))))
       (hermes-dispatch '(:dequeue))
+      (hermes-dispatch (cons :user-submit (list :text head)))
       (when sid
         (hermes-rpc-request
          "prompt.submit"
@@ -135,8 +140,9 @@ Subsequent items keep draining via the normal `message.complete' hook."
 
 (defun hermes-input-send (text)
   "Submit TEXT to the current Hermes session.
-Slash commands bypass the queue and transcript; ordinary text is
-optimistically committed and queued behind any in-flight turn."
+Slash commands bypass the queue and transcript; idle text is committed
+immediately, while busy text is queued silently and sent when the turn
+ends."
   (interactive
    (let* ((hermes-input--catalog-from-minibuffer
            (and hermes--state (hermes-state-slash-catalog hermes--state)))
@@ -192,10 +198,15 @@ optimistically committed and queued behind any in-flight turn."
                (with-current-buffer buf
                  (hermes-dispatch
                   (cons :system-message (list :text msg))))))))))
-     ;; Live turn → optimistic commit + enqueue (drain hook handles dispatch).
+     ;; Live turn → enqueue silently; the drain hook will display and
+     ;; submit when the in-flight stream clears.  Optimistic commit here
+     ;; would place the `* user:' heading at `point-max', which sits
+     ;; *after* the still-rendering assistant turn — corrupting structure.
+     ;; See `hermes-input--drain' for the deferred user-submit + RPC.
      ((hermes-state-stream hermes--state)
-      (hermes-dispatch (cons :user-submit (list :text text)))
-      (hermes-dispatch (cons :enqueue     (list :text text))))
+      (hermes-dispatch (cons :enqueue (list :text text)))
+      (message "Hermes: Message queued (%d ahead of you)"
+               (length (hermes-state-queue hermes--state))))
      ;; Idle → optimistic commit + immediate prompt.submit.
      (t
       (hermes-dispatch (cons :user-submit (list :text text)))

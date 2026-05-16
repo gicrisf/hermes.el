@@ -339,10 +339,10 @@ C-c C-i → hermes-send → hermes-input-send (hermes-input.el)
         ├── Optimistic commit to messages
         ├── Push onto history ring
         │
-        ├── Stream is idle → hermes-rpc-request "prompt.submit" immediately
-        │
-        └── Stream is busy → append to queue; drain hook fires
-              prompt.submit when stream clears (message.complete)
+         ├── Stream is idle → commit to buffer + hermes-rpc-request "prompt.submit"
+         │
+         └── Stream is busy → enqueue silently (no buffer display yet); drain hook
+               fires on message.complete: dequeue → commit to buffer → send RPC
 ```
 
 ### Blocking prompts

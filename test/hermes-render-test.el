@@ -449,5 +449,55 @@ but still clears the vector via :pending-turns-clear."
     (should (= 0 (hermes-render-test--count "^\\*\\* assistant")))
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
+;;;; Queue drain ordering — see PLAN.md "Debug: Queue Drain Corrupts Buffer Structure"
+
+(require 'hermes-input)
+
+(ert-deftest hermes-render-test/queue-drain-order-correct ()
+  "Realistic reproduction: user enqueues while busy, then `message.complete'
+fires.  The assistant raw drawer must land *before* the dequeued user
+heading — i.e. inside the assistant subtree, not after it."
+  (cl-letf (((symbol-function 'hermes-rpc-request)
+             (lambda (&rest _) nil))
+            ((symbol-function 'hermes-rpc-live-p)
+             (lambda () t)))
+    (with-temp-buffer
+      (hermes-mode)
+      ;; Stage 1 — session id + initial user msg (idle path).
+      (setq hermes--state
+            (hermes--with-copy hermes--state hermes-state-copy s
+              (setf (hermes-state-session-id s) "sess-1")))
+      (hermes-input-send "hi")
+      ;; Stage 2 — stream begins, accumulates one chunk.
+      (hermes-dispatch (cons "message.start" nil))
+      (hermes-dispatch (cons "message.delta"
+                             (let ((h (make-hash-table :test 'equal)))
+                               (puthash "text" "Hello" h)
+                               h)))
+      ;; Stage 3 — user types "next" while busy → silently queued.
+      (hermes-input-send "next")
+      (should (equal '("next") (hermes-state-queue hermes--state)))
+      ;; Stage 4 — message.complete: stream-commit, then drain hook fires
+      ;; and dequeues + sends "next" (which renders as a `* user:' heading).
+      (hermes-dispatch (cons "message.complete" nil))
+      ;; Inspect buffer.  Expected order: assistant heading → assistant
+      ;; raw drawer → user heading for "next" → user raw drawer for "next".
+      (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
+             (assist-head (string-match "^\\*\\* assistant" body))
+             (user-next (string-match "^\\* user: next" body))
+             ;; Find the *assistant's* raw drawer: the first :HERMES_RAW:
+             ;; that appears after the `** assistant' heading.
+             (raw-after-assistant
+              (and assist-head
+                   (string-match ":HERMES_RAW:" body assist-head))))
+        (should assist-head)
+        (should user-next)
+        (should raw-after-assistant)
+        ;; The assistant's raw drawer must sit *between* its heading and
+        ;; the dequeued user heading.  If the drawer slid past `user-next',
+        ;; we have the corruption described in PLAN.md.
+        (should (< assist-head raw-after-assistant))
+        (should (< raw-after-assistant user-next))))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

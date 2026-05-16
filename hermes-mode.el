@@ -140,8 +140,11 @@ without this cache, the very first buffer would never see the skin.")
     m)
   "Keymap for `hermes-mode'.")
 
-(define-derived-mode hermes-mode org-mode "Hermes"
-  "Major mode for a Hermes conversation buffer."
+(defun hermes-minor-mode--on ()
+  "Setup for `hermes-minor-mode': org-local config, hooks, header-line.
+Idempotent — safe to run when already armed.  In Phase 1 the major mode
+creates the state atom before enabling the minor mode; if no state is
+present (Phase 2: arbitrary Org buffers), one is created here."
   (setq-local org-startup-folded nil)
   (setq-local org-hide-leading-stars t)
   (setq-local org-todo-keywords
@@ -150,14 +153,9 @@ without this cache, the very first buffer would never see the skin.")
               '(("RUNNING" . hermes-tool-running-face)
                 ("DONE"    . hermes-tool-done-face)
                 ("ERROR"   . hermes-tool-error-face)))
+  (unless (and (boundp 'hermes--state) hermes--state)
+    (hermes-state-init))
   (add-hook 'org-cycle-hook #'hermes--remember-cycle nil t)
-  (setq buffer-read-only t)
-  (hermes-state-init)
-  ;; Insert file-level metadata line.
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (point-min))
-      (insert "#+TITLE: hermes\n")))
   ;; Order matters: `hermes--render' MUST run before `hermes-input--drain'.
   ;; If drain runs first, it dispatches `:user-submit' for the queued
   ;; head; the recursive render inserts that user heading at point-max
@@ -171,9 +169,45 @@ without this cache, the very first buffer would never see the skin.")
   (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t t)
   (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t t)
   (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
-  ;; Initial header line.
   (with-silent-modifications
     (hermes--render-header hermes--state)))
+
+(defun hermes-minor-mode--off ()
+  "Teardown for `hermes-minor-mode': removes hooks, clears header-line."
+  (remove-hook 'org-cycle-hook #'hermes--remember-cycle t)
+  (remove-hook 'hermes-state-change-hook #'hermes--render t)
+  (remove-hook 'hermes-state-change-hook #'hermes-prompts-watch t)
+  (remove-hook 'hermes-state-change-hook #'hermes-input--drain t)
+  (remove-hook 'hermes-state-change-hook #'hermes-skin-watch t)
+  (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui t)
+  (setq header-line-format nil))
+
+;;;###autoload
+(define-minor-mode hermes-minor-mode
+  "Minor mode for Hermes presentation in Org buffers.
+Provides streaming render, auto-fold, header-line, and key bindings.
+When enabled in the dedicated `*hermes*' buffer, it is the full
+presentation layer.  When enabled in arbitrary Org buffers (Phase 2),
+it renders a heading-scoped session into that subtree."
+  :init-value nil
+  :lighter " Hermes"
+  :keymap hermes-mode-map
+  (if hermes-minor-mode
+      (hermes-minor-mode--on)
+    (hermes-minor-mode--off)))
+
+(define-derived-mode hermes-mode org-mode "Hermes"
+  "Major mode for a dedicated Hermes conversation buffer.
+Thin wrapper: enables `org-mode', turns on `hermes-minor-mode' (which
+owns all presentation logic), marks the buffer read-only, initialises
+session state, and inserts the session container heading."
+  (hermes-state-init)
+  (hermes-minor-mode 1)
+  (setq buffer-read-only t)
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (insert "* Hermes session :hermes:\n"))))
 
 ;;;; Public entry points
 
@@ -193,6 +227,11 @@ without this cache, the very first buffer would never see the skin.")
          (with-current-buffer buf
            (hermes-mode)
            (setf (hermes-state-session-id hermes--state) sid)
+           (let ((inhibit-read-only t))
+             (save-excursion
+               (goto-char (point-min))
+               (when (org-at-heading-p)
+                 (org-set-property "HERMES_SESSION" sid))))
            (when hermes--last-gateway-ready
              (hermes-dispatch
               (cons "gateway.ready" hermes--last-gateway-ready)))
@@ -285,22 +324,31 @@ queued input is drained."
 ;;;; Buffer parsing — read canonical history back from the Org buffer
 
 (defun hermes--buffer-message-count ()
-  "Count level-1 headings in the current buffer."
+  "Count committed turns in the current buffer.
+A turn is a level-2 heading carrying a `:HERMES_RAW:' drawer — i.e.
+a direct child of the session container.  The container itself (level 1)
+and any nested sub-headings (reasoning/response/tools) are skipped."
   (let ((count 0))
     (when (derived-mode-p 'org-mode)
-      (org-map-entries (lambda () (cl-incf count)) "LEVEL=1"))
+      (org-map-entries
+       (lambda ()
+         (when (and (= 2 (org-current-level))
+                    (save-excursion (hermes--extract-raw-drawer)))
+           (cl-incf count)))
+       nil nil 'file))
     count))
 
 (defun hermes--parse-buffer-messages ()
   "Walk the buffer and return a vector of `hermes-message' structs.
-Reads :HERMES_RAW: drawers under level-1 headings — the heading text
-itself is ignored, so older `* user: …' headings resume the same as the
-new content-first format (`* … :user:')."
+Reads `:HERMES_RAW:' drawers under level-2 headings (turns are direct
+children of the session container).  The heading text itself is
+ignored, so older `** user: …' headings resume the same as the
+content-first format (`** … :user:')."
   (let (messages)
     (when (derived-mode-p 'org-mode)
       (org-map-entries
        (lambda ()
-         (when (= 1 (org-current-level))
+         (when (= 2 (org-current-level))
            (let ((raw (save-excursion (hermes--extract-raw-drawer))))
              (when raw
                (push (hermes--plist-to-message raw) messages)))))

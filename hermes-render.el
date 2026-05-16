@@ -223,11 +223,13 @@ subtree with raw drawer."
      (hermes--insert-raw-drawer msg))))
 
 (defun hermes--insert-turn-headline (msg face)
-  "Insert a level-1 heading for a new turn (user or system MSG)."
+  "Insert a level-2 heading for a new turn (user or system MSG).
+Turns are siblings under the session container heading, so user,
+system, and assistant headings all live at level 2."
   (let* ((kind     (hermes-message-kind msg))
          (text     (hermes--message-text-for-display msg))
          (excerpt  (hermes--heading-excerpt text))
-         (heading  (format "* %s" excerpt))
+         (heading  (format "** %s" excerpt))
          (tags     (hermes--turn-tags kind))
          (sid      (or (hermes-state-session-id hermes--state) ""))
          (info     (hermes-state-session-info hermes--state))
@@ -286,14 +288,18 @@ Returns nil if no drawer is found or the contents are unreadable.
 Does not move point."
   (save-excursion
     (when pos (goto-char pos))
-    ;; Compute bound as the next top-level heading AFTER the current
-    ;; line — moving forward one char before searching avoids matching
-    ;; the heading the drawer belongs to.
+    ;; Bound by the end of the current Org subtree (or point-max when
+    ;; we're not on a heading).  Using a regex like `^\\* ' alone fails
+    ;; once turns live at level 2 under a container heading — the next
+    ;; level-1 heading never appears, so the search would happily walk
+    ;; into the following turn's drawer.
     (let ((bound (save-excursion
-                   (forward-line 1)
-                   (or (and (re-search-forward "^\\* " nil t)
-                            (match-beginning 0))
-                       (point-max)))))
+                   (cond
+                    ((not (derived-mode-p 'org-mode)) (point-max))
+                    ((ignore-errors (org-back-to-heading t))
+                     (org-end-of-subtree t t)
+                     (point))
+                    (t (point-max))))))
       (when (re-search-forward "^:HERMES_RAW:[ \t]*$" bound t)
         (let ((body-start (line-end-position)))
           (when (re-search-forward "^:END:[ \t]*$" bound t)

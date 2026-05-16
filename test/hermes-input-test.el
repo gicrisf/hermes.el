@@ -32,10 +32,10 @@
          ,@body))))
 
 (defun hermes-input-test--buffer-has-user-heading-p (text)
-  "Return non-nil if the current buffer contains a `* TEXT … :user:' heading."
+  "Return non-nil if the current buffer contains a `** TEXT … :user:' heading."
   (save-excursion
     (goto-char (point-min))
-    (re-search-forward (format "^\\* %s.*:user:" (regexp-quote text)) nil t)))
+    (re-search-forward (format "^\\*\\* %s.*:user:" (regexp-quote text)) nil t)))
 
 (defun hermes-input-test--set-stream ()
   "Simulate an in-flight stream on the current buffer's state."

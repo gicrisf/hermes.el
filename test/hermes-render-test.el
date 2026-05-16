@@ -501,7 +501,7 @@ property drawer — just heading + drawer."
       (hermes--render old new))
     ;; Buffer now contains a `* ping :user:' heading with the body.
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should (string-match-p "^\\* ping " body))
+      (should (string-match-p "^\\*\\* ping " body))
       (should (string-match-p ":user:" body))
       (should (string-match-p ":HERMES_RAW:" body)))
     ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
@@ -546,7 +546,8 @@ one assistant subtree with exactly one :HERMES_RAW: drawer."
       (setq hermes--state new)
       (hermes--render old new))
     (should (= 1 (hermes-render-test--count "^\\*\\* ")))
-    (should (= 1 (hermes-render-test--count ":hermes:")))
+    ;; Two `:hermes:' tags now: the session container heading + the assistant turn.
+    (should (= 2 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^:HERMES_RAW:")))
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
@@ -581,8 +582,11 @@ After render: one assistant subtree, one system heading, system appears
                         (hermes-state-stream s) nil))))
       (setq hermes--state new)
       (hermes--render old new))
-    (should (= 1 (hermes-render-test--count "^\\*\\* ")))
-    (should (= 1 (hermes-render-test--count ":hermes:")))
+    ;; Two level-2 headings now: the assistant turn and the system turn
+    ;; (both are siblings under the level-1 session container).
+    (should (= 2 (hermes-render-test--count "^\\*\\* ")))
+    ;; Container heading + assistant turn both carry the `:hermes:' tag.
+    (should (= 2 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count ":system:")))
     (should (= 2 (hermes-render-test--count "^:HERMES_RAW:")))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
@@ -641,8 +645,11 @@ heading — i.e. inside the assistant subtree, not after it."
       ;; Inspect buffer.  Expected order: assistant heading → assistant
       ;; raw drawer → user heading for "next" → user raw drawer for "next".
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
-             (assist-head (string-match "^\\*\\* " body))
-             (user-next (string-match "^\\* next " body))
+             ;; All turns are level-2 siblings under the level-1 session
+             ;; container.  The assistant heading is the only `**' line
+             ;; carrying `:hermes:'; the user turns carry `:user:'.
+             (assist-head (string-match "^\\*\\* .*:hermes:" body))
+             (user-next (string-match "^\\*\\* next " body))
              ;; Find the *assistant's* raw drawer: the first :HERMES_RAW:
              ;; that appears after the assistant heading.
              (raw-after-assistant

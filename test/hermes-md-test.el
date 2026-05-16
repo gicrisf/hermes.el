@@ -35,8 +35,10 @@
 ;;;; Headings
 
 (ert-deftest hermes-md-test/heading-demoted-by-one-level ()
-  (hermes-md-test--should= "# Title\nbody" "** Title\nbody")
-  (hermes-md-test--should= "## Sub\nbody" "*** Sub\nbody"))
+  ;; ATX headings are demoted to nest inside the assistant turn's
+  ;; `*** Response' heading: # → ****, ## → *****, etc.
+  (hermes-md-test--should= "# Title\nbody" "**** Title\nbody")
+  (hermes-md-test--should= "## Sub\nbody" "***** Sub\nbody"))
 
 ;;;; Fences
 

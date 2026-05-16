@@ -33,28 +33,28 @@ position right after the heading line."
     (should (string-match-p "I am \\*strong\\*" result))))
 
 (ert-deftest hermes-render-test/format-thinking-segment ()
-  "Thinking segments are rendered as example blocks."
+  "Thinking segments are rendered as `*** Thinking' headings."
   (let ((result (hermes--format-segment
-                 (make-hermes-segment :type 'thinking :content "hmm"))))
-    (should (string-match-p "#\\+begin_example Thinking" result))
-    (should (string-match-p "hmm" result))
-    (should (string-match-p "#\\+end_example" result))))
+                 (make-hermes-segment :type 'thinking :content "hmm" :id "s1"))))
+    (should (string-match-p "^\\*\\*\\* Thinking" result))
+    (should (string-match-p ":HERMES_KIND: thinking" result))
+    (should (string-match-p "hmm" result))))
 
 (ert-deftest hermes-render-test/format-reasoning-segment ()
-  "Reasoning segments are rendered as example blocks."
+  "Reasoning segments are rendered as `*** Reasoning' headings."
   (let ((result (hermes--format-segment
-                 (make-hermes-segment :type 'reasoning :content "because"))))
-    (should (string-match-p "#\\+begin_example Reasoning" result))
-    (should (string-match-p "because" result))
-    (should (string-match-p "#\\+end_example" result))))
+                 (make-hermes-segment :type 'reasoning :content "because" :id "s2"))))
+    (should (string-match-p "^\\*\\*\\* Reasoning" result))
+    (should (string-match-p ":HERMES_KIND: reasoning" result))
+    (should (string-match-p "because" result))))
 
 (ert-deftest hermes-render-test/format-tool-segment ()
-  "Tool segments are rendered as sub-headlines."
-  (let* ((tool (make-hermes-tool :id "t1" :name "bash"
+  "Tool segments are rendered as sub-headlines with a TODO keyword."
+  (let* ((tool (make-hermes-tool :id "t1" :name "Bash"
                                  :status 'complete :output "done"))
          (result (hermes--format-segment
-                  (make-hermes-segment :type 'tool :content tool))))
-    (should (string-match-p "\\*\\*\\* bash" result))
+                  (make-hermes-segment :type 'tool :content tool :id "s3"))))
+    (should (string-match-p "^\\*\\*\\* DONE " result))
     (should (string-match-p "done" result))))
 
 (ert-deftest hermes-render-test/format-system-segment ()
@@ -68,13 +68,14 @@ position right after the heading line."
 ;;;; Stream rendering tests
 
 (ert-deftest hermes-render-test/single-text-segment ()
-  "A single text segment renders correctly."
+  "A single text segment renders under a `*** Response' heading."
   (with-temp-buffer
     (hermes-render-test--setup)
     (let ((seg (make-hermes-segment :type 'text :content "Hi there")))
       (hermes--render-stream-segments (vector seg)))
-    (should (equal "Hi there\n"
-                   (hermes-render-test--body)))))
+    (let ((body (hermes-render-test--body)))
+      (should (string-match-p "^\\*\\*\\* Response" body))
+      (should (string-match-p "Hi there" body)))))
 
 (ert-deftest hermes-render-test/multiple-segments-ordered ()
   "Segments render in arrival order."
@@ -88,7 +89,11 @@ position right after the heading line."
       (should (string-match-p "Hello" body))
       (should (string-match-p "hmm" body))
       (should (string-match-p "World" body))
-      (should (string-match-p "Hello\n#\\+begin_example Thinking\nhmm" body)))))
+      ;; Hello (text → Response) precedes hmm (thinking → Thinking heading).
+      (should (< (string-match "Hello" body)
+                 (string-match "hmm" body)))
+      (should (< (string-match "hmm" body)
+                 (string-match "World" body))))))
 
 (ert-deftest hermes-render-test/segment-update-rewrites ()
   "Updating segments rewrites the region in place."
@@ -98,8 +103,9 @@ position right after the heading line."
      (vector (make-hermes-segment :type 'text :content "Old")))
     (hermes--render-stream-segments
      (vector (make-hermes-segment :type 'text :content "New content")))
-    (should (equal "New content\n"
-                   (hermes-render-test--body)))))
+    (let ((body (hermes-render-test--body)))
+      (should (string-match-p "New content" body))
+      (should-not (string-match-p "Old" body)))))
 
 (ert-deftest hermes-render-test/text-segment-markdown-to-org ()
   "Text segments are converted from markdown to Org."
@@ -122,15 +128,19 @@ position right after the heading line."
                              (point-min) (point-max))))))
 
 (ert-deftest hermes-render-test/thinking-and-reasoning-separate-blocks ()
-  "thinking and reasoning segments produce separate blocks."
+  "thinking and reasoning segments produce separate `*** ' headings."
   (with-temp-buffer
     (hermes-render-test--setup)
     (hermes--render-stream-segments
-     (vector (make-hermes-segment :type 'thinking :content "think")
-             (make-hermes-segment :type 'reasoning :content "reason")))
+     (vector (make-hermes-segment :type 'thinking :content "think" :id "s1")
+             (make-hermes-segment :type 'reasoning :content "reason" :id "s2")))
     (let ((body (hermes-render-test--body)))
-      (should (string-match-p "#\\+begin_example Thinking\nthink\n#\\+end_example" body))
-      (should (string-match-p "#\\+begin_example Reasoning\nreason\n#\\+end_example" body)))))
+      (should (string-match-p "^\\*\\*\\* Thinking" body))
+      (should (string-match-p "think" body))
+      (should (string-match-p "^\\*\\*\\* Reasoning" body))
+      (should (string-match-p "reason" body))
+      (should (< (string-match "Thinking" body)
+                 (string-match "Reasoning" body))))))
 
 ;;;; Subagent formatting
 

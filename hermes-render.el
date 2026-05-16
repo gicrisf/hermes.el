@@ -156,24 +156,39 @@
 
 ;;;; Segment formatting
 
-(defun hermes--format-thinking-block (thinking reasoning)
-  "Return an Org block string for THINKING and REASONING content.
-If both are empty or nil, return the empty string.
-Each block is followed by a blank line for visual separation."
-  (let (parts)
-    (when (and thinking (not (string-empty-p thinking)))
-      (push (concat "#+begin_example Thinking\n"
-                    thinking
-                    (unless (eq (aref thinking (1- (length thinking))) ?\n) "\n")
-                    "#+end_example\n\n")
-            parts))
-    (when (and reasoning (not (string-empty-p reasoning)))
-      (push (concat "#+begin_example Reasoning\n"
-                    reasoning
-                    (unless (eq (aref reasoning (1- (length reasoning))) ?\n) "\n")
-                    "#+end_example\n\n")
-            parts))
-    (apply #'concat (nreverse parts))))
+(defun hermes--format-response (content)
+  "Return an Org level-3 heading wrapping the assistant CONTENT.
+The heading is *not* tagged with `hermes-fold' so it stays expanded —
+this prevents the response prose from being captured by a preceding
+folded `*** Thinking' / `*** Reasoning' subtree."
+  (if (or (null content) (string-empty-p content))
+      ""
+    (let ((body (hermes-md-to-org content)))
+      (concat "*** Response\n"
+              body
+              (if (string-suffix-p "\n" body) "" "\n")))))
+
+(defun hermes--format-cot-block (label content fold-id)
+  "Return an Org level-3 heading for a chain-of-thought CONTENT.
+LABEL is e.g. \"Thinking\" or \"Reasoning\".  FOLD-ID is the segment id
+used to remember user expansion across re-renders.  Headings are tagged
+with the `hermes-fold' text property so `hermes--apply-tool-folds' will
+collapse them on insertion."
+  (if (or (null content) (string-empty-p content))
+      ""
+    (let* ((kind (downcase label))
+           (heading (format "*** %s" label))
+           (heading-line
+            (concat (propertize heading
+                                'hermes-fold t
+                                'hermes-fold-id fold-id)
+                    "\n"))
+           (props (concat ":PROPERTIES:\n"
+                          (format ":HERMES_KIND: %s\n" kind)
+                          ":END:\n"))
+           (body (if (string-suffix-p "\n" content) content
+                   (concat content "\n"))))
+      (concat heading-line props body "\n"))))
 
 (defun hermes--format-subagent (sa)
   "Return an Org subtree string for subagent SA."
@@ -302,7 +317,7 @@ per-tool formatter from `hermes-tool-formatters'."
           (if fold-p
               (concat
                (propertize heading 'hermes-fold t
-                           'hermes-tool-id (hermes-tool-id tool))
+                           'hermes-fold-id (hermes-tool-id tool))
                "\n")
             (concat heading "\n")))
          (out (concat heading-line
@@ -315,11 +330,12 @@ per-tool formatter from `hermes-tool-formatters'."
 (defun hermes--format-segment (seg)
   "Return Org string for a single SEGMENT."
   (let ((type (aref seg 1))
-        (content (aref seg 2)))
+        (content (aref seg 2))
+        (sid (aref seg 3)))
     (pcase type
-      ('text (hermes-md-to-org content))
-      ('thinking (hermes--format-thinking-block content nil))
-      ('reasoning (hermes--format-thinking-block nil content))
+      ('text (hermes--format-response content))
+      ('thinking (hermes--format-cot-block "Thinking" content sid))
+      ('reasoning (hermes--format-cot-block "Reasoning" content sid))
       ('tool (hermes--format-tool content))
       ('system (format "#+begin_comment\n%s\n#+end_comment\n" content))
       (_ ""))))
@@ -349,17 +365,18 @@ per-tool formatter from `hermes-tool-formatters'."
     (hermes--apply-tool-folds start (marker-position hermes--stream-segments-end))))
 
 (defvar-local hermes--unfolded-tool-ids nil
-  "Set (list) of tool ids the user has manually expanded; never re-folded.")
+  "Set (list) of fold-ids the user has manually expanded; never re-folded.
+Covers tool blocks and chain-of-thought (thinking/reasoning) blocks.")
 
 (defun hermes--remember-cycle (state)
-  "Org cycle hook: record the tool id when the user expands a folded tool.
+  "Org cycle hook: record the fold-id when the user expands a folded block.
 STATE is one of `folded', `children', `subtree', `all', etc."
   (when (memq state '(children subtree all))
-    (let ((tid (save-excursion
+    (let ((fid (save-excursion
                  (beginning-of-line)
-                 (get-text-property (point) 'hermes-tool-id))))
-      (when (and tid (not (member tid hermes--unfolded-tool-ids)))
-        (push tid hermes--unfolded-tool-ids)))))
+                 (get-text-property (point) 'hermes-fold-id))))
+      (when (and fid (not (member fid hermes--unfolded-tool-ids)))
+        (push fid hermes--unfolded-tool-ids)))))
 
 (defun hermes--apply-tool-folds (start end)
   "Hide subtrees marked with `hermes-fold' between START and END.
@@ -371,8 +388,8 @@ Skips tools whose id is in `hermes--unfolded-tool-ids'."
         (while (and (< (point) end)
                     (setq pos (text-property-any (point) end 'hermes-fold t)))
           (goto-char pos)
-          (let ((tid (get-text-property pos 'hermes-tool-id)))
-            (unless (and tid (member tid hermes--unfolded-tool-ids))
+          (let ((fid (get-text-property pos 'hermes-fold-id)))
+            (unless (and fid (member fid hermes--unfolded-tool-ids))
               (ignore-errors
                 (if (fboundp 'org-fold-hide-subtree)
                     (org-fold-hide-subtree)

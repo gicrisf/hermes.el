@@ -114,12 +114,14 @@ bold-protected interior asterisks shield single-`*' italic patterns."
 ;;;; Headings
 
 (defun hermes-md--convert-headings ()
-  "Demote ATX headings (#, ##, …) to Org subheadlines (**, ***, …)."
+  "Demote ATX headings (#, ##, …) to Org subheadlines.
+`#' becomes `****' so md headings nest inside the assistant turn's
+`*** Response' heading rather than colliding with it as a sibling."
   (goto-char (point-min))
   (while (re-search-forward "^\\(#+\\)[ \t]+" nil t)
     (unless (hermes-md--protected-p (match-beginning 0))
       (let ((n (length (match-string 1))))
-        (replace-match (concat (make-string (1+ n) ?*) " ") t t)))))
+        (replace-match (concat (make-string (+ 3 n) ?*) " ") t t)))))
 
 ;;;; Inline
 

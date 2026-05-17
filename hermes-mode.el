@@ -306,17 +306,30 @@ background; for the user-facing entry that also pops the buffer, see
 
 ;;;###autoload
 (defun hermes ()
-  "Go to the primary Hermes session, creating one if none exists.
-Pops the most-recently-touched live session buffer when there is one;
-otherwise starts the gateway (if needed) and creates a fresh session,
-popping its buffer once `session.create' resolves.  Never sends a
-prompt — the user's first input goes through the bench."
+  "Context-aware entry point — never sends a prompt.
+- In a `hermes-mode' buffer: ensure the bench is visible and focus its
+  input area.
+- In a generic `org-mode' buffer: create a Hermes session heading as a
+  direct child of the heading at/above point.
+- Everywhere else: pop the most-recently-touched live session, or
+  create a fresh one if none exists."
   (interactive)
-  (let ((buf (hermes--primary-session-buffer)))
-    (cond
-     (buf (pop-to-buffer buf))
-     (t (hermes-new-session
-         (lambda (b) (when (buffer-live-p b) (pop-to-buffer b))))))))
+  (cond
+   ((derived-mode-p 'hermes-mode)
+    (hermes-bench-ensure (current-buffer))
+    (let* ((bench (hermes-bench-active-p))
+           (win   (and bench (get-buffer-window bench))))
+      (when (window-live-p win)
+        (select-window win)
+        (goto-char (point-max)))))
+   ((derived-mode-p 'org-mode)
+    (hermes--create-session-under-heading))
+   (t
+    (let ((buf (hermes--primary-session-buffer)))
+      (if buf
+          (pop-to-buffer buf)
+        (hermes-new-session
+         (lambda (b) (when (buffer-live-p b) (pop-to-buffer b)))))))))
 
 (defalias 'hermes-send #'hermes-input-send
   "Queue-aware submission entry; see `hermes-input-send'.")
@@ -380,16 +393,12 @@ it resolves to the `:hermes:' container containing point."
                         (lambda (_r e)
                           (when e (message "hermes: interrupt error: %S" e))))))
 
-(defun hermes-create-session-here ()
-  "Create a new Hermes session container heading at point and register it.
-Inserts a level-1 `* Hermes session :hermes:' heading at point (with
-a leading newline if needed), then calls `session.create' on the
-gateway.  When the response lands, the heading's `:HERMES_SESSION:'
-property is set and the session is registered in both the global
-`hermes--session-buffers' table (for event routing) and the
-buffer-local `hermes--buffer-sessions' / `hermes--session-markers'
-registries (for per-session dispatch/render)."
-  (interactive)
+(defun hermes--create-session-under-heading ()
+  "Insert a Hermes session heading as a child of the heading at/above point.
+Used by `hermes' when invoked from a generic `org-mode' buffer.  The
+heading is added at the end of the parent's subtree so existing body
+text is never split.  `hermes--container-level' is set buffer-locally
+so turn insertion follows the relative depth."
   (unless (derived-mode-p 'org-mode)
     (user-error "Not in an Org buffer"))
   (unless (bound-and-true-p hermes-minor-mode)
@@ -397,35 +406,54 @@ registries (for per-session dispatch/render)."
   (hermes--install-hooks)
   (unless (hermes-rpc-live-p)
     (hermes-rpc-start))
-  (unless (bolp) (insert "\n"))
-  (let* ((heading-pos (point))
-         (_ (insert "* Hermes session :hermes:\n"))
-         (marker (copy-marker heading-pos nil))
+  (let* ((insert-pos nil)
+         (container-level
+          (save-excursion
+            (if (ignore-errors (org-back-to-heading t))
+                (let ((lvl (1+ (org-current-level))))
+                  (org-end-of-subtree t t)
+                  (setq insert-pos (point))
+                  lvl)
+              (goto-char (point-max))
+              (setq insert-pos (point))
+              1)))
          (buf (current-buffer)))
-    (hermes-rpc-request
-     "session.create" '(:cols 100)
-     (lambda (result error)
-       (cond
-        (error
-         (message "hermes: session.create failed: %S" error))
-        (result
-         (let ((sid (gethash "session_id" result)))
-           (when (and sid (buffer-live-p buf))
-             (with-current-buffer buf
-               (save-excursion
-                 (goto-char (marker-position marker))
-                 (when (org-at-heading-p)
-                   (org-set-property "HERMES_SESSION" sid)))
-               (let ((state (make-hermes-state :session-id sid
-                                               :connection 'connected)))
-                 (hermes--register-session sid state marker)
-                 (setq hermes--state state))
-               (puthash sid buf hermes--session-buffers)
-               (when hermes--last-gateway-ready
-                 (hermes-dispatch
-                  (cons "gateway.ready" hermes--last-gateway-ready)
-                  sid))
-               (message "hermes: session %s ready" sid))))))))))
+    (goto-char insert-pos)
+    (unless (bolp) (insert "\n"))
+    (let* ((heading-pos (point))
+           (_ (insert (format "%s Hermes session :hermes:\n"
+                              (make-string container-level ?*))))
+           (marker (copy-marker heading-pos nil)))
+      (setq-local hermes--container-level container-level)
+      (hermes-rpc-request
+       "session.create" '(:cols 100)
+       (lambda (result error)
+         (cond
+          (error
+           (message "hermes: session.create failed: %S" error))
+          (result
+           (let ((sid (gethash "session_id" result)))
+             (when (and sid (buffer-live-p buf))
+               (with-current-buffer buf
+                 (save-excursion
+                   (goto-char (marker-position marker))
+                   (when (org-at-heading-p)
+                     (org-set-property "HERMES_SESSION" sid)))
+                 (let ((state (make-hermes-state :session-id sid
+                                                 :connection 'connected)))
+                   (hermes--register-session sid state marker)
+                   (setq hermes--state state))
+                 (puthash sid buf hermes--session-buffers)
+                 (add-hook 'kill-buffer-hook
+                           (lambda () (hermes-bench-hide (current-buffer)))
+                           nil t)
+                 (unless noninteractive
+                   (hermes-bench-ensure buf))
+                 (when hermes--last-gateway-ready
+                   (hermes-dispatch
+                    (cons "gateway.ready" hermes--last-gateway-ready)
+                    sid))
+                 (message "hermes: session %s ready" sid)))))))))))
 
 (defun hermes-view-log ()
   "Pop to the *hermes-log* diagnostic buffer."

@@ -262,7 +262,7 @@ ends."
     (cond
      ;; No container at all → user must create one first.
      ((null target)
-      (user-error "No Hermes session at point — use `M-x hermes-create-session-here' or move into a `:hermes:' subtree"))
+      (user-error "No Hermes session at point — use `M-x hermes' from an Org heading or move into a `:hermes:' subtree"))
      ;; Stale: heading has a session id but the registry has no entry
      ;; (file was reopened, gateway restarted, etc.).  Stash the text
      ;; and trigger an async resume; the callback drains and submits.

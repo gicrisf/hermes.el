@@ -18,7 +18,6 @@ hermes-bench.el      Persistent bottom bench for hermes-mode (user prompt, reaso
 hermes-sessions.el   tabulated-list-mode sidebar of live sessions
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
-hermes-dashboard.el  Vanilla Emacs dashboard (special-mode, no dependencies)
 ```
 
 **Key design principle:** The Org buffer is the canonical source of truth for
@@ -40,8 +39,6 @@ the bench (header-line only).
 **Doom Emacs integration (separate files, optional):**
 
 ```
-doom-dashboard-hermes.el  Standalone Doom-styled dashboard (window-margin centering,
-                          debounced refresh, clickable menu, own buffer *doom-hermes*)
 doom-hermes.el            Evil C-c normal-state bindings + SPC h leader prefix
 doom-hermes-theme.el      Hermes-branded dark theme (gold/teal)
 ```
@@ -94,20 +91,22 @@ The default auto-detects `.venv/bin/python` relative to the project root.
 M-x hermes
 ```
 
-`M-x hermes` opens the dashboard, starts the gateway, creates a session in the
-background, and registers it as the primary session. The conversation buffer is
-ready when you press `C-c C-i`.
+`M-x hermes` is the single entry point. It pops the most-recently-touched
+live session if one exists; otherwise it starts the gateway and creates a
+fresh session, popping the new buffer when `session.create` resolves. The
+bench appears at the bottom showing a splash banner + status; cursor lands
+in the bench input area. The splash is replaced by normal ephemeral content
+on the first `RET`.
 
 ### Doom Emacs
 
 Add to `~/.config/doom/config.el`:
 
 ```elisp
-(load-file "~/Projects/emacs-hermes/doom-dashboard-hermes.el")
 (load-file "~/Projects/emacs-hermes/doom-hermes.el")
 ```
 
-Restart or `M-x load-file` each file.
+Restart or `M-x load-file` the file.
 
 ## Usage
 
@@ -115,18 +114,11 @@ Restart or `M-x load-file` each file.
 
 | Context | Key | Action |
 |---------|-----|--------|
-| Dashboard | `i` | Send prompt to primary session |
-| Dashboard | `c` | Open multi-line composer |
-| Dashboard | `RET` | On session row: switch; else send |
-| Dashboard | `n` | New session |
-| Dashboard | `s` | Sessions sidebar |
-| Dashboard | `g` | Refresh |
-| Dashboard | `q` | Bury dashboard |
-| hermes-mode | `C-c C-i` | Send prompt / focus bench input |
+| anywhere | `M-x hermes` | Go to primary session (create if none) |
+| hermes-mode | `C-c C-i` | Focus bench input (or send via minibuffer if no bench) |
 | hermes-mode | `C-c C-k` | Interrupt current turn |
 | hermes-mode | `C-c C-l` | Multi-line compose |
-| Bench | `RET` | Send prompt |
-| Bench | `C-c C-c` | Send prompt |
+| Bench | `RET` / `C-c C-c` | Send prompt |
 | Bench | `C-c C-k` | Interrupt parent session |
 | Bench | `C-c C-l` | Multi-line compose |
 | Sessions sidebar | `RET` | Switch to session |
@@ -137,33 +129,14 @@ Restart or `M-x load-file` each file.
 
 | Key | Action |
 |-----|--------|
-| `SPC h d` | Open dashboard |
-| `SPC h s` | Start chatting (send prompt) |
-| `SPC h i` | Start chatting (alias) |
-| `SPC h n` | New session |
-| `SPC h c` | Open multi-line composer |
+| `SPC h h` / `SPC h s` / `SPC h i` / `SPC h g` | Go to primary session (create if none) |
+| `SPC h n` | New session (background) |
+| `SPC h c` | Multi-line composer |
 | `SPC h l` | Session list sidebar |
-| `SPC h g` | Go to primary session buffer |
 | `SPC h k` | Interrupt primary session |
-| hermes-mode `C-c C-i` | Send prompt / focus bench |
+| hermes-mode `C-c C-i` | Focus bench input |
 | hermes-mode `C-c C-k` | Interrupt |
 | hermes-mode `C-c C-l` | Multi-line compose |
-
-### Doom dashboard (`*doom-hermes*`)
-
-The Doom-styled dashboard (`SPC h d`) features:
-
-- **Centred layout** via window margins (same technique as Doom's own dashboard).
-  Content is flush-left; margins push the canvas to the centre. No per-line
-  padding, no `line-prefix` text properties — just two `set-window-margins` calls.
-- **Debounced refresh** — events during a streaming turn coalesce into a single
-  repaint after 0.1s of idle time. No freeze, no flicker.
-- **Clickable menu** — each row is a `insert-text-button`. The keybinding string
-  displayed next to each label is looked up dynamically via `where-is-internal`.
-- **Resize handling** — `window-size-change-functions` adjusts margins on resize.
-
-Navigation: `TAB`/`C-n`/`<down>` for next item, `C-p`/`<up>` for previous, `RET`
-to activate.
 
 ## Development
 

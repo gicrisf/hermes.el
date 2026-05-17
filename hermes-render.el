@@ -285,7 +285,11 @@ buffer) where the container's subtree spans the whole buffer."
       ;; `line-prefix' properties and `hermes--hide-drawers' pass.
       (when committed-region
         (hermes--refresh-region (car committed-region)
-                                (cdr committed-region))))))
+                                (cdr committed-region))))
+    ;; Refresh mode-line after every render tick so status is always in
+    ;; sync — covers edge cases where the reducer hands back an `eq' struct
+    ;; and `hermes-state-change-hook' doesn't fire.
+    (hermes--mode-line-update)))
 
 (defun hermes--refresh-region (start end)
   "Run indent + drawer-hide + fold-repair passes over [START, END).
@@ -1318,13 +1322,45 @@ happens, re-arms the cooldown so further deltas continue to throttle."
 Installed on `hermes-state-change-hook' so connection/model/token
 changes refresh the mode-line immediately.  Hook arguments are ignored
 \(state is read live from buffer-local `hermes--state')."
-  (setq hermes--mode-line-status
+  (let* ((buf-conn (and hermes--state (hermes-state-connection hermes--state)))
+         (rpc-conn (and (boundp 'hermes-rpc--state)
+                        (pcase hermes-rpc--state
+                          ('starting 'connecting)
+                          ('ready    'connected)
+                          (_         'disconnected))))
+         ;; Defensive fallback: if buffer state says `disconnected' but the
+         ;; gateway process is actually `ready', the buffer-local state has
+         ;; drifted (e.g. a spurious sentinel fire or a missed
+         ;; `gateway.ready' replay).  Trust the RPC layer in that case so
+         ;; the mode-line never lies to the user.
+         (conn (cond
+                ((and (eq buf-conn 'disconnected)
+                      (eq rpc-conn 'connected))
+                 'connected)
+                (buf-conn buf-conn)
+                (rpc-conn rpc-conn)
+                (t 'disconnected))))
+    (message "[ml] buf-conn=%S rpc-conn=%S effective=%S sid=%S buf=%s"
+             buf-conn rpc-conn conn
+             (and hermes--state (hermes-state-session-id hermes--state))
+             (buffer-name))
+    (setq hermes--mode-line-status
         (concat
-         (pcase (and hermes--state (hermes-state-connection hermes--state))
+         (pcase conn
            ('connected    "●")
            ('connecting   "◐")
            ('disconnected "○")
-           (_             ""))
+           (_             "○"))
+         (let ((sid  (and hermes--state (hermes-state-session-id hermes--state))))
+           (if sid
+               (format " · session %s %s"
+                       (if (> (length sid) 8) (substring sid 0 8) sid)
+                       (pcase conn
+                         ('connected    "ready")
+                         ('connecting   "connecting")
+                         ('disconnected "disconnected")
+                         (_             "unknown")))
+             " · session ?"))
          (let* ((info  (and hermes--state (hermes-state-session-info hermes--state)))
                 (model (and (hash-table-p info) (gethash "model" info))))
            (if model (format " · %s" model) ""))
@@ -1341,7 +1377,7 @@ changes refresh the mode-line immediately.  Hook arguments are ignored
          (let ((q (and hermes--state (hermes-state-queue hermes--state))))
            (if (and q (> (length q) 0))
                (format " · queue: %d" (length q))
-             ""))))
+             "")))))
   (force-mode-line-update))
 
 (provide 'hermes-render)

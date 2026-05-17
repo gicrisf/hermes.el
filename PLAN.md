@@ -1,154 +1,137 @@
-# Plan: Fix Mode-Line Update + Refined Format
+# Plan: Fix Stale `disconnected` State During Streaming
 
 ## Context
-The previous plan moved the Hermes status bar from `header-line-format` to `mode-line-format`. Two issues were discovered after implementation:
+The mode-line shows `○` (disconnected) throughout the entire streaming session, even while `thinking.delta` and `message.delta` events are actively arriving. Debug logs confirm `hermes--state` has `connection = 'disconnected` from the first mode-line update through `message.complete`.
 
-1. **Bug:** The connection icon shows `○` (disconnected) even when the gateway is working. This happens because `hermes--mode-line-update` is only called once at `hermes-minor-mode` startup and is **not registered on any state-change hook**. It never refreshes when the connection transitions from `:connecting` to `:connected`.
-2. **Design:** The user wants a cleaner, reordered format with fewer elements.
+This is a **state bug**, not a rendering bug. The mode-line reads faithfully from `hermes--state`; the problem is that the state never transitions to `connected` (or transitions briefly then flips back).
+
+## Root Cause Hypotheses
+
+### H1: Race — `gateway.ready` misses the new buffer
+`gateway.ready` is broadcast via `hermes--broadcast-dispatch` to all buffers in `hermes--session-buffers`. If it arrives before the `session.create` callback adds the new buffer to that table, the buffer never receives it. The callback's replay of `hermes--last-gateway-ready` should catch it, but if that fails, the state stays at its initial `disconnected` value.
+
+### H2: Spurious `:disconnected` dispatch
+The user reports seeing `●` (connected) briefly before it turns to `○`. The only source of `:disconnected` is `hermes-rpc--sentinel` (process death). If the gateway subprocess signals exit spuriously, the state flips to `disconnected` and never recovers — even though the process continues to stream.
+
+### H3: State atom shadowing / rebinding
+`hermes--state` might be reinitialized or shadowed after `gateway.ready` sets it to `connected`, causing the mode-line to read from a stale struct.
 
 ---
 
-## Goal
-1. Fix the stale connection icon by wiring `hermes--mode-line-update` into the correct hook.
-2. Reorder and reformat `hermes--mode-line-status` to match the user's preference.
-3. Simplify `mode-line-format` to remove mule-info, remote, frame-identification, position, and modes.
+## Diagnostic Steps
 
----
+### 1. Add targeted logging
 
-## Proposed Changes
-
-### 1. `hermes-mode.el` — Fix hook wiring
-
-**Current (broken):**
-```elisp
-(add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
-```
-
-`hermes--mode-line-update` is called once at startup but never again.
-
-**Fix:** Add `hermes--mode-line-update` to `hermes-state-change-hook`. Keep `hermes--render-ui` on `hermes-ui-state-change-hook` (it updates `hermes--ui-line`, which `hermes--mode-line-status` reads).
+In `hermes-rpc.el`, log every connection hook call:
 
 ```elisp
-(defun hermes-minor-mode--on ()
-  ...
-  (add-hook 'hermes-state-change-hook    #'hermes--render        t t)
-  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  t t)
-  (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t t)
-  (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t t)
-  (add-hook 'hermes-state-change-hook    #'hermes--mode-line-update t t)  ; ← NEW
-  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)      ; ← keeps hermes--ui-line fresh
-  ...)
-
-(defun hermes-minor-mode--off ()
-  ...
-  (remove-hook 'hermes-state-change-hook    #'hermes--mode-line-update t)
-  (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui        t)
-  ...)
+(defun hermes-rpc--sentinel (proc event)
+  (when (memq (process-status proc) '(exit signal closed))
+    (message "[rpc] sentinel: status=%S event=%S" (process-status proc) event)
+    ...))
 ```
 
-**Why this fixes it:** `hermes-dispatch` fires `hermes-state-change-hook` on every persistent state change (connection, model info, token usage, queue drain). `hermes--mode-line-update` now receives those events and refreshes `mode-line-format` via `force-mode-line-update`.
-
----
-
-### 2. `hermes-render.el` — Reformat `hermes--mode-line-update`
-
-**Current format:**
-```
- Hermes · ● · deepseek-v4-flash · 12→45 · queue: 2
-```
-
-**Desired format:**
-```
-● · deepseek-v4-flash · thinking… · (133600 tokens) · queue: 2
-```
-
-Changes:
-- Drop `Hermes` label
-- Reorder: `● · model · ui-line · (total tokens) · queue`
-- Combine `sent→received` into a single `(total tokens)` figure
+In `hermes-mode.el`, log the replay:
 
 ```elisp
-(defun hermes--mode-line-update (&optional _state)
-  "Recompute `hermes--mode-line-status' from the current state.
-Installed on `hermes-state-change-hook' so connection/model/token
-changes refresh the mode-line immediately."
-  (setq hermes--mode-line-status
-        (concat
-         (pcase (and hermes--state (hermes-state-connection hermes--state))
-           ('connected    "●")
-           ('connecting   "◐")
-           ('disconnected "○")
-           (_             ""))
-         (let* ((info  (and hermes--state (hermes-state-session-info hermes--state)))
-                (model (and (hash-table-p info) (gethash "model" info))))
-           (if model (format " · %s" model) ""))
-         (let ((ui (or hermes--ui-line "")))
-           (unless (string-empty-p ui)
-             (format " · %s" (string-trim ui))))
-         (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
-                (sent  (and usage (gethash "tokens_sent" usage)))
-                (recv  (and usage (gethash "tokens_received" usage))))
-           (if (or sent recv)
-               (format " · (%s tokens)"
-                       (+ (or sent 0) (or recv 0)))
-             ""))
-         (let ((q (and hermes--state (hermes-state-queue hermes--state))))
-           (if (and q (> (length q) 0))
-               (format " · queue: %d" (length q))
-             ""))))
-  (force-mode-line-update))
+;; inside hermes--do-session-create callback
+(message "[sess] replay gateway.ready? %S" (not (null hermes--last-gateway-ready)))
+(when hermes--last-gateway-ready
+  (message "[sess] dispatching gateway.ready replay")
+  (hermes-dispatch (cons "gateway.ready" hermes--last-gateway-ready)))
 ```
 
-**Note on number formatting:** `(format "%s" (+ sent recv))` produces `133600`. If the user prefers European thousands-separators (`133.600`) or compact notation, a helper like `hermes--format-token-count` can be added later.
-
----
-
-### 3. `hermes-mode.el` — Simplify `mode-line-format`
+In `hermes-state.el`, log every state transition:
 
 ```elisp
-(setq-local mode-line-format
-            '("%e"
-              mode-line-front-space
-              mode-line-modified
-              " "
-              mode-line-buffer-identification
-              "    "
-              (:eval hermes--mode-line-status)
-              mode-line-end-spaces))
+(defun hermes-dispatch (msg &optional session-id)
+  (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
+         (old (hermes--state-slot-read hermes--current-session-id))
+         (new (hermes--reduce old msg)))
+    (when (eq old new)
+      (message "[dispatch] no-op: type=%S" (car msg)))
+    (unless (eq old new)
+      (message "[dispatch] %S → %S (conn: %S → %S)"
+               (car msg)
+               (hermes-state-session-id new)
+               (and old (hermes-state-connection old))
+               (hermes-state-connection new))
+      (hermes--state-slot-write hermes--current-session-id new)
+      (run-hook-with-args 'hermes-state-change-hook old new))))
 ```
 
-**Dropped:** `mode-line-mule-info`, `mode-line-client`, `mode-line-remote`, `mode-line-frame-identification`, `mode-line-position`, `mode-line-modes`.
-
-**Kept:** `mode-line-modified` (`**`/`--`), `mode-line-buffer-identification` (`*hermes:abc123*`), and the dynamic Hermes status.
+Run `M-x hermes`, observe `*Messages*`. We need to see:
+- Does `[rpc] sentinel: ...` appear during streaming? (confirms H2)
+- Does `[sess] replay gateway.ready?` say `nil`? (confirms H1)
+- Does `[dispatch]` show `gateway.ready` → `connected` followed by another dispatch → `disconnected`? (confirms H2/H3)
 
 ---
 
-## Visual Result
+## Fixes (apply after diagnosis confirms root cause)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ * Hermes session :hermes:                                   │
-│ ** U: Hello                                                 │
-│ ** A: Hi there                                              │
-│                                                             │
-├─────────────────────────────────────────────────────────────┤
-│ ** *hermes:abc123*    ● · deepseek-v4-flash · (133600 tokens)│ ← mode-line
-└─────────────────────────────────────────────────────────────┘
-│ Hello, how can I help?                                      │
-│ ------                                                      │
-│ >                                                           │
-└─────────────────────────────────────────────────────────────┘
+### Fix A: Robust `gateway.ready` replay (for H1)
+
+Cache `gateway.ready` in a buffer-local variable at creation time, rather than relying solely on the global `hermes--last-gateway-ready`:
+
+```elisp
+;; In hermes-mode.el hermes--do-session-create callback
+(let ((replay-payload (or hermes--last-gateway-ready
+                          ;; fallback: read from any live buffer
+                          (hermes--last-gateway-ready-from-any-buffer))))
+  (when replay-payload
+    (hermes-dispatch (cons "gateway.ready" replay-payload))))
 ```
 
-When streaming / thinking:
-```
-** *hermes:abc123*    ● · deepseek-v4-flash · thinking… · (45 tokens)
+Or simpler: replay unconditionally — if `hermes--last-gateway-ready` is nil, the buffer was created before any `gateway.ready` and should wait for the real event. But if it's non-nil, we MUST replay it successfully.
+
+### Fix B: Defensive mode-line fallback (for H2/H3)
+
+If the buffer state says `disconnected` but the RPC process is `ready`, use the RPC state as the ground truth:
+
+```elisp
+(defun hermes--mode-line-update (&optional _old _new)
+  (let* ((buf-conn (and hermes--state (hermes-state-connection hermes--state)))
+         (rpc-conn (pcase hermes-rpc--state
+                     ('starting 'connecting)
+                     ('ready    'connected)
+                     (_         'disconnected)))
+         ;; Defensive: if buffer state is disconnected but RPC is ready,
+         ;; the state is stale. Use RPC as source of truth.
+         (conn (if (and (eq buf-conn 'disconnected)
+                        (eq rpc-conn 'connected))
+                   'connected
+                 (or buf-conn rpc-conn 'disconnected))))
+    (setq hermes--mode-line-status
+          (concat
+           (pcase conn
+             ('connected    "●")
+             ('connecting   "◐")
+             ('disconnected "○")
+             (_             "○"))
+           ...))))
 ```
 
-With queue:
+This is a **workaround**, not a fix. It masks the stale state but doesn't heal it.
+
+### Fix C: Auto-heal on streaming events (for H3)
+
+If a streaming event (`message.delta`, `thinking.delta`, etc.) arrives while `connection = 'disconnected`, automatically dispatch `:connected` to repair the state:
+
+```elisp
+;; In hermes--reduce, before processing streaming events
+(when (eq (hermes-state-connection state) 'disconnected)
+  (setq state (hermes--reduce state '(:connected))))
 ```
-** *hermes:abc123*    ● · deepseek-v4-flash · (133600 tokens) · queue: 2
-```
+
+This is aggressive but safe: if the gateway is sending us deltas, we are by definition connected.
+
+---
+
+## Recommendation
+
+1. **First:** Add the diagnostic logging and run one session. Share `*Messages*` output.
+2. **Then:** Apply the fix that matches the confirmed root cause.
+3. **Regardless:** Apply **Fix B** (defensive fallback) as a safety net so the mode-line never lies to the user, even if the state gets out of sync again.
 
 ---
 
@@ -156,11 +139,78 @@ With queue:
 
 | File | Change |
 |------|--------|
-| `hermes-mode.el` | Add `hermes--mode-line-update` to `hermes-state-change-hook`; simplify `mode-line-format` |
-| `hermes-render.el` | Rewrite `hermes--mode-line-update` body for new format and order |
+| `hermes-rpc.el` | Add sentinel logging |
+| `hermes-mode.el` | Add replay logging; apply Fix A if H1 confirmed |
+| `hermes-state.el` | Add dispatch logging; apply Fix C if H3 confirmed |
+| `hermes-render.el` | Apply Fix B (defensive fallback in `hermes--mode-line-update`) |
 
-No changes needed in `hermes-bench.el` (bench header-line remains nil).
+---
+
+## Appendix: Copy-Paste Logging Snippets
+
+### A1. `hermes-rpc.el` — sentinel logging
+
+Find `hermes-rpc--sentinel` (~line 284) and add one line at the top of the `when` body:
+
+```elisp
+(defun hermes-rpc--sentinel (proc event)
+  "Handle subprocess lifecycle: signal disconnection."
+  (when (memq (process-status proc) '(exit signal closed))
+    (message "[rpc] sentinel fired: status=%S event=%S"
+             (process-status proc) (string-trim event))
+    ;; existing code continues...
+```
+
+### A2. `hermes-mode.el` — replay logging
+
+Find the `hermes--do-session-create` callback (~line 245) and add two lines before the `when hermes--last-gateway-ready` block:
+
+```elisp
+;; inside hermes--do-session-create, inside the (lambda (result error) ...)
+;; After: (puthash sid buf hermes--session-buffers)
+;; Before: (when hermes--last-gateway-ready ...)
+(message "[sess] replay gateway.ready? %S  state-conn=%S"
+         (not (null hermes--last-gateway-ready))
+         (and hermes--state (hermes-state-connection hermes--state)))
+```
+
+### A3. `hermes-state.el` — dispatch logging
+
+Find `hermes-dispatch` (~line 180) and add logging inside the `unless (eq old new)` block:
+
+```elisp
+(defun hermes-dispatch (msg &optional session-id)
+  "Reduce MSG into the persistent state and notify subscribers."
+  (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
+         (old (hermes--state-slot-read hermes--current-session-id))
+         (new (hermes--reduce old msg)))
+    (unless (eq old new)
+      (message "[dispatch] %S  sid=%S  conn: %S → %S"
+               (car msg)
+               (hermes-state-session-id new)
+               (and old (hermes-state-connection old))
+               (hermes-state-connection new))
+      (hermes--state-slot-write hermes--current-session-id new)
+      (run-hook-with-args 'hermes-state-change-hook old new))))
+```
+
+### A4. `hermes-render.el` — temporary mode-line debug
+
+Add one temporary line at the top of `hermes--mode-line-update` (~line 1316):
+
+```elisp
+(defun hermes--mode-line-update (&optional _old _new)
+  "Recompute `hermes--mode-line-status' from the current state."
+  (message "[ml] conn=%S sid=%S buf=%s"
+           (and hermes--state (hermes-state-connection hermes--state))
+           (and hermes--state (hermes-state-session-id hermes--state))
+           (buffer-name))
+  ;; existing code continues...
+```
+
+**Remove A4 after diagnosis** — it prints every state change and will flood `*Messages*`.
+
+---
 
 ## Out of scope
-- Number formatting (thousands separators, compact notation).
-- Removing `hermes--render-ui` entirely — it still serves the useful purpose of updating `hermes--ui-line` from ephemeral state.
+- Investigating why the gateway process might spuriously signal exit (if H2 is confirmed, that's a gateway bug, not an Emacs client bug).

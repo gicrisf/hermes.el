@@ -284,6 +284,8 @@ lost."
 (defun hermes-rpc--sentinel (proc event)
   "Handle subprocess lifecycle: signal disconnection."
   (when (memq (process-status proc) '(exit signal closed))
+    (message "[rpc] sentinel fired: status=%S event=%S"
+             (process-status proc) (string-trim event))
     ;; If the gateway never reached `ready', treat it as a start timeout.
     (when (eq hermes-rpc--state 'starting)
       (let ((tail-lines nil)

@@ -188,6 +188,11 @@ session changed."
          (old (hermes--state-slot-read hermes--current-session-id))
          (new (hermes--reduce old msg)))
     (unless (eq old new)
+      (message "[dispatch] %S  sid=%S  conn: %S → %S"
+               (car-safe msg)
+               (hermes-state-session-id new)
+               (and old (hermes-state-connection old))
+               (hermes-state-connection new))
       (hermes--state-slot-write hermes--current-session-id new)
       (run-hook-with-args 'hermes-state-change-hook old new))))
 

@@ -75,6 +75,31 @@ DEPTH-OFFSET 1 → turn level; 2 → reasoning/response/tool level;
 3 → subagent level."
   (make-string (+ hermes--container-level depth-offset) ?*))
 
+;;;; Per-session insertion anchor
+
+(defun hermes--session-insert-point ()
+  "Return the position where new content for the active session belongs.
+Resolves `hermes--current-session-id' (bound by `hermes-dispatch')
+through `hermes--session-markers' to find the session's container
+heading, then walks to the end of its Org subtree.  Falls back to
+`point-max' when no marker is registered for the session, which is
+the single-session-per-buffer case (e.g. the dedicated `*hermes*'
+buffer) where the container's subtree spans the whole buffer."
+  (let* ((sid (and (boundp 'hermes--current-session-id)
+                   hermes--current-session-id))
+         (marker (and sid
+                      (boundp 'hermes--session-markers)
+                      (hash-table-p hermes--session-markers)
+                      (gethash sid hermes--session-markers))))
+    (if (and (markerp marker) (marker-position marker)
+             (derived-mode-p 'org-mode))
+        (save-excursion
+          (goto-char (marker-position marker))
+          (if (org-at-heading-p)
+              (progn (org-end-of-subtree t t) (point))
+            (point-max)))
+      (point-max))))
+
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
@@ -222,7 +247,7 @@ subtree with raw drawer."
      ;; TODO: In the future, consider routing empty assistant turns
      ;; through the committed-message path (Option 2) — uniform with
      ;; user/system rather than the streaming path.
-     (goto-char (point-max))
+     (goto-char (hermes--session-insert-point))
      (unless (bolp) (insert "\n"))
      (let* ((info    (hermes-state-session-info hermes--state))
             (model   (and (hash-table-p info) (gethash "model" info)))
@@ -250,7 +275,7 @@ and assistant turns are all siblings."
          (sid      (or (hermes-state-session-id hermes--state) ""))
          (info     (hermes-state-session-info hermes--state))
          (model    (and (hash-table-p info) (gethash "model" info))))
-    (goto-char (point-max))
+    (goto-char (hermes--session-insert-point))
     (unless (bolp) (insert "\n"))
     (let ((hb (point)))
       (insert (format "%s %s %s\n" heading (hermes--tag-spacer heading tags) tags))
@@ -266,7 +291,7 @@ and assistant turns are all siblings."
         (org-element-cache-reset)
         (goto-char hb)
         (ignore-errors (org-id-get-create))
-        (goto-char (point-max)))
+        (goto-char (hermes--session-insert-point)))
       (when (and text (not (string-empty-p text)))
         (insert text)
         (unless (eq (char-before) ?\n) (insert "\n")))
@@ -746,7 +771,7 @@ Skips ids in `hermes--unfolded-ids'."
 (defun hermes--stream-begin ()
   "Insert a `** assistant' headline with a property drawer and prepare markers.
 Also opens a bench overlay tinting the live region."
-  (goto-char (point-max))
+  (goto-char (hermes--session-insert-point))
   (unless (bolp) (insert "\n"))
   ;; Bench-start anchors here; bench-end advances with insertion so it
   ;; tracks the growing live region.

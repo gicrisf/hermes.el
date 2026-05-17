@@ -166,5 +166,76 @@ deep inside the reasoning subtree
         (remove-hook 'hermes-state-change-hook probe t))
       (should (equal '("sid-B") seen)))))
 
+;;;; Subtree-scoped rendering (slice C)
+
+(require 'hermes-render)
+
+(defun hermes-org-test--two-session-buffer ()
+  "Insert a buffer with two `:hermes:' container subtrees and seed
+the registry with marker + state entries for each.  Returns nothing
+\(state is on the current buffer)."
+  (insert "* Coding help :hermes:
+:PROPERTIES:
+:HERMES_SESSION: code-1
+:END:
+
+* Writing help :hermes:
+:PROPERTIES:
+:HERMES_SESSION: write-1
+:END:
+")
+  (let ((code-marker (save-excursion
+                       (goto-char (point-min))
+                       (re-search-forward "^\\* Coding help")
+                       (beginning-of-line)
+                       (copy-marker (point) nil)))
+        (write-marker (save-excursion
+                        (goto-char (point-min))
+                        (re-search-forward "^\\* Writing help")
+                        (beginning-of-line)
+                        (copy-marker (point) nil))))
+    (hermes--register-session "code-1"
+                              (make-hermes-state :session-id "code-1")
+                              code-marker)
+    (hermes--register-session "write-1"
+                              (make-hermes-state :session-id "write-1")
+                              write-marker)))
+
+(ert-deftest hermes-org-test/render-targets-correct-session-subtree ()
+  "A user turn rendered under session `code-1' must land inside the
+`Coding help' subtree, not after `Writing help'."
+  (with-temp-buffer
+    (org-mode)
+    (hermes-org-test--two-session-buffer)
+    ;; Activate hermes--state via slot-read of code-1 and emit a pending
+    ;; user turn for it.  Dispatching with the session id binds
+    ;; `hermes--current-session-id', so the renderer's insert helper
+    ;; resolves to the code-1 subtree end.
+    (let* ((sid "code-1")
+           (state (hermes--lookup-session-state sid))
+           (msg (make-hermes-message
+                 :kind 'user
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "reduce?" :id "s1"))
+                 :timestamp "2024-01-15T10:00:00+0000"))
+           (new (hermes--with-copy state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s) (vector msg))))
+           ;; Mirror what `hermes-dispatch' does manually so we can drive
+           ;; the renderer directly without going through the full event
+           ;; pipeline.
+           (hermes--current-session-id sid))
+      (setq hermes--state new)
+      (puthash sid new hermes--buffer-sessions)
+      (hermes--render state new))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      ;; The new turn must appear between the two container headings,
+      ;; i.e. before `* Writing help'.
+      (should (string-match-p "Coding help.*reduce\\?" (replace-regexp-in-string "\n" " " body)))
+      (let ((reduce-pos (string-match "reduce\\?" body))
+            (writing-pos (string-match "^\\* Writing help" body)))
+        (should reduce-pos)
+        (should writing-pos)
+        (should (< reduce-pos writing-pos))))))
+
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

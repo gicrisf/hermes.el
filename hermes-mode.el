@@ -208,18 +208,15 @@ it renders a heading-scoped session into that subtree."
 (define-derived-mode hermes-mode org-mode "Hermes"
   "Major mode for a dedicated Hermes conversation buffer.
 Thin wrapper: enables `org-mode', turns on `hermes-minor-mode' (which
-owns all presentation logic), marks the buffer read-only, initialises
-session state, and inserts the session container heading."
+owns all presentation logic), initialises session state, and inserts
+the session container heading."
   (hermes-state-init)
   (hermes-minor-mode 1)
-  (setq buffer-read-only t)
-  ;; Phase 1: container always at level 1 (it lives at point-min).
   (setq-local hermes--container-level 1)
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (point-min))
-      (insert (concat (make-string hermes--container-level ?*)
-                      " Hermes session :hermes:\n")))))
+  (save-excursion
+    (goto-char (point-min))
+    (insert (concat (make-string hermes--container-level ?*)
+                    " Hermes session :hermes:\n"))))
 
 ;;;; Public entry points
 
@@ -238,12 +235,11 @@ session state, and inserts the session container heading."
          (puthash sid buf hermes--session-buffers)
          (with-current-buffer buf
            (hermes-mode)
-           (setf (hermes-state-session-id hermes--state) sid)
-           (let ((inhibit-read-only t))
-             (save-excursion
-               (goto-char (point-min))
-               (when (org-at-heading-p)
-                 (org-set-property "HERMES_SESSION" sid))))
+            (setf (hermes-state-session-id hermes--state) sid)
+            (save-excursion
+              (goto-char (point-min))
+              (when (org-at-heading-p)
+                (org-set-property "HERMES_SESSION" sid)))
            ;; Register the session in the buffer-local registry so the
            ;; slice-B dispatcher can resolve `session-id' → state.  The
            ;; marker tracks the container heading at point-min.

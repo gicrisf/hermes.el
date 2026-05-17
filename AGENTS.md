@@ -9,7 +9,7 @@ Communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway`.
 hermes-rpc.el        JSON-RPC 2.0 transport (make-process, NDJSON, pending callback map)
 hermes-events.el     Event/method name registry (single source of truth)
 hermes-state.el      TEA-style ephemeral state atoms + pure reducers (in-flight stream, queue, pending)
-hermes-render.el     Org buffer renderer (typed segments, full rewrite, :HERMES_RAW: drawers)
+hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling, :HERMES_RAW: drawers)
 hermes-mode.el       Org-mode derived major mode, event routing, entry point, buffer parser
 hermes-input.el      Input queue, slash commands, history ring
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
@@ -163,7 +163,7 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (104/104 green)
+eldev test                           # run all ERT tests (182/182 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
@@ -181,10 +181,10 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 | File | Tests | Scope |
 |------|-------|-------|
 | `test/hermes-state-test.el` | 66 | Reducers (persistent + UI) + serialization round-trip |
-| `test/hermes-render-test.el` | 16 | Segmented renderer + subagent blocks + raw drawer I/O |
+| `test/hermes-render-test.el` | 27 | Segmented renderer + subagent blocks + raw drawer I/O + throttling + incremental diff |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
 
-**114/114 green, 0 unexpected** — all tests pass.
+**182/182 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

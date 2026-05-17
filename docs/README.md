@@ -8,7 +8,8 @@
 > **Recent changes reflected in this version:**
 > - **Org buffer is now the canonical source of truth** — committed history lives in the buffer, not in `hermes-state-messages`. Each turn stores a `:HERMES_RAW:` drawer containing a serialized Elisp plist for round-trip save/load.
 > - State atom is ephemeral only: connection, in-flight stream, queue, pending prompts, history. No committed message duplication.
-> - Segmented stream rendering: stream state uses typed `segments` vector; renderer does full rewrite
+> - Segmented stream rendering: stream state uses typed `segments` vector; renderer uses incremental diffing (only changed tail is replaced, O(delta) cost)
+> - Stream paint throttling with adaptive backoff: 25 Hz for short text, decaying to 0.5 Hz for very long responses
 > - Tool rendering moved into segments (tool blocks are interleaved in arrival order, not appended after text)
 > - Reasoning rendered as typed segments (not separate marker-managed blocks); thinking is UI-only via header-line status
 > - Approval choices fixed to canonical `once`/`session`/`always`/`deny`

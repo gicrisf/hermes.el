@@ -22,9 +22,10 @@ On `message.complete`, the TUI:
 
 - `stream.segments` — vector of `hermes-segment` objects, each with `type`, `content`, `id`
 - Segment types: `text`, `reasoning`, `tool`, `system` (`thinking` is UI-only, not persisted)
-- Segments are appended in arrival order as events arrive from the gateway
-- Renderer does a **full rewrite** of the segment region on every stream update (simple, correct)
-- On `message.complete`, segments are committed to `message.segments` (the deprecated `text`/`tools` slots are populated from segments for backward compat)
+  - Segments are appended in arrival order as events arrive from the gateway
+  - Renderer uses **incremental diffing**: only the changed tail segment is replaced in place; unchanged prefix segments are skipped entirely (O(delta) cost, not O(total text))
+  - A snapshot vector of `(:id :type :length)` plists mirrors the rendered buffer, making boundaries deterministic without per-segment markers
+  - On `message.complete`, segments are committed to `message.segments` (the deprecated `text`/`tools` slots are populated from segments for backward compat)
 
 **Formatting per segment type:**
 - `text` → markdown-to-Org conversion via `hermes-md-to-org`
@@ -36,7 +37,27 @@ On `message.complete`, the TUI:
 **Key properties:**
 - Segments are rendered in order → tools appear **interleaved** with text where they happened in the turn
 - No stable/unstable split, no per-block markers, no manual marker bookkeeping
-- The renderer is a simple format-each-segment loop with full region replace
+- The renderer diffs the new segment vector against a `hermes--stream-segments-snapshot` (parallel `:id`/`:type`/`:length` metadata), replacing only the divergent suffix
+
+### Stream Paint Throttling
+
+High-frequency token streams (>25 Hz) would saturate the Emacs UI thread even with incremental rendering. The renderer uses a **hard-cap throttle** with **adaptive backoff**:
+
+- A `run-with-timer` cooldown arms on the first paint after an idle gap
+- Deltas arriving during the cooldown stash their snapshot in `hermes--stream-render-pending`
+- The timer fires, paints the latest snapshot, and re-arms with an **adaptive interval** based on total rendered text size
+- Lifecycle transitions (`stream-begin`, `stream-commit`, error) always paint synchronously
+
+**Adaptive thresholds** (discrete steps, one-interval lag):
+
+| Total rendered text | Interval | Frequency |
+|---------------------|----------|-----------|
+| < 1,000 chars | 0.04s | 25 Hz |
+| < 5,000 chars | 0.20s | 5 Hz |
+| < 10,000 chars | 1.00s | 1 Hz |
+| ≥ 10,000 chars | 2.00s | 0.5 Hz |
+
+The existing `hermes-render-stream-throttle` custom variable acts as a **floor** (minimum interval). Set to `0` for pure adaptive; set to `1.0` to force at least 1-second gaps regardless of text size.
 
 ### Stream Markers
 

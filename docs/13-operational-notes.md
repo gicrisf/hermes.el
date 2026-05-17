@@ -96,7 +96,23 @@ The fix is a two-phase architecture:
 This keeps streaming fast (no per-tick hook overhead) while preserving correct
 indentation and fold boundaries.
 
-### 13.4 Debugging Lessons
+### 13.4 Stream Throttle Lifecycle
+
+The adaptive throttle is stateful and must be carefully managed across buffer lifecycles:
+
+| Event | Action |
+|-------|--------|
+| `stream-begin` | Cancels any pending timer (defensive), paints immediately |
+| First delta after idle gap | Paints inline + arms timer with adaptive interval |
+| Deltas during cooldown | Stash snapshot in `hermes--stream-render-pending`; do not paint |
+| Timer fires (`hermes--stream-flush`) | Paints pending snapshot, re-arms timer with new adaptive interval |
+| `stream-commit` | Flushes any pending snapshot synchronously, then cancels timer |
+| `hermes-minor-mode--off` | Cancels timer, clears accumulator |
+| Buffer kill | `kill-buffer-hook` calls `hermes--stream-flush-cancel` |
+
+**Key invariant:** The timer callback checks `(buffer-live-p buf)` and that the pending snapshot still matches the live stream state before painting. If a newer delta has already arrived and started a fresh timer, the stale callback is a no-op.
+
+### 13.5 Debugging Lessons
 
 1. **Inspect actual payload keys**: The gateway may send different field names
    than documented.  Use `(maphash (lambda (k _) (message "key: %s" k)) p)` to

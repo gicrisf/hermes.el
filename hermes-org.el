@@ -55,13 +55,14 @@ renderer can always find the correct subtree.")
 ;;;; Lookups
 
 (defun hermes--heading-is-container-p ()
-  "Non-nil if point is on a heading tagged `:hermes:'.
-The heading need not yet carry a `:HERMES_SESSION:' property — a
-freshly-inserted container is recognised before the gateway has
-assigned it an id."
+  "Non-nil if point is on a Hermes session container heading.
+Recognises both the `:hermes:' tag and the `HERMES_SESSION' property,
+so restored files (which may have lost the tag) and freshly-inserted
+headings (which may not yet have the property) both work."
   (and (derived-mode-p 'org-mode)
        (org-at-heading-p)
-       (member "hermes" (org-get-tags nil t))))
+       (or (member "hermes" (org-get-tags nil t))
+           (org-entry-get (point) "HERMES_SESSION"))))
 
 (defun hermes--session-id-at-heading ()
   "Return the `:HERMES_SESSION:' property of the heading at point, or nil."

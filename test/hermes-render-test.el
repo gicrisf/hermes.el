@@ -499,10 +499,9 @@ property drawer — just heading + drawer."
       ;; of :pending-turns-clear then operates on the swapped state.
       (setq hermes--state new)
       (hermes--render old new))
-    ;; Buffer now contains a `* ping :user:' heading with the body.
+    ;; Buffer now contains a `** U: ping' heading with the body.
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should (string-match-p "^\\*\\* ping " body))
-      (should (string-match-p ":user:" body))
+      (should (string-match-p "^\\*\\* U: ping" body))
       (should (string-match-p ":HERMES_RAW:" body)))
     ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
@@ -546,8 +545,10 @@ one assistant subtree with exactly one :HERMES_RAW: drawer."
       (setq hermes--state new)
       (hermes--render old new))
     (should (= 1 (hermes-render-test--count "^\\*\\* ")))
-    ;; Two `:hermes:' tags now: the session container heading + the assistant turn.
-    (should (= 2 (hermes-render-test--count ":hermes:")))
+    ;; Only the session container heading carries the `:hermes:' tag now;
+    ;; the assistant turn uses an `A:' prefix instead.
+    (should (= 1 (hermes-render-test--count ":hermes:")))
+    (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
     (should (= 1 (hermes-render-test--count "^:HERMES_RAW:")))
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
@@ -585,13 +586,14 @@ After render: one assistant subtree, one system heading, system appears
     ;; Two level-2 headings now: the assistant turn and the system turn
     ;; (both are siblings under the level-1 session container).
     (should (= 2 (hermes-render-test--count "^\\*\\* ")))
-    ;; Container heading + assistant turn both carry the `:hermes:' tag.
-    (should (= 2 (hermes-render-test--count ":hermes:")))
-    (should (= 1 (hermes-render-test--count ":system:")))
+    ;; Only the session container heading carries the `:hermes:' tag now.
+    (should (= 1 (hermes-render-test--count ":hermes:")))
+    (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
+    (should (= 1 (hermes-render-test--count "^\\*\\* S: ")))
     (should (= 2 (hermes-render-test--count "^:HERMES_RAW:")))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should (< (string-match "^\\*\\* " body)
-                 (string-match ":system:" body))))))
+      (should (< (string-match "^\\*\\* A: " body)
+                 (string-match "^\\*\\* S: " body))))))
 
 (ert-deftest hermes-render-test/pending-turns-assistant-skipped ()
   "Drain with only an assistant in pending-turns inserts nothing,
@@ -647,9 +649,9 @@ heading — i.e. inside the assistant subtree, not after it."
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
              ;; All turns are level-2 siblings under the level-1 session
              ;; container.  The assistant heading is the only `**' line
-             ;; carrying `:hermes:'; the user turns carry `:user:'.
-             (assist-head (string-match "^\\*\\* .*:hermes:" body))
-             (user-next (string-match "^\\*\\* next " body))
+             ;; carrying an `A:' prefix; the user turns carry `U:'.
+             (assist-head (string-match "^\\*\\* A: " body))
+             (user-next (string-match "^\\*\\* U: next" body))
              ;; Find the *assistant's* raw drawer: the first :HERMES_RAW:
              ;; that appears after the assistant heading.
              (raw-after-assistant
@@ -692,7 +694,7 @@ and they shift to level 4."
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
              (expected-stars (make-string (1+ clevel) ?*)))
         (should (string-match-p
-                 (format "^%s hello " (regexp-quote expected-stars))
+                 (format "^%s U: hello" (regexp-quote expected-stars))
                  body))))))
 
 ;;;; Stream paint throttling (Phase 1)

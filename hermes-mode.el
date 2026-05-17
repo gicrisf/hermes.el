@@ -26,6 +26,7 @@
 (require 'hermes-sessions)
 (require 'hermes-skin)
 (require 'hermes-compose)
+(require 'hermes-org)
 
 ;;;; Routing: filter event → buffer
 
@@ -60,8 +61,8 @@ without this cache, the very first buffer would never see the skin.")
     ;; skin.changed) — broadcast those to every existing Hermes buffer.
      (cond
       (buf (with-current-buffer buf
-             (hermes-dispatch (cons type payload))
-             (hermes-ui-dispatch (cons type payload))))
+             (hermes-dispatch (cons type payload) session-id)
+             (hermes-ui-dispatch (cons type payload) session-id)))
       ((or (null session-id) (string-empty-p session-id))
        (hermes--broadcast-dispatch type payload)))))
 
@@ -235,6 +236,12 @@ session state, and inserts the session container heading."
                (goto-char (point-min))
                (when (org-at-heading-p)
                  (org-set-property "HERMES_SESSION" sid))))
+           ;; Register the session in the buffer-local registry so the
+           ;; slice-B dispatcher can resolve `session-id' → state.  The
+           ;; marker tracks the container heading at point-min.
+           (hermes--register-session
+            sid hermes--state
+            (save-excursion (goto-char (point-min)) (copy-marker (point) nil)))
            (when hermes--last-gateway-ready
              (hermes-dispatch
               (cons "gateway.ready" hermes--last-gateway-ready)))
@@ -295,9 +302,16 @@ queued input is drained."
              (with-current-buffer buf
                (let ((old-sid (hermes-state-session-id hermes--state)))
                  (when (and old-sid (not (equal old-sid sid)))
-                   (remhash old-sid hermes--session-buffers)))
+                   (remhash old-sid hermes--session-buffers)
+                   (when (hash-table-p hermes--buffer-sessions)
+                     (remhash old-sid hermes--buffer-sessions))
+                   (when (hash-table-p hermes--session-markers)
+                     (remhash old-sid hermes--session-markers))))
                (puthash sid buf hermes--session-buffers)
                (setf (hermes-state-session-id hermes--state) sid)
+               (hermes--register-session
+                sid hermes--state
+                (save-excursion (goto-char (point-min)) (copy-marker (point) nil)))
                (rename-buffer (generate-new-buffer-name
                                (format "*hermes:%s*" sid)))
                (when hermes--last-gateway-ready
@@ -390,6 +404,10 @@ reference.  Verify with the gateway spec before relying on resume."
            (when sid
              (setf (hermes-state-session-id hermes--state) sid)
              (puthash sid (current-buffer) hermes--session-buffers)
+             (hermes--register-session
+              sid hermes--state
+              (save-excursion
+                (goto-char (point-min)) (copy-marker (point) nil)))
              (message "hermes: resumed as %s (%d turns parsed)"
                       sid (length history))))))))))
 

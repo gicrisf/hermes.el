@@ -124,14 +124,25 @@
 ;;;; Atoms and dispatchers
 
 (defvar-local hermes--state nil
-  "Current persistent state (a `hermes-state').")
+  "Current persistent state (a `hermes-state').
+In a multi-session buffer this mirrors the most recently dispatched
+session's slot in `hermes--buffer-sessions' — kept in sync so older
+code reading `hermes--state' directly still sees coherent values
+during the slice-B transition.")
 
 (defvar-local hermes--ui-state nil
   "Current ephemeral UI state (a `hermes-ui-state').")
 
+(defvar hermes--current-session-id nil
+  "Session id of the dispatch currently in progress, or nil.
+Dynamically bound around `hermes-dispatch' / `hermes-ui-dispatch'
+calls by the event router.  Hook handlers consult it to discover
+which session a change applies to.")
+
 (defvar hermes-state-change-hook nil
   "Hook of (OLD NEW) called after `hermes--state' is swapped.
-Both arguments are `hermes-state' structs; OLD may be nil at init.")
+Both arguments are `hermes-state' structs; OLD may be nil at init.
+The active session id is available via `hermes--current-session-id'.")
 
 (defvar hermes-ui-state-change-hook nil
   "Hook of (OLD NEW) called after `hermes--ui-state' is swapped.")
@@ -143,17 +154,50 @@ Both arguments are `hermes-state' structs; OLD may be nil at init.")
   (unless hermes--ui-state
     (setq hermes--ui-state (make-hermes-ui-state))))
 
-(defun hermes-dispatch (msg)
-  "Reduce MSG into the persistent state and notify subscribers."
-  (let* ((old hermes--state)
+(defun hermes--state-slot-read (session-id)
+  "Return the persistent state for SESSION-ID, or `hermes--state' as fallback.
+Resolves to the per-session registry entry when SESSION-ID is non-nil
+and `hermes--buffer-sessions' carries a struct for it; otherwise
+hands back the buffer-local `hermes--state'."
+  (or (and session-id
+           (boundp 'hermes--buffer-sessions)
+           (hash-table-p hermes--buffer-sessions)
+           (gethash session-id hermes--buffer-sessions))
+      hermes--state))
+
+(defun hermes--state-slot-write (session-id new-state)
+  "Persist NEW-STATE under SESSION-ID and mirror to `hermes--state'.
+When SESSION-ID has a registry entry, that entry is replaced.  The
+buffer-local `hermes--state' is always updated so subscribers reading
+it directly stay coherent with the most recent dispatch."
+  (when (and session-id
+             (boundp 'hermes--buffer-sessions)
+             (hash-table-p hermes--buffer-sessions)
+             (gethash session-id hermes--buffer-sessions))
+    (puthash session-id new-state hermes--buffer-sessions))
+  (setq hermes--state new-state))
+
+(defun hermes-dispatch (msg &optional session-id)
+  "Reduce MSG into the persistent state and notify subscribers.
+If SESSION-ID is provided and present in `hermes--buffer-sessions',
+the reduction targets that session's slot; otherwise it targets the
+buffer-local `hermes--state'.  `hermes--current-session-id' is bound
+to SESSION-ID for the duration so hook handlers can see which
+session changed."
+  (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
+         (old (hermes--state-slot-read hermes--current-session-id))
          (new (hermes--reduce old msg)))
     (unless (eq old new)
-      (setq hermes--state new)
+      (hermes--state-slot-write hermes--current-session-id new)
       (run-hook-with-args 'hermes-state-change-hook old new))))
 
-(defun hermes-ui-dispatch (msg)
-  "Reduce MSG into the ephemeral state and notify subscribers."
-  (let* ((old hermes--ui-state)
+(defun hermes-ui-dispatch (msg &optional session-id)
+  "Reduce MSG into the ephemeral state and notify subscribers.
+SESSION-ID is accepted for symmetry with `hermes-dispatch' and bound
+into `hermes--current-session-id' for the hook run; the ephemeral
+state itself remains buffer-local in slice B."
+  (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
+         (old hermes--ui-state)
          (new (hermes--ui-reduce old msg)))
     (unless (eq old new)
       (setq hermes--ui-state new)

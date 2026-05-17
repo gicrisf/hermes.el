@@ -1,11 +1,11 @@
-# PLAN.md — Persistent Bottom Bench for hermes-mode
+# PLAN.md — Persistent Bottom Bench for hermes-mode (Revised)
 
 ## 1. Vision
 
-Provide a persistent bottom panel (the **bench**) for `hermes-mode` major-mode buffers. The bench acts as the interactive control surface — input + ephemeral stream display — while the org buffer remains the canonical committed history.
+A dedicated bottom panel (`*hermes-bench:<sid>*`) for `hermes-mode` major-mode buffers. The bench displays the **last turn** in a structured, multi-zone layout. The org buffer remains the canonical history and state source.
 
-- **Minor mode** (`hermes-minor-mode` in arbitrary org files): **unchanged**. Header-line at top, no bench.
-- **Major mode** (`hermes-mode` dedicated buffers): bench visible at bottom, status bar at bottom of bench (moved header-line), org buffer header-line stays as-is.
+- **Minor mode** (`hermes-minor-mode` in arbitrary org files): **unchanged**. No bench.
+- **Major mode** (`hermes-mode`): bench visible at bottom, 20 lines minimum.
 
 ### Visual layout (major mode)
 
@@ -18,11 +18,20 @@ Provide a persistent bottom panel (the **bench**) for `hermes-mode` major-mode b
 |  ...                                      |
 |  :END:                                    |
 +------------------------------------------+
-|  Hermes · ● · claude-sonnet · 12→34     |  <- bench header-line (status)
-|  That's an interesting question. Let     |  <- bench ephemeral area
-|  me think about it...                    |     (assistant response stream)
-|                                          |
-|  > hello, what do you think?            |  <- bench input area (cursor)
+|  Hermes · ● · claude-sonnet · 12->34     |  <- bench header-line
+|                                           |
+|  ** hello there                           |  <- user prompt zone
+|                                           |
+|  *** Reasoning                            |  <- reasoning zone header
+|  The user sent a greeting.                |
+|  I'll respond warmly and concisely.       |
+|  ...                                      |
+|                                           |
+|  Hello! How can I help you today?         |  <- answer zone
+|  ...                                      |
+|                                           |
+|  ------                                   |  <- separator
+|  >                                        |  <- input area
 +------------------------------------------+
 ```
 
@@ -32,25 +41,32 @@ Provide a persistent bottom panel (the **bench**) for `hermes-mode` major-mode b
 
 | Behavior | Spec |
 |----------|------|
-| **Bench size** | Fixed 6 lines (`window-height . 6`), bottom side-window |
-| **User message** | Inserted into org buffer **immediately** on send (same as now) |
-| **Assistant stream** | Rendered **only in bench ephemeral area**; org buffer untouched during streaming |
-| **Commit** | On `message.complete` / error / interrupt, full assistant turn appended to org buffer, bench ephemeral area cleared |
-| **Input area** | Single-line feel, but text wraps within window; `C-c C-l` opens full compose buffer for heavy multi-line editing |
+| **Bench size** | 20 lines minimum (`window-height . 20`) |
+| **Bench zones** | Header-line, User prompt, Reasoning (min 6 lines), Answer (min 10 lines), Separator, Input area |
+| **User prompt** | Echoed in bench as `** <text>` mimicking org headline |
+| **Reasoning zone** | Always shows `*** Reasoning` header. Fixed visual space. Only `reasoning` segments populate it. No `thinking`. |
+| **Answer zone** | Assistant `text` segments. Remaining space after reasoning. |
+| **Tool calls** | Rendered as plain text lines in answer zone: `[tool: <name>] <status>` |
+| **System messages** | Rendered in answer zone: `[system] <text>` |
+| **User message commit** | Inserted into org buffer immediately on send (same as now) |
+| **Assistant commit** | On `message.complete` / error / interrupt, full assistant turn appended to org buffer |
+| **Bench clear timing** | **Immediately** when user hits RET for a new prompt. Old answer wiped, fresh turn starts. |
+| **Last turn persistence** | After commit, the assistant answer stays visible in bench until the **next** user prompt clears it. |
+| **No emojis** | ASCII-only indicators (`[tool:]`, `[system]`, `[reasoning]`). |
+| **Separate renderer** | Bench rendering is **completely independent** from `hermes--render-stream-segments`. Zero shared code. |
 | **Focus after send** | Stays in bench input area |
-| **Auto-scroll** | Bench ephemeral area auto-scrolls like a terminal (keep latest visible) |
-| **`C-c C-i` from org buffer** | Jumps focus to bench input area (when bench is active) |
-| **Two org buffers** | Only one bench visible per frame; switching org buffers hides old bench, shows new one via `window-selection-change-functions` |
-| **Header-line** | Org buffer keeps its header-line; bench gets its own `header-line-format` mirroring current status |
+| **`C-c C-i` from org buffer** | Jumps focus to bench input area |
+| **Two org buffers** | One bench per frame; `window-selection-change-functions` swaps |
 
 ---
 
 ## 3. Architecture Principles
 
-1. **Single source of truth**: `hermes--state` stays buffer-local to the org buffer. The bench is a **pure display surface** with no state atom.
-2. **Commit-early for user, commit-late for assistant**: User turn goes to org immediately; assistant turn is held in bench until stream ends, then committed atomically to org.
-3. **Minimal intrusion**: Existing `hermes-minor-mode`, `hermes--render`, `hermes-input-send`, and `hermes--stream-*` functions stay untouched for the minor-mode path. Major mode branches only when `hermes-bench-active-p` is non-nil.
-4. **Plain-text bench, rich org commit**: The bench shows a lightweight text rendering of segments. The org buffer gets the full org-formatted turn (headlines, drawers, faces) on commit via existing `hermes--insert-committed-turn`.
+1. **Bench is pure display**: No state atom. Reads `hermes--state` from parent org buffer.
+2. **Zero renderer coupling**: `hermes-bench.el` does not call, reference, or import any org-renderer internals (`hermes--render-stream-segments`, `hermes--segment-block`, bench markers, etc.).
+3. **Copy-on-read segments**: The bench receives the same `hermes-stream` struct but builds its own plain-text representation. It can snapshot segment state locally.
+4. **Commit-early user, commit-late assistant**: User turn goes to org immediately; assistant turn streams in bench, commits to org at end.
+5. **Clear-on-send**: Bench ephemeral area is wiped on `hermes-bench-send` before `hermes-input-send` is called.
 
 ---
 
@@ -58,7 +74,7 @@ Provide a persistent bottom panel (the **bench**) for `hermes-mode` major-mode b
 
 ### 4.1 New file: `hermes-bench.el`
 
-~350 lines. Core bench lifecycle, display, and input handling.
+~400 lines. Self-contained.
 
 #### Variables (buffer-local in bench buffer)
 
@@ -67,13 +83,15 @@ Provide a persistent bottom panel (the **bench**) for `hermes-mode` major-mode b
   "The org buffer this bench renders for.")
 
 (defvar-local hermes-bench--input-boundary nil
-  "Marker separating ephemeral area (above) from input area (below).")
+  "Marker at the start of the input prompt line.")
 
-(defvar-local hermes-bench--ephemeral-start nil
-  "Marker at start of current assistant turn ephemeral content.")
-
-(defvar-local hermes-bench--session-id nil
-  "Cached session-id for routing checks.")
+;; Zone markers — these delimit the rigid-ish regions
+(defvar-local hermes-bench--user-prompt-start nil)
+(defvar-local hermes-bench--user-prompt-end nil)
+(defvar-local hermes-bench--reasoning-start nil)
+(defvar-local hermes-bench--reasoning-end nil)
+(defvar-local hermes-bench--answer-start nil)
+(defvar-local hermes-bench--answer-end nil)
 ```
 
 #### Major mode
@@ -83,8 +101,7 @@ Provide a persistent bottom panel (the **bench**) for `hermes-mode` major-mode b
   "Major mode for the Hermes bottom bench panel."
   (setq truncate-lines nil)
   (visual-line-mode 1)
-  (setq header-line-format nil)
-  (setq-local cursor-type 'bar))
+  (setq header-line-format nil))
 
 (defvar hermes-bench-mode-map
   (let ((m (make-sparse-keymap)))
@@ -99,159 +116,145 @@ Provide a persistent bottom panel (the **bench**) for `hermes-mode` major-mode b
 
 | Function | Purpose |
 |----------|---------|
-| `hermes-bench-ensure (parent)` | Create or display bench for PARENT buffer. Uses `display-buffer-in-side-window` with `(side . bottom)` `(window-height . 6)` `(slot . 0)` `(dedicated . t)` `(preserve-size . t)`. Returns bench buffer. |
-| `hermes-bench-hide (parent)` | Delete bench window (not buffer) for PARENT. Called on parent kill-buffer-hook. |
-| `hermes-bench-active-p (&optional parent)` | Return live bench buffer for PARENT (defaults to `current-buffer`), or nil. |
-| `hermes-bench--setup (parent)` | Initialize bench buffer: set parent link, create input boundary marker at `(point-min)`, insert prompt `"> "`, set ephemeral-start marker. |
-| `hermes-bench-send` | Grab text after `hermes-bench--input-boundary`, trim, call `hermes-input-send` in parent buffer non-interactively, clear input area. |
-| `hermes-bench-interrupt-parent` | Call `hermes-interrupt` (or equivalent) in parent buffer. |
-| `hermes-bench-compose` | Open `*hermes-compose*` targeting parent buffer (reuse existing `hermes-compose--target` mechanism). |
-| `hermes-bench-clear-ephemeral` | Delete region between ephemeral-start and input-boundary. |
-| `hermes-bench-append-ephemeral (text)` | Insert TEXT before input-boundary, move ephemeral-start if needed, ensure window point shows end (auto-scroll). |
-| `hermes-bench-set-header` | Mirror `hermes--render-header` logic into bench `header-line-format`. Reads `hermes--state` from parent buffer. |
-| `hermes-bench--render-stream (bench old-stream new-stream)` | Lightweight segment renderer. Clears ephemeral area, rebuilds plain-text representation of segments (text + reasoning annotations + tool previews), appends to ephemeral area. |
-| `hermes-bench--stream-begin (bench)` | Initialize ephemeral area for new assistant turn. |
-| `hermes-bench--stream-update (bench old-stream new-stream)` | Diff segments, append deltas to ephemeral area. |
-| `hermes-bench--stream-commit (bench old-stream)` | Build `hermes-message` from stream, call `hermes--insert-committed-turn` in parent buffer, clear ephemeral area. |
+| `hermes-bench-ensure (parent)` | Create or display bench for PARENT. `display-buffer-in-side-window` with `(side . bottom) (slot . 0) (window-height . 20) (dedicated . t) (preserve-size . (nil . t))`. Returns bench buffer. |
+| `hermes-bench-hide (parent)` | Delete bench window, kill bench buffer. |
+| `hermes-bench-active-p (&optional parent)` | Return live bench buffer for PARENT, or nil. |
+| `hermes-bench--setup (parent)` | Initialize bench buffer: erase, insert zone structure, set markers, insert prompt. |
+| `hermes-bench--rebuild-zones ()` | Erase ephemeral content and rebuild the zone structure (user-prompt, reasoning header, answer space, separator). Called on clear. |
+| `hermes-bench--clear-ephemeral ()` | Delete content between zone start and separator. Resets zone markers. |
+| `hermes-bench--input-text ()` | Return trimmed text after input-boundary. |
+| `hermes-bench--clear-input ()` | Erase text after input-boundary. |
+| `hermes-bench-send ()` | **Clear ephemeral, then send.** Grab input, call `hermes-input-send` in parent, clear input. |
+| `hermes-bench-interrupt-parent ()` | Call `hermes-interrupt` in parent. |
+| `hermes-bench-compose ()` | Open `*hermes-compose*` targeting parent. |
+| `hermes-bench--render-stream (bench old-stream new-stream)` | **The bench renderer.** Reads segments from NEW-STREAM, maps to plain text, inserts into correct zone. See section 5 for algorithm. |
+| `hermes-bench-set-header ()` | Mirror parent status into bench `header-line-format`. |
 
-#### Window lifecycle hooks
-
-- `window-selection-change-functions`: when selected window changes to a different `hermes-mode` buffer, hide old bench and show new one.
-- `kill-buffer-hook` on parent: `hermes-bench-hide` + kill bench buffer.
-
-### 4.2 Modify: `hermes-mode.el`
-
-**Line ~214** (after `hermes-minor-mode 1` in `hermes-mode`):
-```elisp
-(hermes-bench-ensure (current-buffer))
-```
-
-**Line ~236-239** (in `hermes--do-session-create` callback, after buffer setup):
-```elisp
-(with-current-buffer buf
-  ...
-  (hermes-bench-ensure buf))
-```
-
-**Add to `hermes-minor-mode--off`** (line ~182-192):
-```elisp
-;; When major mode tears down, hide its bench
-(when (derived-mode-p 'hermes-mode)
-  (hermes-bench-hide (current-buffer)))
-```
-
-**Add kill-buffer hook in `hermes-minor-mode--on`**:
-```elisp
-(add-hook 'kill-buffer-hook
-          (lambda () (hermes-bench-hide (current-buffer)))
-          nil t)
-```
-
-**Update `hermes-send` alias / `C-c C-i` binding**:
-In `hermes-mode-map` (line ~140), change `C-c C-i` to a new function:
-```elisp
-(defun hermes-send-or-focus-bench ()
-  "If bench is active, focus it; otherwise fall back to minibuffer prompt."
-  (interactive)
-  (let ((bench (hermes-bench-active-p)))
-    (if bench
-        (select-window (get-buffer-window bench))
-      (hermes-input-send nil))))  ; interactive path
-```
-
-### 4.3 Modify: `hermes-render.el`
-
-**Refactor `hermes--render`** (lines ~178-206) to branch on bench presence:
+#### Stream lifecycle hooks (called from `hermes--render`)
 
 ```elisp
-(let ((bench-buf (hermes-bench-active-p (current-buffer))))
-  (cond
-   ;; Stream begin
-   ((and (null os) ns)
-    (hermes--stream-flush-cancel)
-    (setq structural-change t bench-touched-p t)
-    (if bench-buf
-        (hermes-bench--stream-begin bench-buf)
-      (hermes--stream-begin)))
-   ;; Stream commit
-   ((and os (null ns))
-    (when (timerp hermes--stream-render-timer)
-      (if bench-buf
-          (hermes-bench--stream-update bench-buf nil os)
-        (hermes--stream-update nil os)))
-    (hermes--stream-flush-cancel)
-    (setq structural-change t bench-touched-p t)
-    (setq committed-region
-          (if bench-buf
-              (progn (hermes-bench--stream-commit bench-buf os) nil)
-            (hermes--stream-commit os))))
-   ;; Stream update
-   ((not (eq os ns))
-    (cond
-     ((zerop hermes-render-stream-throttle)
-      (setq bench-touched-p t)
-      (if bench-buf
-          (hermes-bench--stream-update bench-buf os ns)
-        (hermes--stream-update os ns)))
-     ((null hermes--stream-render-timer)
-      (setq bench-touched-p t)
-      (if bench-buf
-          (hermes-bench--stream-update bench-buf os ns)
-        (hermes--stream-update os ns))
-      (hermes--stream-flush-reschedule))
-     (t
-      (setq hermes--stream-render-pending ns))))))
+(defun hermes-bench--stream-begin (bench)
+  "Called when stream starts. Ensures zones are ready."
+  (with-current-buffer bench
+    (hermes-bench--rebuild-zones)
+    (hermes-bench-set-header)))
+
+(defun hermes-bench--stream-update (bench _old-stream new-stream)
+  "Called on every stream delta (throttled)."
+  (with-current-buffer bench
+    (hermes-bench--render-stream bench _old-stream new-stream)))
+
+(defun hermes-bench--stream-commit (bench old-stream)
+  "Called when stream ends. Build message, insert into parent org buffer."
+  (with-current-buffer bench
+    (let ((parent hermes-bench--parent-buffer))
+      (when (buffer-live-p parent)
+        (with-current-buffer parent
+          (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
+                 (msg (hermes--message-from-stream old-stream usage)))
+            (with-silent-modifications
+              (save-excursion
+                (hermes--insert-committed-turn msg)))))))))
 ```
 
-**Note**: When bench is active, `committed-region` from `hermes--stream-commit` is nil (bench handles org insertion internally), so skip the `hermes--refresh-region` for committed-region at line ~267.
-
-**Header-line sync** (line ~232, inside `hermes--render-header` call block):
-```elisp
-;; Sync bench header-line if present
-(let ((bench (hermes-bench-active-p (current-buffer))))
-  (when bench
-    (with-current-buffer bench
-      (hermes-bench-set-header))))
-```
-
-**Important**: `hermes--render-ui` (line ~290) should also propagate to bench header-line if active.
-
-### 4.4 Modify: `hermes-input.el`
-
-**No changes required** to `hermes-input-send` itself. The bench calls it programmatically:
-```elisp
-(with-current-buffer hermes-bench--parent-buffer
-  (hermes-input-send text))
-```
-
-However, verify that `hermes-input-send` when called **non-interactively** with a string argument bypasses the minibuffer read. Looking at the code (line ~233-248), the interactive spec only runs when called interactively — programmatic calls with `(hermes-input-send "text")` should work fine.
-
-### 4.5 Update: `AGENTS.md`
-
-Add a section documenting:
-- Bench is major-mode only
-- Window parameters (`side . bottom`, `window-height . 6`)
-- Commit semantics (user immediate, assistant deferred)
-- How to test: `eldev test` + manual verify in `eldev emacs`
+**Important**: `stream-commit` does **NOT** clear the bench. The answer stays visible.
 
 ---
 
-## 5. Data Flow
+## 5. Bench Renderer Algorithm
 
-### 5.1 User sends a message (bench active)
+### 5.1 Zone structure after `hermes-bench--rebuild-zones`
+
+```
+[point-min]
+
+** <user prompt text, or empty>
+
+*** Reasoning
+<reasoning text, or empty>
+
+<answer text, or empty>
+
+------
+> <cursor>
+[point-max]
+```
+
+Markers:
+- `hermes-bench--user-prompt-start` → start of `** ` line
+- `hermes-bench--user-prompt-end` → end of user prompt text
+- `hermes-bench--reasoning-start` → start of `*** Reasoning` line
+- `hermes-bench--reasoning-end` → end of reasoning text
+- `hermes-bench--answer-start` → start of first answer text line
+- `hermes-bench--answer-end` → end of answer text
+- `hermes-bench--input-boundary` → start of `------` line
+
+### 5.2 On `hermes-bench-send`
+
+```
+1. Grab input text
+2. hermes-bench--clear-ephemeral
+3. hermes-bench--rebuild-zones
+4. Insert user prompt: "** " + text  (into user-prompt zone)
+5. Call hermes-input-send in parent
+6. Clear input area
+```
+
+This ensures the old answer is gone before the new RPC starts.
+
+### 5.3 On `hermes-bench--stream-update`
+
+```
+1. Read segments vector from new-stream
+2. Separate into buckets: text, reasoning, tool, system
+3. For reasoning bucket:
+   a. Delete region between reasoning-start and reasoning-end
+   b. Insert concatenated reasoning text
+   c. Set reasoning-end marker
+4. For answer bucket (text + tool + system):
+   a. Delete region between answer-start and answer-end
+   b. Insert concatenated text
+   c. Insert tool lines
+   d. Insert system lines
+   e. Set answer-end marker
+5. Do NOT touch user-prompt zone
+```
+
+**Why full delete+insert per zone is fine here**: The bench is plain text. There are no org headlines, property drawers, ID creation, or fold overlays to preserve. The cost of deleting and reinserting a few KB of text in a 20-line text buffer is negligible even at 25 Hz. The org renderer uses incremental diff because it manipulates complex org structure and must preserve markers/IDs/folds. The bench has no such constraint.
+
+### 5.4 Segment → bench text mapping
+
+| Segment type | Bench rendering |
+|--------------|-----------------|
+| `text` | Plain text, no prefix |
+| `reasoning` | Plain text inserted into reasoning zone |
+| `thinking` | **Ignored** — not committed-visible |
+| `tool` | `[tool: <name>] <status> <preview-one-line>` |
+| `system` | `[system] <text>` |
+
+All text uses `visual-line-mode` soft wrapping. No manual line breaking.
+
+---
+
+## 6. Data Flow
+
+### 6.1 User sends a message (bench active)
 
 ```
 User types in bench input area -> RET
   -> hermes-bench-send
-    -> grab text after input-boundary
-    -> hermes-input-send (in parent org buffer)
-      -> :user-submit dispatched
-        -> hermes--render inserts "** user: ..." into org buffer
-      -> prompt.submit RPC sent
-    -> clear bench input area
+    1. Grab text after input-boundary
+    2. hermes-bench--clear-ephemeral
+    3. hermes-bench--rebuild-zones
+    4. Insert "** " + text into user-prompt zone
+    5. hermes-input-send (in parent org buffer)
+         -> :user-submit dispatched
+         -> "** user: hello" inserted into org buffer
+         -> prompt.submit RPC sent
+    6. Clear bench input area
 ```
 
-### 5.2 Assistant streams response (bench active)
+### 6.2 Assistant streams response (bench active)
 
 ```
 message.delta arrives
@@ -261,13 +264,12 @@ message.delta arrives
       -> hermes--render
         -> branch: bench active
           -> hermes-bench--stream-update
-            -> clear ephemeral area
-            -> rebuild plain-text from segments
-            -> append before input-boundary
-            -> auto-scroll window to show latest
+            -> read segments vector
+            -> rebuild reasoning zone from reasoning segments
+            -> rebuild answer zone from text/tool/system segments
 ```
 
-### 5.3 Stream commits (bench active)
+### 6.3 Stream commits (bench active)
 
 ```
 message.complete arrives
@@ -276,104 +278,101 @@ message.complete arrives
     -> hermes--render
       -> branch: bench active
         -> hermes-bench--stream-commit
-          -> build hermes-message from final segments
+          -> build hermes-message from final stream
           -> with-current-buffer parent
              -> hermes--insert-committed-turn (existing function)
-             -> inserts "** assistant...", raw drawer, etc.
-          -> hermes-bench-clear-ephemeral
+          -> bench stays as-is (answer still visible)
+```
+
+### 6.4 Next user prompt (bench active, previous answer still visible)
+
+```
+User hits RET with new prompt
+  -> hermes-bench-send
+    1. Grab text
+    2. hermes-bench--clear-ephemeral  <-- old answer wiped
+    3. hermes-bench--rebuild-zones
+    4. Insert new user prompt
+    5. Send RPC
 ```
 
 ---
 
-## 6. Rendering in the Bench
+## 7. Files to Modify
 
-The bench does **not** use org formatting. It uses plain text with overlays for basic styling.
+### 7.1 `hermes-mode.el` (unchanged from first plan)
 
-### Segment → bench text mapping
+- After `(hermes-minor-mode 1)` in `hermes-mode`: `(hermes-bench-ensure (current-buffer))`
+- In `hermes--do-session-create` callback: `(hermes-bench-ensure buf)`
+- `hermes-minor-mode--off`: `(hermes-bench-hide (current-buffer))` when major mode
+- `kill-buffer-hook`: `(hermes-bench-hide (current-buffer))`
+- `C-c C-i` binding: jump to bench if active
 
-| Segment type | Bench rendering |
-|--------------|-----------------|
-| `text` | Plain text, wrapped at window width |
-| `thinking` | `[thinking: ...]` in muted face (or hidden) |
-| `reasoning` | `--- reasoning ---\n...\n---` in italic face |
-| `tool` | `🔧 tool: <name>\n<preview>` (use `hermes-tool-formatters` for preview) |
-| `system` | `ℹ <text>` in system face |
+### 7.2 `hermes-render.el` (unchanged from first plan)
 
-### Auto-scroll logic
+Branch stream lifecycle on `hermes-bench-active-p`:
+- `stream-begin` → `hermes-bench--stream-begin` or `hermes--stream-begin`
+- `stream-update` → `hermes-bench--stream-update` or `hermes--stream-update`
+- `stream-commit` → `hermes-bench--stream-commit` or `hermes--stream-commit`
 
-```elisp
-(defun hermes-bench--ensure-visible-end ()
-  "If point in bench window is near end, keep it at end."
-  (let ((win (get-buffer-window (current-buffer))))
-    (when win
-      (with-selected-window win
-        (when (>= (point) (1- hermes-bench--input-boundary))
-          (goto-char hermes-bench--input-boundary)
-          (recenter -1))))))
-```
+Also: sync bench header-line when parent header-line updates.
+
+### 7.3 `hermes-input.el`
+
+No changes. Bench calls `hermes-input-send` programmatically.
 
 ---
 
-## 7. Testing Strategy
-
-### Unit tests (`test/hermes-bench-test.el`)
-
-1. **`hermes-bench-ensure`**: creates buffer, correct mode, parent link set
-2. **`hermes-bench-active-p`**: returns nil when hidden, returns buffer when shown
-3. **`hermes-bench-send`**: extracts text after boundary, calls `hermes-input-send` mock, clears input
-4. **`hermes-bench-clear-ephemeral`**: deletes region above boundary, preserves input
-5. **`hermes-bench--render-stream`**: converts segment vector to expected plain text
-6. **`hermes-bench--stream-commit`**: builds message, calls `hermes--insert-committed-turn` mock, clears ephemeral
-
-### Integration tests
-
-1. Open `hermes-mode` buffer -> bench appears at bottom
-2. Send message from bench -> user heading appears in org buffer, input clears
-3. Simulate stream deltas -> text appears in bench ephemeral area, org buffer unchanged
-4. Simulate `message.complete` -> assistant heading + raw drawer appears in org buffer, bench ephemeral clears
-5. Kill org buffer -> bench buffer and window disappear
-6. Switch between two `hermes-mode` buffers -> correct bench shown for active buffer
-
----
-
-## 8. Edge Cases & Gotchas
+## 8. Edge Cases
 
 | Case | Handling |
 |------|----------|
-| **Bench window deleted manually (`C-x 0`)** | `hermes-bench-active-p` returns nil; next `C-c C-i` recreates it. Or `window-configuration-change-hook` can re-ensure. |
+| **Bench window deleted manually** | `hermes-bench-active-p` returns nil; `C-c C-i` recreates it. |
 | **Org buffer killed** | `kill-buffer-hook` hides bench + kills bench buffer. |
-| **Gateway disconnects mid-stream** | `error` path in reducer clears stream; bench commit handles it same as `message.complete`. |
-| **User queues message while streaming** | `hermes-input-send` enqueues; bench input clears immediately. Drain hook fires later. Bench ephemeral area stays showing current stream. |
-| **Bench text wraps beyond 6 lines** | Fixed window height truncates; user scrolls. `visual-line-mode` ensures soft wraps. |
-| **Multi-byte / emoji in stream** | Plain-text rendering should handle multibyte naturally; no byte/char confusion since we use string operations. |
-| **Frame split / window params** | `(preserve-size . t)` on side-window keeps height stable during resizes. |
+| **Gateway disconnects mid-stream** | `error` path clears stream; `stream-commit` inserts partial message into org, bench keeps last rendered state. |
+| **User queues while streaming** | `hermes-bench-send` sees stream is active, clears bench anyway, inserts user prompt, enqueues. User sees their prompt + empty reasoning/answer zones while waiting. |
+| **No reasoning segments** | Reasoning zone shows `*** Reasoning` header with empty body. |
+| **Only reasoning, no text** | Answer zone empty, reasoning zone populated. |
+| **Multi-byte / emoji in stream** | Plain text insert handles naturally. No emoji policy enforced by bench — it just doesn't add its own. |
 
 ---
 
-## 9. Open Questions (for implementer)
+## 9. Testing Strategy
 
-1. **Bench prompt character**: Should the input area show `"> "` (like a REPL) or nothing? Suggest `"> "` with `hermes-bench-prompt` face for visual distinction.
-2. **Ephemeral area separator**: Should there be a horizontal line (`─` repeated) between ephemeral area and input area? Suggest yes, via an overlay or inserted rule line.
-3. **History in bench**: Should `M-p` / `M-n` cycle through `hermes-state-history` in the bench input area? Suggest yes — bind in `hermes-bench-mode-map`.
-4. **Slash command completion**: Should `TAB` in bench input offer slash completion? Suggest yes — reuse `hermes-input-completion-at-point`.
+### Unit tests (`test/hermes-bench-test.el`)
+
+1. `hermes-bench-ensure`: creates buffer, correct mode, 20-line window
+2. `hermes-bench--rebuild-zones`: correct marker positions, zones in order
+3. `hermes-bench-send`: clears old content, inserts user prompt, calls mock
+4. `hermes-bench--render-stream`: reasoning segments go to reasoning zone, text to answer zone, thinking ignored
+5. `hermes-bench--stream-commit`: calls `hermes--insert-committed-turn` mock, bench not cleared
+6. `hermes-bench-hide`: window gone, buffer killed
+
+### Integration tests
+
+1. Open `hermes-mode` → bench appears at bottom, 20 lines
+2. Send message from bench → user prompt visible in bench, heading in org
+3. Stream deltas → reasoning and text appear in correct zones
+4. `message.complete` → assistant heading + raw drawer in org, bench still shows answer
+5. Send second message → bench clears old answer, shows new user prompt
 
 ---
 
 ## 10. Implementation Order
 
-1. Create `hermes-bench.el` skeleton (mode, ensure/hide, basic buffer setup)
-2. Wire `hermes-mode.el` to call `hermes-bench-ensure` on major mode startup
-3. Implement bench input/send loop (`hermes-bench-send`, input boundary)
-4. Refactor `hermes-render.el` stream lifecycle to branch on bench presence
-5. Implement bench stream rendering (`hermes-bench--stream-begin/update/commit`)
-6. Add header-line sync to bench
-7. Add `C-c C-i` focus-to-bench behavior
-8. Add window-selection-change handling for multi-buffer switching
-9. Write tests
-10. Update `AGENTS.md`
+1. Create `hermes-bench.el` skeleton (mode, ensure/hide, setup)
+2. Implement zone structure (`hermes-bench--rebuild-zones`, markers)
+3. Implement `hermes-bench-send` with clear-on-send behavior
+4. Implement bench renderer (`hermes-bench--render-stream`)
+5. Implement stream lifecycle hooks (`stream-begin/update/commit`)
+6. Wire `hermes-mode.el` to create bench on startup
+7. Wire `hermes-render.el` stream lifecycle branching
+8. Add header-line sync
+9. Add window-selection-change handling
+10. Write tests
 
 ---
 
-*Plan version: 1.0*
+*Plan version: 2.0*
 *Target branch: feature/bench*
-*Estimated lines: ~450 new, ~100 modified*
+*Estimated lines: ~500 new, ~100 modified*

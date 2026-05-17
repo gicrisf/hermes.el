@@ -7,10 +7,11 @@
 ;;; Commentary:
 
 ;; The bench is a bottom side-window paired with a `hermes-mode' buffer.
-;; It is the user's interactive surface: ephemeral assistant stream
-;; rendered above, single-line-feeling input area below.  The parent
-;; Org buffer remains the canonical history; committed turns land there
-;; only after the stream completes.
+;; It is the user's interactive surface: structured zones for the last
+;; turn (user prompt, reasoning, answer) plus an input area at the
+;; bottom.  The parent Org buffer remains the canonical history; the
+;; bench only mirrors the last turn for inspection while it streams,
+;; and keeps it visible until the next user prompt arrives.
 ;;
 ;; The bench buffer is a pure display surface — no state atom.  All
 ;; reads go through the parent's buffer-local `hermes--state'.
@@ -18,6 +19,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'hermes-state)
 (require 'hermes-tool-formatters)
 
@@ -27,12 +29,16 @@
 (declare-function hermes--insert-committed-turn "hermes-render" (msg))
 (declare-function hermes--message-from-stream "hermes-state" (stream usage))
 
-(defcustom hermes-bench-height 6
+(defcustom hermes-bench-height 20
   "Height in lines of the bench side-window."
   :type 'integer :group 'hermes)
 
 (defcustom hermes-bench-prompt "> "
   "Prompt string shown at the start of the bench input area."
+  :type 'string :group 'hermes)
+
+(defcustom hermes-bench-separator "------"
+  "Separator line between ephemeral zones and the input area."
   :type 'string :group 'hermes)
 
 (defface hermes-bench-prompt-face
@@ -42,17 +48,27 @@
 
 (defface hermes-bench-separator-face
   '((t :inherit shadow))
-  "Face for the bench ephemeral/input separator line."
+  "Face for the bench separator line."
+  :group 'hermes)
+
+(defface hermes-bench-user-face
+  '((t :inherit hermes-user-face))
+  "Face for the user prompt heading in the bench."
+  :group 'hermes)
+
+(defface hermes-bench-reasoning-heading-face
+  '((t :inherit org-level-3))
+  "Face for the `*** Reasoning' heading in the bench."
   :group 'hermes)
 
 (defface hermes-bench-reasoning-face
   '((t :inherit italic :foreground "gray60"))
-  "Face for reasoning text in the bench ephemeral area."
+  "Face for reasoning text in the bench."
   :group 'hermes)
 
 (defface hermes-bench-tool-face
   '((t :inherit hermes-tool-face))
-  "Face for tool lines in the bench ephemeral area."
+  "Face for tool lines in the bench."
   :group 'hermes)
 
 ;;;; Buffer-local state (in bench buffer)
@@ -61,11 +77,15 @@
   "The hermes-mode org buffer this bench renders for.")
 
 (defvar-local hermes-bench--input-boundary nil
-  "Marker between ephemeral area (above) and input area (below).
-Points at the start of the input prompt line.")
+  "Marker just before the input prompt (start of the prompt string).
+Text after this marker is the user-editable input area.")
 
-(defvar-local hermes-bench--ephemeral-start nil
-  "Marker at the start of the ephemeral content (point-min normally).")
+(defvar-local hermes-bench--user-prompt-start nil)
+(defvar-local hermes-bench--user-prompt-end nil)
+(defvar-local hermes-bench--reasoning-start nil)
+(defvar-local hermes-bench--reasoning-end nil)
+(defvar-local hermes-bench--answer-start nil)
+(defvar-local hermes-bench--answer-end nil)
 
 ;;;; Buffer-local state (in parent buffer)
 
@@ -87,8 +107,7 @@ Points at the start of the input prompt line.")
   "Major mode for the Hermes bottom bench panel."
   (setq truncate-lines nil)
   (visual-line-mode 1)
-  (setq-local cursor-type 'bar)
-  (setq-local hermes-bench--parent-buffer nil))
+  (setq-local cursor-type 'bar))
 
 ;;;; Lifecycle
 
@@ -96,12 +115,74 @@ Points at the start of the input prompt line.")
   (format " *hermes-bench:%s*" (buffer-name parent)))
 
 (defun hermes-bench-active-p (&optional parent)
-  "Return the live bench buffer paired with PARENT (defaults to current).
-Returns nil when no bench buffer exists for that parent."
+  "Return the live bench buffer paired with PARENT, or nil."
   (let* ((p (or parent (current-buffer)))
          (b (and (buffer-live-p p)
                  (buffer-local-value 'hermes-bench--buffer p))))
     (and (buffer-live-p b) b)))
+
+(defun hermes-bench--make-marker (pos type)
+  (let ((m (copy-marker pos type))) m))
+
+(defun hermes-bench--insert-input-frame ()
+  "Insert the separator + prompt at point, set `hermes-bench--input-boundary'.
+The separator and prompt are read-only; the area after the prompt is
+the user-editable input."
+  (progn
+    (insert (propertize (concat hermes-bench-separator "\n")
+                        'face 'hermes-bench-separator-face
+                        'read-only t 'front-sticky '(read-only)
+                        'rear-nonsticky '(read-only)))
+    (setq hermes-bench--input-boundary
+          (hermes-bench--make-marker (point) nil))
+    (insert (propertize hermes-bench-prompt
+                        'face 'hermes-bench-prompt-face
+                        'read-only t 'front-sticky '(read-only)
+                        'rear-nonsticky '(read-only)))))
+
+(defun hermes-bench--rebuild-zones ()
+  "Erase the ephemeral region and insert the zone scaffold.
+Sets all `hermes-bench--*-start/end' markers.  Leaves the separator and
+input area below untouched (they are re-inserted only when missing)."
+  (let ((inhibit-read-only t))
+    ;; If an input frame already exists, wipe everything above it.
+    ;; Otherwise wipe the whole buffer and reinstall the frame at the
+    ;; tail later.
+    (if (and (markerp hermes-bench--input-boundary)
+             (marker-position hermes-bench--input-boundary))
+        (let ((sep-line-start
+               (save-excursion
+                 (goto-char (marker-position hermes-bench--input-boundary))
+                 (forward-line -1)
+                 (line-beginning-position))))
+          (delete-region (point-min) sep-line-start))
+      (erase-buffer))
+    (goto-char (point-min))
+    ;; --- User prompt zone --------------------------------------------
+    (insert (propertize "** " 'face 'hermes-bench-user-face))
+    (setq hermes-bench--user-prompt-start
+          (hermes-bench--make-marker (point) nil))
+    (setq hermes-bench--user-prompt-end
+          (hermes-bench--make-marker (point) t))
+    (insert "\n\n")
+    ;; --- Reasoning zone ----------------------------------------------
+    (insert (propertize "*** Reasoning\n"
+                        'face 'hermes-bench-reasoning-heading-face))
+    (setq hermes-bench--reasoning-start
+          (hermes-bench--make-marker (point) nil))
+    (setq hermes-bench--reasoning-end
+          (hermes-bench--make-marker (point) t))
+    (insert "\n\n")
+    ;; --- Answer zone -------------------------------------------------
+    (setq hermes-bench--answer-start
+          (hermes-bench--make-marker (point) nil))
+    (setq hermes-bench--answer-end
+          (hermes-bench--make-marker (point) t))
+    (insert "\n\n")
+    ;; --- Input frame (only if missing) -------------------------------
+    (unless (and (markerp hermes-bench--input-boundary)
+                 (marker-position hermes-bench--input-boundary))
+      (hermes-bench--insert-input-frame))))
 
 (defun hermes-bench--setup (parent)
   "Initialize the bench buffer contents for PARENT."
@@ -109,25 +190,13 @@ Returns nil when no bench buffer exists for that parent."
   (setq hermes-bench--parent-buffer parent)
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (setq hermes-bench--ephemeral-start (copy-marker (point-min) nil))
-    ;; Separator line — visual hint between ephemeral area and input.
-    (let ((sep-start (point)))
-      (insert (propertize "──────\n" 'face 'hermes-bench-separator-face
-                          'read-only t 'rear-nonsticky t
-                          'hermes-bench-separator t))
-      (setq hermes-bench--input-boundary (copy-marker (point) nil)))
-    (let ((p-start (point)))
-      (insert (propertize hermes-bench-prompt
-                          'face 'hermes-bench-prompt-face
-                          'read-only t 'rear-nonsticky t
-                          'front-sticky '(read-only)))
-      (set-marker hermes-bench--input-boundary (point))))
+    (setq hermes-bench--input-boundary nil)
+    (hermes-bench--rebuild-zones))
   (hermes-bench-set-header)
   (goto-char (point-max)))
 
 (defun hermes-bench-ensure (parent)
-  "Ensure a bench buffer exists and is displayed for PARENT.
-Returns the bench buffer."
+  "Ensure a bench buffer exists and is displayed for PARENT."
   (let* ((name (hermes-bench--buffer-name parent))
          (existing (buffer-local-value 'hermes-bench--buffer parent))
          (buf (or (and (buffer-live-p existing) existing)
@@ -173,11 +242,161 @@ Returns the bench buffer."
 (defun hermes-bench--clear-input ()
   "Erase text after the input boundary."
   (let ((inhibit-read-only t))
-    (delete-region (marker-position hermes-bench--input-boundary)
-                   (point-max))))
+    (when (and (markerp hermes-bench--input-boundary)
+               (marker-position hermes-bench--input-boundary))
+      (delete-region (marker-position hermes-bench--input-boundary)
+                     (point-max)))))
+
+;;;; Zone writers
+
+(defun hermes-bench--replace-zone (start-marker end-marker text &optional face)
+  "Delete the region between START-MARKER and END-MARKER, insert TEXT.
+If FACE is non-nil, propertize the inserted text with it."
+  (when (and (markerp start-marker) (marker-position start-marker)
+             (markerp end-marker)   (marker-position end-marker))
+    (let ((inhibit-read-only t))
+      (delete-region (marker-position start-marker)
+                     (marker-position end-marker))
+      (save-excursion
+        (goto-char (marker-position start-marker))
+        (insert (if face (propertize text 'face face) text))))))
+
+(defun hermes-bench--set-user-prompt (text)
+  (hermes-bench--replace-zone
+   hermes-bench--user-prompt-start hermes-bench--user-prompt-end
+   (or text "") 'hermes-bench-user-face))
+
+(defun hermes-bench--set-reasoning (text)
+  (hermes-bench--replace-zone
+   hermes-bench--reasoning-start hermes-bench--reasoning-end
+   (or text "") 'hermes-bench-reasoning-face))
+
+(defun hermes-bench--set-answer (text)
+  (hermes-bench--replace-zone
+   hermes-bench--answer-start hermes-bench--answer-end (or text "")))
+
+;;;; Segment partitioning
+
+(defun hermes-bench--segments-by-zone (segments)
+  "Return (REASONING-TEXT . ANSWER-TEXT) from SEGMENTS (a vector)."
+  (let (rparts aparts)
+    (when (vectorp segments)
+      (dotimes (i (length segments))
+        (let* ((s (aref segments i))
+               (type (hermes-segment-type s))
+               (content (hermes-segment-content s)))
+          (pcase type
+            ('reasoning
+             (when (and (stringp content) (not (string-empty-p content)))
+               (push content rparts)))
+            ('text
+             (when (stringp content) (push content aparts)))
+            ('tool
+             (let* ((tool content)
+                    (name (and (hermes-tool-p tool) (hermes-tool-name tool)))
+                    (status (and (hermes-tool-p tool) (hermes-tool-status tool)))
+                    (formatter (and name (hermes-tool--lookup name)))
+                    (parts (and formatter (funcall formatter tool)))
+                    (summary (or (plist-get parts :summary) name "tool"))
+                    (one (replace-regexp-in-string
+                          "[ \t\n]+" " " (format "%s" summary))))
+               (push (format "[tool: %s] %s %s"
+                             (or name "?") (or status "?") one)
+                     aparts)))
+            ('system
+             (when (stringp content)
+               (push (format "[system] %s" content) aparts)))
+            ('thinking nil)
+            (_ nil)))))
+    (cons (string-join (nreverse rparts) "")
+          (string-join (nreverse aparts) ""))))
+
+;;;; Auto-scroll
+
+(defun hermes-bench--ensure-visible-end ()
+  "Keep point in bench windows pinned to the input area."
+  (dolist (w (get-buffer-window-list (current-buffer) nil t))
+    (when (window-live-p w)
+      (set-window-point w (point-max)))))
+
+;;;; Stream lifecycle (called from hermes--render)
+
+(defun hermes-bench--latest-user-text (parent)
+  "Return the most recently-submitted user prompt text from PARENT, or nil."
+  (when (buffer-live-p parent)
+    (let* ((state (buffer-local-value 'hermes--state parent))
+           (turns (and state (hermes-state-pending-turns state)))
+           (n (and (vectorp turns) (length turns))))
+      (when (and n (> n 0))
+        (let ((found nil)
+              (i (1- n)))
+          (while (and (not found) (>= i 0))
+            (let ((m (aref turns i)))
+              (when (eq 'user (hermes-message-kind m))
+                (setq found m)))
+            (cl-decf i))
+          (when found
+            (let ((segs (hermes-message-segments found)))
+              (when (and (vectorp segs) (> (length segs) 0))
+                (let ((s (aref segs 0)))
+                  (and (eq 'text (hermes-segment-type s))
+                       (hermes-segment-content s)))))))))))
+
+(defun hermes-bench--stream-begin (bench)
+  "Stream started: clear answer/reasoning zones, ensure user prompt is set."
+  (when (buffer-live-p bench)
+    (with-current-buffer bench
+      (hermes-bench--set-reasoning "")
+      (hermes-bench--set-answer "")
+      ;; If `hermes-bench-send' didn't run (e.g. user submitted via
+      ;; another path), backfill the user-prompt zone from the parent's
+      ;; latest pending user turn.
+      (let ((current (string-trim
+                      (buffer-substring-no-properties
+                       (marker-position hermes-bench--user-prompt-start)
+                       (marker-position hermes-bench--user-prompt-end)))))
+        (when (string-empty-p current)
+          (let ((text (hermes-bench--latest-user-text
+                       hermes-bench--parent-buffer)))
+            (when text (hermes-bench--set-user-prompt text)))))
+      (hermes-bench-set-header)
+      (hermes-bench--ensure-visible-end))))
+
+(defun hermes-bench--stream-update (bench _old new)
+  "Repaint the bench reasoning and answer zones from NEW stream."
+  (when (and (buffer-live-p bench) (hermes-stream-p new))
+    (with-current-buffer bench
+      (pcase-let ((`(,reasoning . ,answer)
+                   (hermes-bench--segments-by-zone
+                    (hermes-stream-segments new))))
+        (hermes-bench--set-reasoning reasoning)
+        (hermes-bench--set-answer answer))
+      (hermes-bench--ensure-visible-end))))
+
+(defun hermes-bench--stream-commit (bench old-stream)
+  "Stream ended: commit OLD-STREAM into the parent's org buffer.
+The bench is NOT cleared — the rendered answer persists until the next
+`hermes-bench-send'."
+  (when (buffer-live-p bench)
+    (let ((parent (buffer-local-value 'hermes-bench--parent-buffer bench)))
+      (when (and (buffer-live-p parent)
+                 (hermes-stream-p old-stream))
+        (with-current-buffer parent
+          (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
+                 (msg (hermes--message-from-stream old-stream usage)))
+            (with-silent-modifications
+              (save-excursion
+                (hermes--insert-committed-turn msg))))))
+      (with-current-buffer bench
+        (hermes-bench-set-header)
+        (hermes-bench--ensure-visible-end)))))
+
+;;;; Send
 
 (defun hermes-bench-send ()
-  "Send the current input-area text to the paired parent buffer."
+  "Send the current input-area text to the paired parent buffer.
+Clears the bench ephemeral content first, then echoes the user prompt
+into the bench, then dispatches the text to the parent."
   (interactive)
   (let ((text (hermes-bench--input-text))
         (parent hermes-bench--parent-buffer))
@@ -185,9 +404,15 @@ Returns the bench buffer."
       (user-error "Bench has no live parent buffer"))
     (when (or (null text) (string-empty-p text))
       (user-error "Nothing to send"))
-    (hermes-bench--clear-input)
+    ;; 1+2+3. Wipe old turn from the bench, rebuild the zone scaffold.
+    (hermes-bench--rebuild-zones)
+    ;; 4. Echo the user prompt.
+    (hermes-bench--set-user-prompt text)
+    ;; 5. Dispatch to the parent (this fires :user-submit + RPC).
     (with-current-buffer parent
       (hermes-input-send text))
+    ;; 6. Clear input area.
+    (hermes-bench--clear-input)
     (goto-char (point-max))))
 
 (defun hermes-bench-interrupt-parent ()
@@ -203,101 +428,6 @@ Returns the bench buffer."
   (when (buffer-live-p hermes-bench--parent-buffer)
     (with-current-buffer hermes-bench--parent-buffer
       (call-interactively #'hermes-compose))))
-
-;;;; Ephemeral area: rendering
-
-(defun hermes-bench-clear-ephemeral ()
-  "Delete content between ephemeral-start and the separator boundary.
-Preserves the input area."
-  (when (and (markerp hermes-bench--ephemeral-start)
-             (markerp hermes-bench--input-boundary))
-    (let* ((inhibit-read-only t)
-           (eph (marker-position hermes-bench--ephemeral-start))
-           ;; The separator sits just before the input prompt; find it.
-           (sep-end
-            (save-excursion
-              (goto-char (marker-position hermes-bench--input-boundary))
-              (let ((p (previous-single-property-change
-                        (point) 'hermes-bench-separator)))
-                (or p eph)))))
-      (delete-region eph sep-end))))
-
-(defun hermes-bench--segment-text (seg)
-  "Return a plain-text rendering of SEG, or nil for hidden segments."
-  (let ((type (hermes-segment-type seg))
-        (content (hermes-segment-content seg)))
-    (pcase type
-      ('text (and (stringp content) content))
-      ('thinking nil)
-      ('reasoning
-       (and (stringp content) (not (string-empty-p content))
-            (propertize (concat "[reasoning] " content "\n")
-                        'face 'hermes-bench-reasoning-face)))
-      ('tool
-       (let* ((tool content)
-              (name (and (hermes-tool-p tool) (hermes-tool-name tool)))
-              (status (and (hermes-tool-p tool) (hermes-tool-status tool)))
-              (formatter (and name (hermes-tool--lookup name)))
-              (parts (and formatter (funcall formatter tool)))
-              (summary (or (plist-get parts :summary) name "tool")))
-         (propertize (format "🔧 %s [%s]\n" summary (or status "?"))
-                     'face 'hermes-bench-tool-face)))
-      ('system
-       (and (stringp content) (concat "ℹ " content "\n")))
-      (_ nil))))
-
-(defun hermes-bench--render-segments (segments)
-  "Replace ephemeral content with a plain-text rendering of SEGMENTS."
-  (hermes-bench-clear-ephemeral)
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (marker-position hermes-bench--ephemeral-start))
-      (when (vectorp segments)
-        (dotimes (i (length segments))
-          (let ((piece (hermes-bench--segment-text (aref segments i))))
-            (when piece
-              (insert piece)
-              (unless (string-suffix-p "\n" piece) (insert "\n"))))))))
-  (hermes-bench--ensure-visible-end))
-
-(defun hermes-bench--ensure-visible-end ()
-  "Auto-scroll: ensure the input boundary stays visible in bench windows."
-  (dolist (w (get-buffer-window-list (current-buffer) nil t))
-    (when (window-live-p w)
-      (with-selected-window w
-        (set-window-point w (point-max))
-        (recenter -1)))))
-
-;;;; Stream hooks called from hermes--render
-
-(defun hermes-bench--stream-begin (bench)
-  "Initialize the bench ephemeral area for a new assistant turn."
-  (when (buffer-live-p bench)
-    (with-current-buffer bench
-      (hermes-bench-clear-ephemeral)
-      (hermes-bench-set-header))))
-
-(defun hermes-bench--stream-update (bench _old-stream new-stream)
-  "Repaint the bench ephemeral area from NEW-STREAM."
-  (when (and (buffer-live-p bench) (hermes-stream-p new-stream))
-    (with-current-buffer bench
-      (hermes-bench--render-segments (hermes-stream-segments new-stream)))))
-
-(defun hermes-bench--stream-commit (bench old-stream)
-  "Build a message from OLD-STREAM, insert it into the parent, clear bench."
-  (when (buffer-live-p bench)
-    (let ((parent (buffer-local-value 'hermes-bench--parent-buffer bench)))
-      (when (and (buffer-live-p parent)
-                 (hermes-stream-p old-stream))
-        (with-current-buffer parent
-          (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
-                 (msg (hermes--message-from-stream old-stream usage)))
-            (with-silent-modifications
-              (save-excursion
-                (hermes--insert-committed-turn msg))))))
-      (with-current-buffer bench
-        (hermes-bench-clear-ephemeral)
-        (hermes-bench-set-header)))))
 
 ;;;; Header line
 
@@ -328,7 +458,7 @@ Preserves the input area."
                     (sent (and u (gethash "tokens_sent" u)))
                     (recv (and u (gethash "tokens_received" u))))
                (if (or sent recv)
-                   (format " · %s→%s" (or sent "?") (or recv "?"))
+                   (format " · %s->%s" (or sent "?") (or recv "?"))
                  "")))
            `(:eval
              (let* ((s (and (buffer-live-p ,parent)

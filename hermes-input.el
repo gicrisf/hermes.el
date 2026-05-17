@@ -29,9 +29,84 @@
 (require 'hermes-org)
 
 (declare-function hermes-reconnect "hermes-mode" ())
+(declare-function hermes--parse-buffer-messages "hermes-mode" ())
+(declare-function hermes--message-text-for-display "hermes-render" (msg))
 
 (defvar-local hermes-input--history nil
   "Buffer-local mirror of `hermes-state-history' for `read-string' HISTORY.")
+
+;;;; History seed — prepend buffer-derived context to the first prompt
+;;;; after the gateway connects against a buffer that already has turns.
+
+(defcustom hermes-history-seed-max-turns 30
+  "Maximum number of trailing turns to include in the history seed.
+Older turns are dropped.  Set to nil for no limit.  The seed runs once
+per gateway connection, so this cap only matters for the first prompt
+after a reconnect or after opening a saved conversation file."
+  :type '(choice (integer :tag "Last N turns")
+                 (const :tag "No limit" nil))
+  :group 'hermes)
+
+(defvar-local hermes--pending-history-seed nil
+  "Non-nil when the next outgoing `prompt.submit' should be prefixed
+with a text block reconstructed from the buffer's `:HERMES_RAW:'
+drawers.  Set by `hermes--route-connection' on `'connected' when the
+buffer already has committed turns; cleared after the first
+`prompt.submit' consumes it.
+
+Only the idle send path (`hermes-input--send-1') and not the queue
+drain (`hermes-input--drain', `hermes-input--drain-after-reconnect')
+consumes the flag.  This is safe because the `'connected' arming
+transition can only fire when no stream is active — i.e. the idle
+path is the one taken — so the drain paths cannot observe an armed
+flag in practice.
+
+Slash commands take a different RPC path (`slash.exec') and do not
+consume the flag.")
+
+(defun hermes--build-history-text ()
+  "Return a text block reconstructed from buffer history, or nil.
+Reads `:HERMES_RAW:' drawers, formats each turn as a \"Role: text\"
+pair, and truncates to the last `hermes-history-seed-max-turns' turns.
+Returns nil when the buffer has no committed turns or every turn's
+text is empty."
+  (let* ((messages (hermes--parse-buffer-messages))
+         (n        (length messages))
+         (cap      hermes-history-seed-max-turns)
+         (start    (if (and cap (> n cap)) (- n cap) 0))
+         (truncated (and cap (> n cap))))
+    (when (> n 0)
+      (let (lines)
+        (cl-loop for i from start below n
+                 do (let* ((msg  (aref messages i))
+                           (role (pcase (hermes-message-kind msg)
+                                   ('user      "User")
+                                   ('assistant "Assistant")
+                                   ('system    "System")
+                                   (_          "Unknown")))
+                           (text (hermes--message-text-for-display msg)))
+                      (when (and text (not (string-empty-p (string-trim text))))
+                        (push (format "%s: %s" role text) lines))))
+        (setq lines (nreverse lines))
+        (when lines
+          (concat
+           "[The following is the previous conversation"
+           (if truncated (format " (last %d turns of %d)" cap n) "")
+           ", for context only.\n"
+           "Do not repeat or echo any of it.  Respond only to the current\n"
+           "message after \"---\".]\n\n"
+           (mapconcat #'identity lines "\n\n")
+           "\n\n---\n\nCurrent: "))))))
+
+(defun hermes-input--seed-prefix (text)
+  "If the seed flag is set, return TEXT prefixed with history; else TEXT.
+One-shot — the flag is cleared whether or not a history block was
+produced, so an empty buffer can't leave the flag stuck."
+  (if hermes--pending-history-seed
+      (let ((history-text (hermes--build-history-text)))
+        (setq hermes--pending-history-seed nil)
+        (if history-text (concat history-text text) text))
+    text))
 
 ;;;; Post-reconnect drain
 
@@ -246,12 +321,15 @@ ends."
                (length (hermes-state-queue hermes--state))))
      ;; Idle → optimistic commit + immediate prompt.submit.
      (t
+      ;; Display the user's actual input — the seed prefix is for the
+      ;; gateway only, not the transcript.
       (hermes-dispatch (cons :user-submit (list :text text)))
-      (hermes-rpc-request
-       "prompt.submit"
-       (list :session_id sid :text text)
-       (lambda (_r e)
-         (when e (message "hermes: prompt.submit error: %S" e))))))))
+      (let ((wire-text (hermes-input--seed-prefix text)))
+        (hermes-rpc-request
+         "prompt.submit"
+         (list :session_id sid :text wire-text)
+         (lambda (_r e)
+           (when e (message "hermes: prompt.submit error: %S" e)))))))))
 
 (provide 'hermes-input)
 ;;; hermes-input.el ends here

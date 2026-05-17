@@ -127,5 +127,75 @@ is rendered, removed from the queue, and submitted via RPC."
     (should (null (hermes-state-queue hermes--state)))
     (should (hermes-input-test--buffer-has-user-heading-p "b"))))
 
+;;;; History seed
+
+(defun hermes-input-test--mk-user (text)
+  (make-hermes-message
+   :kind 'user
+   :segments (vector (make-hermes-segment :type 'text :content text :id "s"))
+   :timestamp "2026-05-17T00:00:00+0000"))
+
+(ert-deftest hermes-input-test/build-history-truncates-to-last-n ()
+  "`hermes--build-history-text' caps to the last N turns and notes truncation."
+  (cl-letf (((symbol-function 'hermes--parse-buffer-messages)
+             (lambda ()
+               (vector (hermes-input-test--mk-user "turn 0")
+                       (hermes-input-test--mk-user "turn 1")
+                       (hermes-input-test--mk-user "turn 2")
+                       (hermes-input-test--mk-user "turn 3")
+                       (hermes-input-test--mk-user "turn 4")))))
+    (let* ((hermes-history-seed-max-turns 2)
+           (text (hermes--build-history-text)))
+      (should text)
+      (should (string-match-p "last 2 turns of 5" text))
+      (should (string-match-p "turn 3" text))
+      (should (string-match-p "turn 4" text))
+      (should-not (string-match-p "turn 0" text))
+      (should-not (string-match-p "turn 1" text))
+      (should-not (string-match-p "turn 2" text))
+      (should (string-match-p "Current: \\'" text)))))
+
+(ert-deftest hermes-input-test/build-history-nil-when-empty ()
+  "Builder returns nil when the buffer has no committed turns."
+  (cl-letf (((symbol-function 'hermes--parse-buffer-messages)
+             (lambda () [])))
+    (should-not (hermes--build-history-text))))
+
+(ert-deftest hermes-input-test/seed-prepended-and-flag-cleared-on-send ()
+  "Idle `prompt.submit' picks up the seed, prefixes the wire text, and
+clears the one-shot flag."
+  (cl-letf (((symbol-function 'hermes--parse-buffer-messages)
+             (lambda () (vector (hermes-input-test--mk-user "hi")))))
+    (hermes-input-test--with-buffer
+      (setq hermes--pending-history-seed t)
+      (hermes-input-send "hello")
+      (should-not hermes--pending-history-seed)
+      (let* ((call (car hermes-input-test--rpc-calls))
+             (wire (plist-get (cdr call) :text)))
+        (should (equal "prompt.submit" (car call)))
+        (should (stringp wire))
+        (should (string-match-p "User: hi" wire))
+        (should (string-match-p "Current: hello\\'" wire))))))
+
+(ert-deftest hermes-input-test/slash-command-does-not-consume-seed ()
+  "Slash commands take the `slash.exec' path and must leave the flag
+armed so the next real prompt still gets seeded."
+  (hermes-input-test--with-buffer
+    (setq hermes--pending-history-seed t)
+    (hermes-input-send "/clear")
+    (should hermes--pending-history-seed)
+    (let ((call (car hermes-input-test--rpc-calls)))
+      (should (equal "slash.exec" (car call))))))
+
+(ert-deftest hermes-input-test/no-seed-no-prefix ()
+  "When the flag is nil, `prompt.submit' carries the user's text verbatim."
+  (hermes-input-test--with-buffer
+    (setq hermes--pending-history-seed nil)
+    (hermes-input-send "hello")
+    (let* ((call (car hermes-input-test--rpc-calls))
+           (wire (plist-get (cdr call) :text)))
+      (should (equal "prompt.submit" (car call)))
+      (should (equal "hello" wire)))))
+
 (provide 'hermes-input-test)
 ;;; hermes-input-test.el ends here

@@ -11,7 +11,7 @@ hermes-events.el     Event/method name registry (single source of truth)
 hermes-state.el      TEA-style ephemeral state atoms + pure reducers (in-flight stream, queue, pending)
 hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling, :HERMES_RAW: drawers)
 hermes-mode.el       Org-mode derived major mode, event routing, entry point, buffer parser
-hermes-input.el      Input queue, slash commands, history ring
+hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
 hermes-sessions.el   tabulated-list-mode sidebar of live sessions
@@ -163,7 +163,7 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (184/184 green)
+eldev test                           # run all ERT tests (189/189 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
@@ -183,8 +183,9 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 | `test/hermes-state-test.el` | 66 | Reducers (persistent + UI) + serialization round-trip |
 | `test/hermes-render-test.el` | 28 | Segmented renderer + subagent blocks + raw drawer I/O + throttling + incremental diff + post-commit refresh |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
+| `test/hermes-input-test.el` | 5 | History seed builder + truncation + slash-command exemption |
 
-**184/184 green, 0 unexpected** — all tests pass.
+**189/189 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

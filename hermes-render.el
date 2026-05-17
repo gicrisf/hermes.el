@@ -332,24 +332,48 @@ subtree with raw drawer."
     ('user      (hermes--insert-turn-headline msg 'hermes-user-face))
     ('system    (hermes--insert-turn-headline msg 'hermes-system-face))
     ('assistant
-     ;; TODO: In the future, consider routing empty assistant turns
-     ;; through the committed-message path (Option 2) — uniform with
-     ;; user/system rather than the streaming path.
-     (goto-char (hermes--session-insert-point))
-     (unless (bolp) (insert "\n"))
+     ;; Full-fidelity assistant turn for the commit-late path (bench
+     ;; active, or empty-response edge case): heading + face,
+     ;; SESSION/MODEL properties, Org ID, formatted segment subtrees
+     ;; (reasoning / response / tool), subagents block, raw drawer.
+     ;; Reasoning subtrees are folded after insertion.
      (let* ((info    (hermes-state-session-info hermes--state))
             (model   (and (hash-table-p info) (gethash "model" info)))
+            (sid     (or (hermes-state-session-id hermes--state) ""))
             (text    (hermes--message-text-for-display msg))
             (excerpt (hermes--heading-excerpt text))
             (tags    (hermes--turn-tags 'assistant model))
-            (heading (format "%s %s" (hermes--stars 1) excerpt))
-            (hb      (point)))
-       (insert (format "%s %s %s\n"
-                       heading (hermes--tag-spacer heading tags) tags))
-       (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face))
-     (hermes--insert-properties
-      `(("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
-     (hermes--insert-raw-drawer msg))))
+            (heading (format "%s %s" (hermes--stars 1) excerpt)))
+       (goto-char (hermes--session-insert-point))
+       (unless (bolp) (insert "\n"))
+       (let ((turn-start (point))
+             (hb (point)))
+         (insert (format "%s %s %s\n"
+                         heading (hermes--tag-spacer heading tags) tags))
+         (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face)
+         (hermes--insert-properties
+          `(("HERMES_SESSION"   . ,sid)
+            ("HERMES_MODEL"     . ,model)
+            ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
+         (when (derived-mode-p 'org-mode)
+           (org-element-cache-reset)
+           (save-excursion
+             (goto-char hb)
+             (ignore-errors (org-id-get-create))))
+         (goto-char (hermes--session-insert-point))
+         (let ((segs (hermes-message-segments msg)))
+           (when (vectorp segs)
+             (dotimes (i (length segs))
+               (let ((block (hermes--segment-block (aref segs i))))
+                 (unless (string-empty-p block)
+                   (insert block))))))
+         (let ((sas (hermes-message-subagents msg)))
+           (when (vectorp sas)
+             (let ((sa-str (hermes--format-subagents-block sas)))
+               (unless (string-empty-p sa-str)
+                 (insert sa-str)))))
+         (hermes--insert-raw-drawer msg)
+         (hermes--fold-reasoning-in-region turn-start (point)))))))
 
 (defun hermes--insert-turn-headline (msg face)
   "Insert a turn heading for user or system MSG.

@@ -167,14 +167,24 @@ hands back the buffer-local `hermes--state'."
 
 (defun hermes--state-slot-write (session-id new-state)
   "Persist NEW-STATE under SESSION-ID and mirror to `hermes--state'.
-When SESSION-ID has a registry entry, that entry is replaced.  The
-buffer-local `hermes--state' is always updated so subscribers reading
-it directly stay coherent with the most recent dispatch."
+When SESSION-ID is non-nil and present in `hermes--buffer-sessions',
+that entry is replaced.  The buffer-local `hermes--state' is always
+updated.  Additionally, if NEW-STATE carries a session-id that differs
+from SESSION-ID, the registry entry for that active session is also
+updated — this prevents stale data when global events (e.g.
+`gateway.ready') update `hermes--state' without touching the registry."
   (when (and session-id
              (boundp 'hermes--buffer-sessions)
              (hash-table-p hermes--buffer-sessions)
              (gethash session-id hermes--buffer-sessions))
     (puthash session-id new-state hermes--buffer-sessions))
+  (let ((active-sid (and new-state (hermes-state-session-id new-state))))
+    (when (and active-sid
+               (not (equal active-sid session-id))
+               (boundp 'hermes--buffer-sessions)
+               (hash-table-p hermes--buffer-sessions)
+               (gethash active-sid hermes--buffer-sessions))
+      (puthash active-sid new-state hermes--buffer-sessions)))
   (setq hermes--state new-state))
 
 (defun hermes-dispatch (msg &optional session-id)
@@ -188,11 +198,6 @@ session changed."
          (old (hermes--state-slot-read hermes--current-session-id))
          (new (hermes--reduce old msg)))
     (unless (eq old new)
-      (message "[dispatch] %S  sid=%S  conn: %S → %S"
-               (car-safe msg)
-               (hermes-state-session-id new)
-               (and old (hermes-state-connection old))
-               (hermes-state-connection new))
       (hermes--state-slot-write hermes--current-session-id new)
       (run-hook-with-args 'hermes-state-change-hook old new))))
 

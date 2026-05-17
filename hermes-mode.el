@@ -288,9 +288,6 @@ the session container heading."
            (hermes--register-session
             sid hermes--state
             (save-excursion (goto-char (point-min)) (copy-marker (point) nil)))
-           (message "[sess] replay gateway.ready? %S  state-conn=%S"
-                    (not (null hermes--last-gateway-ready))
-                    (and hermes--state (hermes-state-connection hermes--state)))
            (when hermes--last-gateway-ready
              (hermes-dispatch
               (cons "gateway.ready" hermes--last-gateway-ready)))

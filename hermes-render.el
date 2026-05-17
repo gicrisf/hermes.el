@@ -1321,37 +1321,42 @@ happens, re-arms the cooldown so further deltas continue to throttle."
   "Recompute `hermes--mode-line-status' from the current state.
 Installed on `hermes-state-change-hook' so connection/model/token
 changes refresh the mode-line immediately.  Hook arguments are ignored
-\(state is read live from buffer-local `hermes--state')."
-  (let* ((buf-conn (and hermes--state (hermes-state-connection hermes--state)))
-         (rpc-conn (and (boundp 'hermes-rpc--state)
-                        (pcase hermes-rpc--state
-                          ('starting 'connecting)
-                          ('ready    'connected)
-                          (_         'disconnected))))
-         ;; Defensive fallback: if buffer state says `disconnected' but the
-         ;; gateway process is actually `ready', the buffer-local state has
-         ;; drifted (e.g. a spurious sentinel fire or a missed
-         ;; `gateway.ready' replay).  Trust the RPC layer in that case so
-         ;; the mode-line never lies to the user.
-         (conn (cond
-                ((and (eq buf-conn 'disconnected)
-                      (eq rpc-conn 'connected))
-                 'connected)
-                (buf-conn buf-conn)
-                (rpc-conn rpc-conn)
-                (t 'disconnected))))
-    (message "[ml] buf-conn=%S rpc-conn=%S effective=%S sid=%S buf=%s"
-             buf-conn rpc-conn conn
-             (and hermes--state (hermes-state-session-id hermes--state))
-             (buffer-name))
-    (setq hermes--mode-line-status
+\(state is read live from buffer-local `hermes--state').
+
+We trust the buffer-local state here.  Earlier we hit a bug where the
+mode-line showed `disconnected' throughout a live streaming session
+because `gateway.ready' updated `hermes--state' but left the entry in
+`hermes--buffer-sessions' pointing at the stale struct, and subsequent
+session-scoped dispatches read that stale entry back.  The proper fix
+landed in `hermes--state-slot-write' (it now mirrors writes into the
+registry entry of the active session-id).  If that ever regresses, a
+defensive fallback that reads `hermes-rpc--state' here as ground-truth
+will paper over it — see the commented block below."
+  ;; --- Defensive fallback (currently disabled).  Uncomment if the
+  ;; mode-line is observed to lie again (e.g. another state-sync
+  ;; regression in `hermes--state-slot-write').  This trusts the RPC
+  ;; process when buffer state contradicts it.
+  ;;
+  ;; (let* ((buf-conn (and hermes--state (hermes-state-connection hermes--state)))
+  ;;        (rpc-conn (and (boundp 'hermes-rpc--state)
+  ;;                       (pcase hermes-rpc--state
+  ;;                         ('starting 'connecting)
+  ;;                         ('ready    'connected)
+  ;;                         (_         'disconnected))))
+  ;;        (conn (if (and (eq buf-conn 'disconnected)
+  ;;                       (eq rpc-conn 'connected))
+  ;;                  'connected
+  ;;                (or buf-conn rpc-conn 'disconnected))))
+  ;;   ...use CONN instead of `(hermes-state-connection hermes--state)' below...)
+  (setq hermes--mode-line-status
         (concat
-         (pcase conn
+         (pcase (and hermes--state (hermes-state-connection hermes--state))
            ('connected    "●")
            ('connecting   "◐")
            ('disconnected "○")
            (_             "○"))
-         (let ((sid  (and hermes--state (hermes-state-session-id hermes--state))))
+         (let ((sid  (and hermes--state (hermes-state-session-id hermes--state)))
+               (conn (and hermes--state (hermes-state-connection hermes--state))))
            (if sid
                (format " · session %s %s"
                        (if (> (length sid) 8) (substring sid 0 8) sid)
@@ -1377,7 +1382,7 @@ changes refresh the mode-line immediately.  Hook arguments are ignored
          (let ((q (and hermes--state (hermes-state-queue hermes--state))))
            (if (and q (> (length q) 0))
                (format " · queue: %d" (length q))
-             "")))))
+             ""))))
   (force-mode-line-update))
 
 (provide 'hermes-render)

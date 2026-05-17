@@ -267,5 +267,127 @@ returns the (sid . state) pair for whichever container contains point."
     (re-search-backward "not a hermes")
     (should (null (hermes--resolve-session-target)))))
 
+;;;; Resume / rehydration
+
+(require 'hermes-render)
+(require 'hermes-input)
+
+(defun hermes-org-test--seed-subtree-with-drawer (text)
+  "Insert a container + one turn with a `:HERMES_RAW:' drawer for TEXT
+and return a marker at the container heading."
+  (insert (format "* Resumed chat :hermes:
+:PROPERTIES:
+:HERMES_SESSION: resumed-1
+:END:
+** %s :user:
+%s
+:HERMES_RAW:
+(:kind user :text \"%s\" :segments [(:type text :content \"%s\" :id \"s1\")] :subagents [] :usage nil :timestamp \"2024-01-15T10:00:00+0000\")
+:END:
+" text text text text))
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward "^\\* Resumed chat")
+    (beginning-of-line)
+    (copy-marker (point) nil)))
+
+(ert-deftest hermes-org-test/parse-subtree-messages-collects-drawer-content ()
+  "`hermes--parse-subtree-messages' returns one message per `:HERMES_RAW:'
+drawer in the current heading's subtree."
+  (with-temp-buffer
+    (org-mode)
+    (let ((marker (hermes-org-test--seed-subtree-with-drawer "hi there")))
+      (goto-char (marker-position marker))
+      (let ((msgs (hermes--parse-subtree-messages)))
+        (should (= 1 (length msgs)))
+        (should (eq 'user (hermes-message-kind (aref msgs 0))))))))
+
+(ert-deftest hermes-org-test/parse-subtree-messages-scoped-to-subtree ()
+  "A turn in a different container subtree must NOT be collected."
+  (with-temp-buffer
+    (org-mode)
+    (let ((marker (hermes-org-test--seed-subtree-with-drawer "first")))
+      ;; Append a SECOND container with its own drawer — parser must
+      ;; not bleed across the subtree boundary.
+      (goto-char (point-max))
+      (insert "\n")
+      (hermes-org-test--seed-subtree-with-drawer "second")
+      (goto-char (marker-position marker))
+      (let ((msgs (hermes--parse-subtree-messages)))
+        (should (= 1 (length msgs)))))))
+
+(ert-deftest hermes-org-test/rebuild-session-state-survives-user-submit ()
+  "Regression: a rebuilt state must accept a `:user-submit' dispatch
+without crashing.  The earlier version seeded `:history' with a vector
+of message structs, which the reducer's `(cons text history)' +
+`(length …)' chain blew up on as soon as a queued send drained."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((marker (hermes-org-test--seed-subtree-with-drawer "seed"))
+           (state (hermes--rebuild-session-state "resumed-1" marker)))
+      ;; `history' must be a proper list — not a vector or dotted pair.
+      (should (listp (hermes-state-history state)))
+      ;; And dispatching :user-submit (which conses text onto history
+      ;; and asks for its length) must succeed.
+      (hermes-dispatch (cons :user-submit (list :text "after resume")))
+      (should (member "after resume" (hermes-state-history hermes--state))))))
+
+(ert-deftest hermes-org-test/rebuild-session-state-registers-and-mirrors ()
+  "`hermes--rebuild-session-state' registers the new state under SID
+and assigns it to `hermes--state'."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((marker (hermes-org-test--seed-subtree-with-drawer "hello"))
+           (state (hermes--rebuild-session-state "resumed-1" marker)))
+      (should (eq state hermes--state))
+      (should (eq state (hermes--lookup-session-state "resumed-1")))
+      (should (equal "resumed-1" (hermes-state-session-id state))))))
+
+(ert-deftest hermes-org-test/resolve-target-returns-stale-pair-for-known-heading ()
+  "When the heading carries a `:HERMES_SESSION:' but the registry has
+no entry, the resolver returns (sid . nil) so the caller can resume."
+  (with-temp-buffer
+    (org-mode)
+    (hermes-minor-mode 1)
+    (insert "* Stale :hermes:
+:PROPERTIES:
+:HERMES_SESSION: cold-sid
+:END:
+inside
+")
+    (re-search-backward "inside")
+    (let ((res (hermes--resolve-session-target)))
+      (should res)
+      (should (equal "cold-sid" (car res)))
+      (should (null (cdr res))))))
+
+(ert-deftest hermes-org-test/drain-pre-send-queue-submits-and-clears ()
+  "Queued text under SID is submitted via `hermes-input--send-1' and
+removed from the alist."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((marker (hermes-org-test--seed-subtree-with-drawer "seed"))
+           (state (hermes--rebuild-session-state "resumed-1" marker))
+           (submitted nil)
+           (hermes--pre-send-queue (list (cons "resumed-1" "queued msg"))))
+      (cl-letf (((symbol-function 'hermes-input--send-1)
+                 (lambda (text) (push text submitted))))
+        (hermes--drain-pre-send-queue "resumed-1"))
+      (should (equal '("queued msg") submitted))
+      (should (null (assoc "resumed-1" hermes--pre-send-queue)))
+      ;; State and registry untouched.
+      (should (eq state (hermes--lookup-session-state "resumed-1"))))))
+
+(ert-deftest hermes-org-test/drain-pre-send-queue-noop-when-no-entry ()
+  "Calling drain with no entry for SID is a silent no-op."
+  (with-temp-buffer
+    (org-mode)
+    (let ((called nil)
+          (hermes--pre-send-queue nil))
+      (cl-letf (((symbol-function 'hermes-input--send-1)
+                 (lambda (_t) (setq called t))))
+        (hermes--drain-pre-send-queue "ghost-sid"))
+      (should-not called))))
+
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

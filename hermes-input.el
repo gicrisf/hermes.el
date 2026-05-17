@@ -165,14 +165,30 @@ ends."
   ;; it there, otherwise dispatch's `setq hermes--state' would only
   ;; mutate the dynamic binding and revert on exit, losing the queue.
   (let* ((target (hermes--resolve-session-target))
+         (target-sid (car target))
          (target-state (cdr target))
-         (hermes--current-session-id (car target)))
-    (unless target
+         (hermes--current-session-id target-sid))
+    (cond
+     ;; No container at all → user must create one first.
+     ((null target)
       (user-error "No Hermes session at point — use `M-x hermes-create-session-here' or move into a `:hermes:' subtree"))
-    (if (or (null target-state) (eq target-state hermes--state))
-        (hermes-input--send-1 text)
+     ;; Stale: heading has a session id but the registry has no entry
+     ;; (file was reopened, gateway restarted, etc.).  Stash the text
+     ;; and trigger an async resume; the callback drains and submits.
+     ((null target-state)
+      (when (and text (not (string-empty-p text)))
+        (push (cons target-sid text) hermes--pre-send-queue)
+        (hermes--resume-heading-session target-sid)
+        (message "Hermes: resuming session %s…" target-sid)))
+     ;; Live state → send directly.  Only let-bind `hermes--state' when
+     ;; the resolved state differs from the buffer-local — otherwise the
+     ;; dynamic binding shadows the buffer-local and dispatch mutations
+     ;; revert on exit (lost queue, lost history).
+     ((eq target-state hermes--state)
+      (hermes-input--send-1 text))
+     (t
       (let ((hermes--state target-state))
-        (hermes-input--send-1 text)))))
+        (hermes-input--send-1 text))))))
 
 (defun hermes-input--send-1 (text)
   "Internal worker for `hermes-input-send'.  Assumes `hermes--state' and

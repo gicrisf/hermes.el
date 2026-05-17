@@ -27,6 +27,11 @@
 (require 'hermes-md)
 (require 'hermes-tool-formatters)
 
+(declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
+(declare-function hermes-bench--stream-begin "hermes-bench" (bench))
+(declare-function hermes-bench--stream-update "hermes-bench" (bench old new))
+(declare-function hermes-bench--stream-commit "hermes-bench" (bench old-stream))
+
 ;;;; Buffer-local markers for the in-flight region
 
 (defvar-local hermes--ui-line ""
@@ -175,31 +180,42 @@ buffer) where the container's subtree spans the whole buffer."
         ;; `stream-commit' would then write the assistant's raw drawer
         ;; into the wrong subtree.  Sealing the stream first keeps the
         ;; bench-anchored writes contained.
-        (let ((os old-stream-snapshot)
-              (ns (hermes-state-stream new)))
+        (let* ((os old-stream-snapshot)
+               (ns (hermes-state-stream new))
+               (bench-buf (and (fboundp 'hermes-bench-active-p)
+                               (hermes-bench-active-p (current-buffer)))))
           (cond ((and (null os) ns)
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
-                 (hermes--stream-begin))
+                 (if bench-buf
+                     (hermes-bench--stream-begin bench-buf)
+                   (hermes--stream-begin)))
                 ((and os (null ns))
-                 ;; Pending delayed paint? Flush `os' synchronously
-                 ;; before the bench is torn down, so the final
-                 ;; segments make it into the buffer.
+                 ;; Pending delayed paint? Flush `os' synchronously.
                  (when (timerp hermes--stream-render-timer)
-                   (hermes--stream-update nil os))
+                   (if bench-buf
+                       (hermes-bench--stream-update bench-buf nil os)
+                     (hermes--stream-update nil os)))
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
-                 (setq committed-region (hermes--stream-commit os)))
+                 (if bench-buf
+                     (progn (hermes-bench--stream-commit bench-buf os)
+                            (setq msg-append-start (point-max)))
+                   (setq committed-region (hermes--stream-commit os))))
                 ((not (eq os ns))
                  (cond
                   ;; Throttling disabled — always paint.
                   ((zerop hermes-render-stream-throttle)
                    (setq bench-touched-p t)
-                   (hermes--stream-update os ns))
+                   (if bench-buf
+                       (hermes-bench--stream-update bench-buf os ns)
+                     (hermes--stream-update os ns)))
                   ;; Cooldown idle — paint now and start cooldown.
                   ((null hermes--stream-render-timer)
                    (setq bench-touched-p t)
-                   (hermes--stream-update os ns)
+                   (if bench-buf
+                       (hermes-bench--stream-update bench-buf os ns)
+                     (hermes--stream-update os ns))
                    (hermes--stream-flush-reschedule))
                   ;; Within cooldown — stash for the timer to flush.
                   (t
@@ -1230,16 +1246,21 @@ happens, re-arms the cooldown so further deltas continue to throttle."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (setq hermes--stream-render-timer nil)
-      (let ((ns hermes--stream-render-pending))
+      (let ((ns hermes--stream-render-pending)
+            (bench-buf (and (fboundp 'hermes-bench-active-p)
+                            (hermes-bench-active-p (current-buffer)))))
         (setq hermes--stream-render-pending nil)
         (when (and ns
                    hermes--state
                    (eq ns (hermes-state-stream hermes--state))
-                   (markerp hermes--bench-start)
-                   (marker-position hermes--bench-start))
-          (with-silent-modifications
-            (save-excursion
-              (hermes--stream-update nil ns)))
+                   (or bench-buf
+                       (and (markerp hermes--bench-start)
+                            (marker-position hermes--bench-start))))
+          (if bench-buf
+              (hermes-bench--stream-update bench-buf nil ns)
+            (with-silent-modifications
+              (save-excursion
+                (hermes--stream-update nil ns))))
           (when (derived-mode-p 'org-mode)
             (org-element-cache-reset)
             (when (and (markerp hermes--bench-start)

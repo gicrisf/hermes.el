@@ -27,6 +27,7 @@
 (require 'hermes-skin)
 (require 'hermes-compose)
 (require 'hermes-org)
+(require 'hermes-bench)
 
 ;;;; Routing: filter event → buffer
 
@@ -134,7 +135,7 @@ without this cache, the very first buffer would never see the skin.")
 
 (defvar hermes-mode-map
   (let ((m (make-sparse-keymap)))
-    (define-key m (kbd "C-c C-i") #'hermes-send)
+    (define-key m (kbd "C-c C-i") #'hermes-send-or-focus-bench)
     (define-key m (kbd "C-c C-l") #'hermes-compose)
     (define-key m (kbd "C-c C-k") #'hermes-interrupt)
     (define-key m (kbd "C-c C-v") #'hermes-view-log)
@@ -216,7 +217,28 @@ the session container heading."
   (save-excursion
     (goto-char (point-min))
     (insert (concat (make-string hermes--container-level ?*)
-                    " Hermes session :hermes:\n"))))
+                    " Hermes session :hermes:\n")))
+  (add-hook 'kill-buffer-hook
+            (lambda () (hermes-bench-hide (current-buffer))) nil t)
+  (unless noninteractive
+    (hermes-bench-ensure (current-buffer))))
+
+(defun hermes-send-or-focus-bench ()
+  "If the bench is active, focus its input; otherwise call `hermes-send'."
+  (interactive)
+  (let ((bench (and (derived-mode-p 'hermes-mode)
+                    (hermes-bench-active-p))))
+    (cond
+     ((and bench (get-buffer-window bench))
+      (select-window (get-buffer-window bench))
+      (goto-char (point-max)))
+     (bench
+      (hermes-bench-ensure (current-buffer))
+      (let ((w (get-buffer-window bench)))
+        (when (window-live-p w)
+          (select-window w)
+          (goto-char (point-max)))))
+     (t (call-interactively #'hermes-send)))))
 
 ;;;; Public entry points
 

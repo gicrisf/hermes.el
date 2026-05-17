@@ -695,5 +695,127 @@ and they shift to level 4."
                  (format "^%s hello " (regexp-quote expected-stars))
                  body))))))
 
+;;;; Stream paint throttling (Phase 1)
+
+(defun hermes-render-test--apply-stream (stream)
+  "Push STREAM into `hermes--state' and run the renderer with old/new diff."
+  (let* ((old hermes--state)
+         (new (hermes--with-copy hermes--state hermes-state-copy s
+                (setf (hermes-state-stream s) stream))))
+    (setq hermes--state new)
+    (hermes--render old new)))
+
+(ert-deftest hermes-render-test/throttle-defers-subsequent-deltas ()
+  "First true delta paints inline and arms the cooldown; deltas arriving
+during cooldown stash a pending snapshot instead of painting.
+(`stream-begin' is always immediate and does not arm the timer.)"
+  (with-temp-buffer
+    (hermes-mode)
+    (let ((hermes-render-stream-throttle 60))      ; effectively never fires
+      ;; stream-begin path — immediate, no timer.
+      (hermes-render-test--apply-stream
+       (make-hermes-stream
+        :segments (vector (make-hermes-segment
+                           :type 'text :content "Hi" :id "s1"))))
+      (should (null hermes--stream-render-timer))
+      ;; First real delta — paints inline AND arms cooldown.
+      (hermes-render-test--apply-stream
+       (make-hermes-stream
+        :segments (vector (make-hermes-segment
+                           :type 'text :content "Hi!" :id "s1"))))
+      (should (timerp hermes--stream-render-timer))
+      (should (null hermes--stream-render-pending))
+      (let ((tick (buffer-modified-tick)))
+        ;; Three rapid follow-up deltas during cooldown — none paint.
+        (dolist (txt '("Hi there" "Hi there." "Hi there.."))
+          (hermes-render-test--apply-stream
+           (make-hermes-stream
+            :segments (vector (make-hermes-segment
+                               :type 'text :content txt :id "s1")))))
+        (should (= tick (buffer-modified-tick)))
+        (should hermes--stream-render-pending)
+        (should (eq hermes--stream-render-pending
+                    (hermes-state-stream hermes--state)))))
+    ;; Cancel the far-future timer so it can't fire into the dead buffer.
+    (hermes--stream-flush-cancel)))
+
+(ert-deftest hermes-render-test/throttle-disabled-paints-every-delta ()
+  "Throttle = 0 reproduces the legacy behaviour: every delta paints, no timer."
+  (with-temp-buffer
+    (hermes-mode)
+    (let ((hermes-render-stream-throttle 0))
+      ;; stream-begin
+      (hermes-render-test--apply-stream
+       (make-hermes-stream
+        :segments (vector (make-hermes-segment
+                           :type 'text :content "a" :id "s1"))))
+      (should (null hermes--stream-render-timer))
+      ;; Two deltas back-to-back, both paint, no timer ever arms.
+      (let ((tick (buffer-modified-tick)))
+        (hermes-render-test--apply-stream
+         (make-hermes-stream
+          :segments (vector (make-hermes-segment
+                             :type 'text :content "ab" :id "s1"))))
+        (should (> (buffer-modified-tick) tick))
+        (should (null hermes--stream-render-timer))
+        (let ((tick2 (buffer-modified-tick)))
+          (hermes-render-test--apply-stream
+           (make-hermes-stream
+            :segments (vector (make-hermes-segment
+                               :type 'text :content "abc" :id "s1"))))
+          (should (> (buffer-modified-tick) tick2))
+          (should (null hermes--stream-render-timer)))))))
+
+(ert-deftest hermes-render-test/throttle-commit-flushes-pending ()
+  "stream-commit must paint pending segments synchronously before tearing
+down the bench, so the final tokens never get dropped."
+  (with-temp-buffer
+    (hermes-mode)
+    (let ((hermes-render-stream-throttle 60))
+      ;; First delta paints "Hi" inline and arms the cooldown.
+      (hermes-render-test--apply-stream
+       (make-hermes-stream
+        :segments (vector (make-hermes-segment
+                           :type 'text :content "Hi" :id "s1"))))
+      ;; Second delta is deferred ("Hi world" stays in pending).
+      (hermes-render-test--apply-stream
+       (make-hermes-stream
+        :segments (vector (make-hermes-segment
+                           :type 'text :content "Hi world" :id "s1"))))
+      ;; Commit: stream → nil with a pending assistant in pending-turns.
+      (let* ((old hermes--state)
+             (stream (hermes-state-stream old))
+             (msg (hermes--message-from-stream stream nil))
+             (new (hermes--with-copy hermes--state hermes-state-copy s
+                    (setf (hermes-state-pending-turns s) (vector msg)
+                          (hermes-state-stream s) nil))))
+        (setq hermes--state new)
+        (hermes--render old new))
+      ;; Buffer must contain the latest text, timer must be gone.
+      (should (null hermes--stream-render-timer))
+      (should (null hermes--stream-render-pending))
+      (should (string-match-p "Hi world"
+                              (buffer-substring-no-properties
+                               (point-min) (point-max)))))))
+
+(ert-deftest hermes-render-test/throttle-cancelled-on-minor-mode-off ()
+  "Disabling the minor mode cancels any in-flight throttle timer."
+  (with-temp-buffer
+    (hermes-mode)
+    (let ((hermes-render-stream-throttle 60))
+      ;; stream-begin then a real delta to arm the timer.
+      (hermes-render-test--apply-stream
+       (make-hermes-stream
+        :segments (vector (make-hermes-segment
+                           :type 'text :content "x" :id "s1"))))
+      (hermes-render-test--apply-stream
+       (make-hermes-stream
+        :segments (vector (make-hermes-segment
+                           :type 'text :content "xy" :id "s1"))))
+      (should (timerp hermes--stream-render-timer))
+      (hermes-minor-mode -1)
+      (should (null hermes--stream-render-timer))
+      (should (null hermes--stream-render-pending)))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

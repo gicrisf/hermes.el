@@ -173,6 +173,9 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t t)
   (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t t)
   (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
+  ;; Drop pending throttle timer on buffer kill so it can't fire into a
+  ;; dead buffer.
+  (add-hook 'kill-buffer-hook            #'hermes--stream-flush-cancel nil t)
   (with-silent-modifications
     (hermes--render-header hermes--state)))
 
@@ -184,6 +187,8 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   (remove-hook 'hermes-state-change-hook #'hermes-input--drain t)
   (remove-hook 'hermes-state-change-hook #'hermes-skin-watch t)
   (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui t)
+  (remove-hook 'kill-buffer-hook #'hermes--stream-flush-cancel t)
+  (hermes--stream-flush-cancel)
   (setq header-line-format nil))
 
 ;;;###autoload

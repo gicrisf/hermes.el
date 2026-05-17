@@ -59,6 +59,32 @@
 (defvar-local hermes--bench-overlay nil
   "Overlay tinting the bench so the user can see the live region.")
 
+;;;; Stream paint throttling
+;;
+;; The reducer applies every `message.delta' / `reasoning.delta' to
+;; `hermes--state' synchronously, but the buffer paint is rate-limited so
+;; high-frequency token streams (>25 Hz) don't saturate the UI thread.
+;; The first delta after a cooldown gap paints immediately and starts a
+;; cooldown timer; deltas arriving while the timer is active stash their
+;; snapshot in `hermes--stream-render-pending' and the timer flushes the
+;; latest snapshot when it fires.  Lifecycle transitions (stream-begin,
+;; stream-commit, error) always paint synchronously — see `hermes--render'.
+
+(defcustom hermes-render-stream-throttle 0.04
+  "Minimum seconds between consecutive stream re-renders.
+A value of 0.04 = 25 Hz cap.  Lower values = smoother but more CPU.
+Set to 0 to disable throttling entirely."
+  :type 'number
+  :group 'hermes)
+
+(defvar-local hermes--stream-render-pending nil
+  "Latest stream snapshot waiting to be painted, or nil.
+Set by `hermes--render' when throttling a stream delta;
+consumed by `hermes--stream-flush'.")
+
+(defvar-local hermes--stream-render-timer nil
+  "Active `run-with-timer' for the next stream flush, or nil.")
+
 ;;;; Relative heading levels
 
 (defvar-local hermes--container-level 1
@@ -132,14 +158,32 @@ buffer) where the container's subtree spans the whole buffer."
         (let ((os old-stream-snapshot)
               (ns (hermes-state-stream new)))
           (cond ((and (null os) ns)
+                 (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
                  (hermes--stream-begin))
                 ((and os (null ns))
+                 ;; Pending delayed paint? Flush `os' synchronously
+                 ;; before the bench is torn down, so the final
+                 ;; segments make it into the buffer.
+                 (when (timerp hermes--stream-render-timer)
+                   (hermes--stream-update nil os))
+                 (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
                  (hermes--stream-commit os))
                 ((not (eq os ns))
-                 (setq bench-touched-p t)
-                 (hermes--stream-update os ns))))
+                 (cond
+                  ;; Throttling disabled — always paint.
+                  ((zerop hermes-render-stream-throttle)
+                   (setq bench-touched-p t)
+                   (hermes--stream-update os ns))
+                  ;; Cooldown idle — paint now and start cooldown.
+                  ((null hermes--stream-render-timer)
+                   (setq bench-touched-p t)
+                   (hermes--stream-update os ns)
+                   (hermes--stream-flush-reschedule))
+                  ;; Within cooldown — stash for the timer to flush.
+                  (t
+                   (setq hermes--stream-render-pending ns))))))
         ;; 2. Drain pending-turns vector into the buffer.  Assistant
         ;; messages are skipped: they're committed in-place by
         ;; `stream-commit' above, and re-inserting here would create a
@@ -864,6 +908,8 @@ MSG is the committed `hermes-message'.  Replaces the line at
   "Stream finished: stamp Org :ID:s on the trail, drop markers and bench.
 If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
 `** assistant' subtree describing the just-completed message."
+  ;; Defensive: ensure no throttled paint can fire after the bench is gone.
+  (hermes--stream-flush-cancel)
   (when (and (derived-mode-p 'org-mode)
              (markerp hermes--stream-headline-marker)
              (marker-position hermes--stream-headline-marker))
@@ -920,6 +966,51 @@ If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
         hermes--stream-subagents-marker nil
         hermes--stream-headline-marker nil
         hermes--unfolded-ids nil))
+
+(defun hermes--stream-flush-cancel ()
+  "Cancel any pending stream-flush timer and clear the accumulator.
+Safe to call from any context — does not paint."
+  (when (timerp hermes--stream-render-timer)
+    (cancel-timer hermes--stream-render-timer))
+  (setq hermes--stream-render-timer nil
+        hermes--stream-render-pending nil))
+
+(defun hermes--stream-flush-reschedule ()
+  "Arm the cooldown timer for `hermes-render-stream-throttle' seconds."
+  (when (timerp hermes--stream-render-timer)
+    (cancel-timer hermes--stream-render-timer))
+  (setq hermes--stream-render-timer
+        (run-with-timer hermes-render-stream-throttle nil
+                        #'hermes--stream-flush (current-buffer))))
+
+(defun hermes--stream-flush (buf)
+  "Timer callback: paint `hermes--stream-render-pending' into BUF.
+If no snapshot is pending, simply clears the timer slot.  When a paint
+happens, re-arms the cooldown so further deltas continue to throttle."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (setq hermes--stream-render-timer nil)
+      (let ((ns hermes--stream-render-pending))
+        (setq hermes--stream-render-pending nil)
+        (when (and ns
+                   hermes--state
+                   (eq ns (hermes-state-stream hermes--state))
+                   (markerp hermes--bench-start)
+                   (marker-position hermes--bench-start))
+          (with-silent-modifications
+            (save-excursion
+              (hermes--stream-update nil ns)))
+          (when (derived-mode-p 'org-mode)
+            (org-element-cache-reset)
+            (when (and (markerp hermes--bench-start)
+                       (marker-position hermes--bench-start)
+                       (markerp hermes--bench-end)
+                       (marker-position hermes--bench-end))
+              (hermes--refresh-region
+               (marker-position hermes--bench-start)
+               (marker-position hermes--bench-end))))
+          ;; Re-arm cooldown so subsequent rapid deltas continue to throttle.
+          (hermes--stream-flush-reschedule))))))
 
 (defun hermes--stream-update (_old-stream new-stream)
   "Reflect _OLD-STREAM → NEW-STREAM into the buffer."

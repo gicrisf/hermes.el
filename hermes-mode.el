@@ -156,6 +156,9 @@ present (Phase 2: arbitrary Org buffers), one is created here."
                 ("ERROR"   . hermes-tool-error-face)))
   (unless (and (boundp 'hermes--state) hermes--state)
     (hermes-state-init))
+  ;; Ensure RPC event hooks are wired so events for sessions hosted in
+  ;; this buffer route through `hermes--route-event'.  Idempotent.
+  (hermes--install-hooks)
   (add-hook 'org-cycle-hook #'hermes--remember-cycle nil t)
   ;; Order matters: `hermes--render' MUST run before `hermes-input--drain'.
   ;; If drain runs first, it dispatches `:user-submit' for the queued
@@ -322,16 +325,67 @@ queued input is drained."
                (message "hermes: reconnected as %s" sid))))))))))
 
 (defun hermes-interrupt ()
-  "Send `session.interrupt' for the current session."
+  "Send `session.interrupt' for the Hermes session at point.
+In the dedicated `*hermes*' buffer this is always the buffer's
+session; in an arbitrary Org buffer with `hermes-minor-mode' enabled,
+it resolves to the `:hermes:' container containing point."
   (interactive)
-  (unless (derived-mode-p 'hermes-mode)
-    (user-error "Not in a Hermes buffer"))
-  (let ((sid (hermes-state-session-id hermes--state)))
-    (unless sid (user-error "No session id in this buffer"))
+  (let* ((target (hermes--resolve-session-target))
+         (sid (car target)))
+    (unless target
+      (user-error "No Hermes session at point"))
+    (unless sid (user-error "No session id assigned yet"))
     (hermes-rpc-request "session.interrupt"
                         (list :session_id sid)
                         (lambda (_r e)
                           (when e (message "hermes: interrupt error: %S" e))))))
+
+(defun hermes-create-session-here ()
+  "Create a new Hermes session container heading at point and register it.
+Inserts a level-1 `* Hermes session :hermes:' heading at point (with
+a leading newline if needed), then calls `session.create' on the
+gateway.  When the response lands, the heading's `:HERMES_SESSION:'
+property is set and the session is registered in both the global
+`hermes--session-buffers' table (for event routing) and the
+buffer-local `hermes--buffer-sessions' / `hermes--session-markers'
+registries (for per-session dispatch/render)."
+  (interactive)
+  (unless (derived-mode-p 'org-mode)
+    (user-error "Not in an Org buffer"))
+  (unless (bound-and-true-p hermes-minor-mode)
+    (hermes-minor-mode 1))
+  (hermes--install-hooks)
+  (unless (hermes-rpc-live-p)
+    (hermes-rpc-start))
+  (unless (bolp) (insert "\n"))
+  (let* ((heading-pos (point))
+         (_ (insert "* Hermes session :hermes:\n"))
+         (marker (copy-marker heading-pos nil))
+         (buf (current-buffer)))
+    (hermes-rpc-request
+     "session.create" '(:cols 100)
+     (lambda (result error)
+       (cond
+        (error
+         (message "hermes: session.create failed: %S" error))
+        (result
+         (let ((sid (gethash "session_id" result)))
+           (when (and sid (buffer-live-p buf))
+             (with-current-buffer buf
+               (save-excursion
+                 (goto-char (marker-position marker))
+                 (when (org-at-heading-p)
+                   (org-set-property "HERMES_SESSION" sid)))
+               (let ((state (make-hermes-state :session-id sid
+                                               :connection 'connected)))
+                 (hermes--register-session sid state marker)
+                 (setq hermes--state state))
+               (puthash sid buf hermes--session-buffers)
+               (when hermes--last-gateway-ready
+                 (hermes-dispatch
+                  (cons "gateway.ready" hermes--last-gateway-ready)
+                  sid))
+               (message "hermes: session %s ready" sid))))))))))
 
 (defun hermes-view-log ()
   "Pop to the *hermes-log* diagnostic buffer."

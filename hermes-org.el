@@ -17,6 +17,10 @@
 (require 'cl-lib)
 (require 'org)
 
+(declare-function hermes-state-session-id "hermes-state" (state))
+(defvar hermes--state)
+(defvar hermes-minor-mode)
+
 ;;;; Buffer-local registries
 
 (defvar-local hermes--buffer-sessions nil
@@ -108,6 +112,25 @@ Returns nil if no such ancestor exists."
   "Return the marker for SESSION-ID's container heading, or nil."
   (and (hash-table-p hermes--session-markers)
        (gethash session-id hermes--session-markers)))
+
+;;;; User-facing session resolution
+
+(defun hermes--resolve-session-target ()
+  "Return (SID . STATE) for the active session of the current buffer.
+- In a `hermes-mode' (primary) buffer, returns the buffer-local
+  `hermes--state' as the active session.
+- In an arbitrary Org buffer with `hermes-minor-mode' enabled, walks
+  up from point to find the enclosing `:hermes:' container and looks
+  the corresponding state up in `hermes--buffer-sessions'.
+Returns nil when no session is reachable."
+  (cond
+   ((derived-mode-p 'hermes-mode)
+    (and (boundp 'hermes--state) hermes--state
+         (cons (hermes-state-session-id hermes--state) hermes--state)))
+   ((bound-and-true-p hermes-minor-mode)
+    (let* ((sid (hermes--session-at-point))
+           (state (and sid (hermes--lookup-session-state sid))))
+      (and sid state (cons sid state))))))
 
 (provide 'hermes-org)
 ;;; hermes-org.el ends here

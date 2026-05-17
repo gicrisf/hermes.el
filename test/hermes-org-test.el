@@ -237,5 +237,35 @@ the registry with marker + state entries for each.  Returns nothing
         (should writing-pos)
         (should (< reduce-pos writing-pos))))))
 
+;;;; Session resolution at point (slice D)
+
+(ert-deftest hermes-org-test/resolve-session-target-finds-state-by-point ()
+  "In an Org buffer with two registered sessions, `hermes--resolve-session-target'
+returns the (sid . state) pair for whichever container contains point."
+  (with-temp-buffer
+    (org-mode)
+    (hermes-minor-mode 1)
+    (hermes-org-test--two-session-buffer)
+    (goto-char (point-min))
+    (re-search-forward "Coding help")
+    (let ((res (hermes--resolve-session-target)))
+      (should res)
+      (should (equal "code-1" (car res)))
+      (should (eq (hermes--lookup-session-state "code-1") (cdr res))))
+    (goto-char (point-min))
+    (re-search-forward "Writing help")
+    (let ((res (hermes--resolve-session-target)))
+      (should res)
+      (should (equal "write-1" (car res))))))
+
+(ert-deftest hermes-org-test/resolve-session-target-nil-without-container ()
+  "Outside any `:hermes:' subtree the resolver returns nil."
+  (with-temp-buffer
+    (org-mode)
+    (hermes-minor-mode 1)
+    (insert "* Plain heading\nnot a hermes container\n")
+    (re-search-backward "not a hermes")
+    (should (null (hermes--resolve-session-target)))))
+
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

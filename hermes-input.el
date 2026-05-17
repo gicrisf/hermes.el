@@ -26,6 +26,7 @@
 (require 'ansi-color)
 (require 'hermes-rpc)
 (require 'hermes-state)
+(require 'hermes-org)
 
 (declare-function hermes-reconnect "hermes-mode" ())
 
@@ -154,8 +155,28 @@ ends."
            (add-hook 'completion-at-point-functions
                      #'hermes-input-completion-at-point nil t))
        (list (read-string "Hermes> " nil sym)))))
-  (unless (derived-mode-p 'hermes-mode)
-    (user-error "Not in a Hermes buffer"))
+  (unless (or (derived-mode-p 'hermes-mode)
+              (bound-and-true-p hermes-minor-mode))
+    (user-error "Not in a Hermes buffer (enable `hermes-minor-mode' in this Org buffer first)"))
+  ;; Resolve which session this send targets and, if it differs from
+  ;; the buffer-local `hermes--state', dynamically rebind so downstream
+  ;; reads/dispatches target the right slot.  In a `hermes-mode' buffer
+  ;; the resolved state IS the buffer-local one — we must NOT let-bind
+  ;; it there, otherwise dispatch's `setq hermes--state' would only
+  ;; mutate the dynamic binding and revert on exit, losing the queue.
+  (let* ((target (hermes--resolve-session-target))
+         (target-state (cdr target))
+         (hermes--current-session-id (car target)))
+    (unless target
+      (user-error "No Hermes session at point — use `M-x hermes-create-session-here' or move into a `:hermes:' subtree"))
+    (if (or (null target-state) (eq target-state hermes--state))
+        (hermes-input--send-1 text)
+      (let ((hermes--state target-state))
+        (hermes-input--send-1 text)))))
+
+(defun hermes-input--send-1 (text)
+  "Internal worker for `hermes-input-send'.  Assumes `hermes--state' and
+`hermes--current-session-id' are bound to the target session."
   ;; If the gateway died, offer to reconnect.  The text is committed and
   ;; queued; `hermes-reconnect' creates a fresh session and drains the head
   ;; once it lands.

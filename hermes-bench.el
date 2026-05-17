@@ -247,10 +247,12 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
   (hermes-bench--ensure-visible-end))
 
 (defun hermes-bench--ensure-visible-end ()
-  "Keep bench windows showing the input area."
+  "Keep bench windows showing the bottom (input area)."
   (dolist (w (get-buffer-window-list (current-buffer) nil t))
     (when (window-live-p w)
-      (set-window-point w (point)))))
+      (with-selected-window w
+        (goto-char (point-max))
+        (recenter -1)))))
 
 ;;;; Segment partitioning
 

@@ -199,8 +199,9 @@ buffer) where the container's subtree spans the whole buffer."
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
                  (if bench-buf
-                     (progn (hermes-bench--stream-commit bench-buf os)
-                            (setq msg-append-start (point-max)))
+                     (let ((start (point-max)))
+                       (hermes-bench--stream-commit bench-buf os)
+                       (setq msg-append-start start))
                    (setq committed-region (hermes--stream-commit os))))
                 ((not (eq os ns))
                  (cond

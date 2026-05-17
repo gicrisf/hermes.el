@@ -33,11 +33,15 @@ hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes-mode.el: route-
                                                       │
                                                       │  run-hook
                                                       ▼
-                                              hermes--render (hermes-render.el)
-                                                      │
-                                                      │  diff & edit
-                                                      ▼
-                                              Org buffer (*hermes:SID*)
+                                               hermes--render (hermes-render.el)
+                                                       │
+                                                       ├─► diff & edit ──► Org buffer (*hermes:SID*)
+                                                       │
+                                                       └─► bench active? ──► hermes-bench--stream-update
+                                                                   │
+                                                                   │  rebuild ephemeral zones
+                                                                   ▼
+                                                           Bench buffer (*hermes-bench:SID*)
 ```
 
 **Output path:**
@@ -57,6 +61,7 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-state.el` | 399 | Buffer-local state atoms + pure reducer |
 | `hermes-render.el` | 409 | Diff-based Org buffer renderer |
 | `hermes-mode.el` | 225 | org-mode derived major mode + event routing + entrypoint |
+| `hermes-bench.el` | ~350 | Persistent bottom bench (major mode only): last-turn display + input |
 | `hermes-input.el` | 209 | Input queue, slash commands, history |
 | `hermes-prompts.el` | 116 | Minibuffer prompt handlers (approval, clarify, secret, sudo) |
 | `hermes-compose.el` | 81 | Multi-line org-mode composer |

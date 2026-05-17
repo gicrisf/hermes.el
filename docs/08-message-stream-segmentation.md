@@ -59,6 +59,28 @@ High-frequency token streams (>25 Hz) would saturate the Emacs UI thread even wi
 
 The existing `hermes-render-stream-throttle` custom variable acts as a **floor** (minimum interval). Set to `0` for pure adaptive; set to `1.0` to force at least 1-second gaps regardless of text size.
 
+### Bench Renderer (Major Mode Only)
+
+When `hermes-bench-active-p` returns non-nil (i.e. a `hermes-mode` buffer has its
+bottom bench visible), the org renderer's stream lifecycle is **bypassed** for
+stream updates. Instead:
+
+- `hermes-bench--stream-begin` — called when the first delta arrives; clears the
+  bench ephemeral area and shows the user prompt
+- `hermes-bench--stream-update` — called on every throttled delta; rebuilds the
+  reasoning and answer zones from scratch (no incremental diff)
+- `hermes-bench--stream-commit` — called on `message.complete`; builds a
+  `hermes-message` from the final stream and calls `hermes--insert-committed-turn`
+  in the parent org buffer
+
+The bench renderer does **not** use org markup, markers, or incremental diffing.
+It is a plain-text rebuild: delete ephemeral region, reinsert user prompt +
+reasoning header + answer text, restore separator + input. This is fast enough
+for a 20-line text buffer and eliminates marker-drift issues entirely.
+
+The org buffer still receives the full rich turn (headings, property drawers,
+raw drawers, org IDs) on commit via `hermes--insert-committed-turn`.
+
 ### Stream Markers
 
 Six buffer-local variables govern the in-flight assistant message:

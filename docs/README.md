@@ -29,6 +29,7 @@
 - [11. Implementation Plan](11-implementation-plan.md)
 - [12. References](12-references.md)
 - [13. Operational Notes & Debugging](13-operational-notes.md)
+- [15. Bottom Bench](15-bench.md) — Persistent bottom panel for hermes-mode (major mode only)
 
 - [14. Architecture Reference (Supplementary)](14-architecture-reference.md)
 

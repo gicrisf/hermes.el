@@ -14,6 +14,7 @@ hermes-mode.el       Org-mode derived major mode, event routing, entry point, bu
 hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
+hermes-bench.el      Persistent bottom bench for hermes-mode (user prompt, reasoning, answer, input)
 hermes-sessions.el   tabulated-list-mode sidebar of live sessions
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
@@ -26,6 +27,15 @@ ephemeral data: connection, in-flight stream, pending prompts, queue, and
 minibuffer history. Every committed turn stores a `:HERMES_RAW:` drawer
 (containing a serialized Elisp plist) at the end of its subtree, enabling
 round-trip save/load/resume without a separate serialization format.
+
+**Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
+bench (`*hermes-bench:<sid>*`) — a 20-line side-window with structured zones
+for the last turn: user prompt, reasoning, answer, and an editable input area.
+The bench is a pure display surface (no state atom). On `RET` the old turn is
+cleared, the new user prompt appears, and the assistant response streams in.
+On `message.complete` the turn is committed to the org buffer; the answer
+persists in the bench until the next prompt. Minor mode buffers do not show
+the bench (header-line only).
 
 **Doom Emacs integration (separate files, optional):**
 
@@ -112,9 +122,13 @@ Restart or `M-x load-file` each file.
 | Dashboard | `s` | Sessions sidebar |
 | Dashboard | `g` | Refresh |
 | Dashboard | `q` | Bury dashboard |
-| hermes-mode | `C-c C-i` | Send prompt |
+| hermes-mode | `C-c C-i` | Send prompt / focus bench input |
 | hermes-mode | `C-c C-k` | Interrupt current turn |
 | hermes-mode | `C-c C-l` | Multi-line compose |
+| Bench | `RET` | Send prompt |
+| Bench | `C-c C-c` | Send prompt |
+| Bench | `C-c C-k` | Interrupt parent session |
+| Bench | `C-c C-l` | Multi-line compose |
 | Sessions sidebar | `RET` | Switch to session |
 | Sessions sidebar | `k` | Close session |
 | Sessions sidebar | `+` | New session |
@@ -131,7 +145,7 @@ Restart or `M-x load-file` each file.
 | `SPC h l` | Session list sidebar |
 | `SPC h g` | Go to primary session buffer |
 | `SPC h k` | Interrupt primary session |
-| hermes-mode `C-c C-i` | Send prompt |
+| hermes-mode `C-c C-i` | Send prompt / focus bench |
 | hermes-mode `C-c C-k` | Interrupt |
 | hermes-mode `C-c C-l` | Multi-line compose |
 

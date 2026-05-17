@@ -286,15 +286,13 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
              (hermes-bench--should-show-splash-p))
         (hermes-bench--insert-splash)
       (unless (string-empty-p effective-user)
-        (insert (propertize (concat "** " effective-user "\n\n")
+        (insert (propertize (concat "** U: " effective-user "\n\n")
                             'face 'hermes-bench-user-face)))
-      ;; Reasoning zone — header always present.
-      (insert (propertize "*** Reasoning\n"
-                          'face 'hermes-bench-reasoning-heading-face))
+      ;; Reasoning zone.
       (when (and reasoning (not (string-empty-p reasoning)))
         (insert (propertize reasoning 'face 'hermes-bench-reasoning-face))
-        (unless (string-suffix-p "\n" reasoning) (insert "\n")))
-      (insert "\n")
+        (unless (string-suffix-p "\n" reasoning) (insert "\n"))
+        (insert "\n"))
       ;; Answer zone.
       (when (and answer (not (string-empty-p answer)))
         (insert answer)

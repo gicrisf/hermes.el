@@ -358,12 +358,12 @@ background; for the user-facing entry that also pops the buffer, see
     (let ((buf (hermes--primary-session-buffer)))
       (if buf
           (progn
-            (pop-to-buffer buf)
+            (pop-to-buffer-same-window buf)
             (hermes-bench-ensure buf))
         (hermes-new-session
          (lambda (b)
            (when (buffer-live-p b)
-             (pop-to-buffer b)
+             (pop-to-buffer-same-window b)
              (hermes-bench-ensure b)))))))))
 
 (defalias 'hermes-send #'hermes-input-send

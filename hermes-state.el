@@ -242,10 +242,11 @@ Used so dedup ignores cosmetic whitespace differences (tab vs space,
 (defun hermes--reasoning-duplicate-p (chunk stream)
   "Return t if CHUNK duplicates the most recent text/reasoning segment in STREAM.
 Gateways occasionally emit a `reasoning.delta' whose payload is identical
-to the response text — likely a model echo.  Tool segments between the
-echo and the original text are skipped, so a tool call interleaved
-between the assistant's response and the echo doesn't defeat dedup.
-Comparison is whitespace-normalized."
+or a truncated prefix of the response text — likely a model echo.  Tool
+segments between the echo and the original text are skipped, so a tool
+call interleaved between the assistant's response and the echo doesn't
+defeat dedup.  Comparison is whitespace-normalized and uses prefix
+containment so truncated echoes are caught."
   (let* ((segs (and stream (hermes-stream-segments stream)))
          (norm-chunk (hermes--normalize-for-dedup chunk))
          (target nil))
@@ -256,10 +257,11 @@ Comparison is whitespace-normalized."
             (when (memq (hermes-segment-type seg) '(text reasoning))
               (setq target seg)))
           (setq i (1- i)))))
-    (and target
-         (string= (hermes--normalize-for-dedup
-                   (hermes-segment-content target))
-                  norm-chunk))))
+    (when target
+      (let ((norm-target (hermes--normalize-for-dedup
+                          (hermes-segment-content target))))
+        (or (string-prefix-p norm-target norm-chunk)
+            (string-prefix-p norm-chunk norm-target))))))
 
 (defun hermes--last-segment (stream)
   "Return the last segment in STREAM, or nil."

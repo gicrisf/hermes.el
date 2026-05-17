@@ -187,6 +187,18 @@ Thinking deltas no longer touch the persistent stream — see UI reducer tests."
     (should (= 1 (length segs)))
     (should (eq 'text (hermes-segment-type (aref segs 0))))))
 
+(ert-deftest hermes-state-test/reasoning-delta-truncated-echo-suppressed ()
+  "A reasoning.delta that is a truncated prefix of the prior text segment
+must be treated as a duplicate and suppressed."
+  (let* ((text-seg (make-hermes-segment
+                    :type 'text
+                    :content "In the high valleys... Stormrider's boldness was not the reckless..."
+                    :id "seg-11"))
+         (stream (make-hermes-stream :segments (vector text-seg)))
+         (truncated-echo
+          "In the high valleys... Stormrider's boldness was not the reckl"))
+    (should (hermes--reasoning-duplicate-p truncated-echo stream))))
+
 (ert-deftest hermes-state-test/reasoning-delta-suppressed-across-tool-gap ()
   "Dedup skips over interleaved tool segments to find the prior text.
 A `text → tool → reasoning' sequence where reasoning echoes the text

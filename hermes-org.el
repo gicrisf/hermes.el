@@ -176,16 +176,26 @@ container would otherwise vacuum up its first child's drawer."
            nil 'tree))))
     (vconcat (nreverse messages))))
 
+(declare-function hermes-minor-mode "hermes-mode" (&optional arg))
+(declare-function hermes-bench-ensure "hermes-bench" (parent))
+
 (defun hermes--rebuild-session-state (sid marker)
   "Build a fresh `hermes-state' for SID and register it under MARKER.
 The state atom holds only ephemeral data (stream / queue / pending);
 committed history already lives in the Org subtree as `:HERMES_RAW:'
 drawers, so there's nothing to seed.  Mirroring to `hermes--state'
-keeps single-session readers coherent.  Returns the new state."
+keeps single-session readers coherent.  Also ensures `hermes-minor-mode'
+is on and the bench is visible so the user can interact with the
+resumed session.  Returns the new state."
   (let ((state (make-hermes-state :session-id sid
                                   :connection 'connected)))
     (hermes--register-session sid state marker)
     (setq hermes--state state)
+    (unless (or (derived-mode-p 'hermes-mode)
+                (bound-and-true-p hermes-minor-mode))
+      (hermes-minor-mode 1))
+    (unless noninteractive
+      (hermes-bench-ensure (current-buffer)))
     state))
 
 (defun hermes--drain-pre-send-queue (sid)

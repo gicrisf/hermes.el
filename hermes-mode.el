@@ -323,7 +323,21 @@ background; for the user-facing entry that also pops the buffer, see
         (select-window win)
         (goto-char (point-max)))))
    ((derived-mode-p 'org-mode)
-    (hermes--create-session-under-heading))
+    (let* ((marker (hermes--container-marker-at-point))
+           (sid    (and marker (hermes--session-at-point)))
+           (state  (and sid (hermes--lookup-session-state sid))))
+      (cond
+       (state
+        (hermes-bench-ensure (current-buffer))
+        (let* ((bench (hermes-bench-active-p))
+               (win   (and bench (get-buffer-window bench))))
+          (when (window-live-p win)
+            (select-window win)
+            (goto-char (point-max)))))
+       (sid
+        (hermes--resume-heading-session sid))
+       (t
+        (hermes--create-session-under-heading)))))
    (t
     (let ((buf (hermes--primary-session-buffer)))
       (if buf

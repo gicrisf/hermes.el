@@ -426,6 +426,75 @@ Does not move point."
 ;; `hermes--refresh-region', invoked from `hermes--render' after
 ;; `with-silent-modifications' has exited.
 
+;;;; Drawer-size diagnostic
+
+(defun hermes--plist-tool-bytes (plist)
+  "Sum the `prin1' length of tool-segment payloads in PLIST.
+PLIST is a serialized `hermes-message' (output of
+`hermes--message-to-plist').  Returns 0 when there are no tool segments."
+  (let ((segs (plist-get plist :segments))
+        (sum 0))
+    (when (listp segs)
+      (dolist (seg segs)
+        (when (and (listp seg) (eq 'tool (plist-get seg :type)))
+          (let ((content (plist-get seg :content)))
+            (when content
+              (setq sum (+ sum (length (prin1-to-string content)))))))))
+    sum))
+
+;;;###autoload
+(defun hermes-measure-drawer-size ()
+  "Report `:HERMES_RAW:' drawer sizes in the current buffer.
+Walks every turn-level subtree, sums the serialized drawer text, and
+splits the total into tool-payload bytes vs. everything else (text,
+reasoning, system, usage, framing).  The split tells you whether
+Scenario A (tool-heavy) or Scenario B (text-heavy) from PLAN.md
+applies to the buffer you're looking at.
+
+Interactive: prints a one-line summary via `message'.  Returns an alist
+suitable for programmatic use:
+  ((:turns . N) (:total . BYTES) (:avg . BYTES) (:max . BYTES)
+   (:max-kind . SYMBOL) (:tool-bytes . BYTES) (:other-bytes . BYTES))."
+  (interactive)
+  (unless (derived-mode-p 'org-mode)
+    (user-error "Not in an Org-mode buffer"))
+  (let ((turn-level (1+ hermes--container-level))
+        (total 0) (n 0) (max 0) (max-kind nil)
+        (tool-bytes 0) (other-bytes 0))
+    (org-map-entries
+     (lambda ()
+       (when (= turn-level (org-current-level))
+         (let* ((plist (save-excursion (hermes--extract-raw-drawer)))
+                (text  (and plist (prin1-to-string plist)))
+                (len   (if text (length text) 0))
+                (kind  (and plist (plist-get plist :kind)))
+                (tbytes (if plist (hermes--plist-tool-bytes plist) 0)))
+           (when plist
+             (setq total (+ total len)
+                   n (1+ n)
+                   tool-bytes (+ tool-bytes tbytes)
+                   other-bytes (+ other-bytes (- len tbytes)))
+             (when (> len max)
+               (setq max len max-kind kind))))))
+     nil nil 'file)
+    (if (zerop n)
+        (progn (message "No :HERMES_RAW: drawers found") nil)
+      (let ((avg (/ total n)))
+        (message
+         (concat
+          "Drawers: %d turns, total %.1f KB (avg %.0f B, max %d B in %s); "
+          "tool payload %.1f KB (%d%%), other %.1f KB (%d%%)")
+         n
+         (/ total 1024.0) avg max (or max-kind "?")
+         (/ tool-bytes 1024.0)
+         (if (zerop total) 0 (round (* 100.0 (/ (float tool-bytes) total))))
+         (/ other-bytes 1024.0)
+         (if (zerop total) 0 (round (* 100.0 (/ (float other-bytes) total)))))
+        (list (cons :turns n) (cons :total total) (cons :avg avg)
+              (cons :max max) (cons :max-kind max-kind)
+              (cons :tool-bytes tool-bytes)
+              (cons :other-bytes other-bytes))))))
+
 (defun hermes--tag-spacer (heading tags)
   "Return spaces so HEADING + space + spacer + space + TAGS aligns near col 75.
 TAGS is the full tag string including surrounding colons, e.g.

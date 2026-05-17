@@ -85,6 +85,13 @@ consumed by `hermes--stream-flush'.")
 (defvar-local hermes--stream-render-timer nil
   "Active `run-with-timer' for the next stream flush, or nil.")
 
+(defvar-local hermes--stream-segments-snapshot nil
+  "Vector of (:id ID :type TYPE :length LEN) plists mirroring the
+segments currently painted into the buffer.  Used by
+`hermes--render-stream-segments' to diff against incoming segments and
+replace only the changed range — typically just the last (growing) text
+segment.  Cleared on `stream-commit'.")
+
 ;;;; Relative heading levels
 
 (defvar-local hermes--container-level 1
@@ -587,17 +594,31 @@ collapse them on insertion."
     (cond ((and (string-empty-p formatted)
                 (markerp hermes--stream-subagents-marker)
                 (marker-position hermes--stream-subagents-marker))
-           (delete-region hermes--stream-subagents-marker (point-max))
+           ;; Delete from the start of the subagent block (segments-end)
+           ;; rather than from `subagents-marker', which has rear-advanced
+           ;; past prior subagent insertions.
+           (let ((boundary
+                  (if (and (markerp hermes--stream-segments-end)
+                           (marker-position hermes--stream-segments-end))
+                      (marker-position hermes--stream-segments-end)
+                    (marker-position hermes--stream-subagents-marker))))
+             (delete-region boundary (point-max)))
            (set-marker hermes--stream-subagents-marker nil))
           ((not (string-empty-p formatted))
+           ;; Prefer `stream-segments-end' as the boundary: it is the
+           ;; structural start of the subagent block.  The dedicated
+           ;; `subagents-marker' has insertion-type t and rear-advances
+           ;; past prior subagent text, so it no longer marks the start
+           ;; once anything has been inserted.
            (let ((boundary
-                  (if (and (markerp hermes--stream-subagents-marker)
-                           (marker-position hermes--stream-subagents-marker))
-                      (marker-position hermes--stream-subagents-marker)
-                    (if (and (markerp hermes--stream-segments-end)
-                             (marker-position hermes--stream-segments-end))
-                        (marker-position hermes--stream-segments-end)
-                      (point-max)))))
+                  (cond
+                   ((and (markerp hermes--stream-segments-end)
+                         (marker-position hermes--stream-segments-end))
+                    (marker-position hermes--stream-segments-end))
+                   ((and (markerp hermes--stream-subagents-marker)
+                         (marker-position hermes--stream-subagents-marker))
+                    (marker-position hermes--stream-subagents-marker))
+                   (t (point-max)))))
              (delete-region boundary (point-max))
              (goto-char boundary)
              (insert formatted)
@@ -705,29 +726,121 @@ from `hermes-tool-formatters' and only inserted when non-empty."
       ('system (format "#+begin_comment\n%s\n#+end_comment\n" content))
       (_ ""))))
 
+(defun hermes--segment-block (seg)
+  "Return the buffer bytes for SEG: formatted text + trailing newline.
+Empty-format segments (e.g. `thinking') return the empty string and
+contribute zero bytes to the bench."
+  (let ((s (hermes--format-segment seg)))
+    (cond ((string-empty-p s) "")
+          ((string-suffix-p "\n" s) s)
+          (t (concat s "\n")))))
+
+(defun hermes--snapshot-total-length (snapshot)
+  "Sum the :length fields of SNAPSHOT (a vector of plists)."
+  (let ((total 0))
+    (dotimes (i (length snapshot))
+      (setq total (+ total (plist-get (aref snapshot i) :length))))
+    total))
+
 (defun hermes--render-stream-segments (segments)
-  "Render all SEGMENTS in order into the buffer."
+  "Render SEGMENTS into the bench, mutating only what changed.
+Diffs against `hermes--stream-segments-snapshot' (a parallel vector of
+\(:id :type :length) plists).  Per-segment positions are recomputed on
+the fly from `hermes--stream-segments-start' plus cumulative lengths,
+which makes per-segment markers unnecessary — buffer text below the
+bench is frozen, so the boundaries are deterministic.
+
+Three branches per segment slot:
+  1. Same id+type and content unchanged → skip (O(1)).
+  2. Same id+type but content differs → in-place replace (O(new size)).
+  3. id/type mismatch → fall back to delete + reinsert from this slot on.
+
+For the common `message.delta' case (one growing text segment), only
+branch 2 fires for one segment, and the per-paint cost drops from
+O(total bench text) to O(delta size)."
   (unless (and (markerp hermes--stream-segments-start)
                (markerp hermes--stream-segments-end))
     (setq hermes--stream-segments-start (point-marker)
           hermes--stream-segments-end (point-marker))
     (set-marker-insertion-type hermes--stream-segments-start nil)
     (set-marker-insertion-type hermes--stream-segments-end t))
-  (let ((start (marker-position hermes--stream-segments-start))
-        (end (marker-position hermes--stream-segments-end)))
-    (when (> end start)
-      (delete-region start end))
-    (goto-char start)
-    (dotimes (i (length segments))
-      (let ((formatted (hermes--format-segment (aref segments i))))
-        (when (> (length formatted) 0)
-          (unless (or (= i 0) (bolp))
-            (insert "\n"))
-          (insert formatted)
-          (unless (bolp)
-            (insert "\n")))))
-    (set-marker hermes--stream-segments-end (point))
-    (hermes--apply-stream-folds start (marker-position hermes--stream-segments-end))
+  (let* ((start-pos (marker-position hermes--stream-segments-start))
+         (snapshot (or hermes--stream-segments-snapshot []))
+         (n-old (length snapshot))
+         (n-new (length segments))
+         (pos start-pos)
+         (i 0)
+         (diverged nil))
+    ;; 1. Walk the common prefix, replacing in place where content differs.
+    (while (and (not diverged) (< i n-old) (< i n-new))
+      (let* ((old (aref snapshot i))
+             (seg (aref segments i))
+             (old-id   (plist-get old :id))
+             (old-type (plist-get old :type))
+             (old-len  (plist-get old :length))
+             (new-id   (hermes-segment-id seg))
+             (new-type (hermes-segment-type seg)))
+        (if (not (and (equal old-id new-id) (eq old-type new-type)))
+            (setq diverged t)
+          (let* ((new-text (hermes--segment-block seg))
+                 (new-len (length new-text)))
+            (unless (and (= old-len new-len)
+                         (string= new-text
+                                  (buffer-substring-no-properties
+                                   pos (+ pos old-len))))
+              (save-excursion
+                (goto-char pos)
+                (delete-region pos (+ pos old-len))
+                (insert new-text))
+              (aset snapshot i (list :id new-id :type new-type
+                                     :length new-len)))
+            (setq pos (+ pos new-len)
+                  i (1+ i))))))
+    (cond
+     (diverged
+      ;; Rebuild from segments[i..] — delete tail, reinsert.
+      (delete-region pos (marker-position hermes--stream-segments-end))
+      (let ((rebuilt (substring snapshot 0 i)))
+        (save-excursion
+          (goto-char pos)
+          (while (< i n-new)
+            (let* ((seg (aref segments i))
+                   (text (hermes--segment-block seg)))
+              (insert text)
+              (setq rebuilt
+                    (vconcat rebuilt
+                             (vector (list :id (hermes-segment-id seg)
+                                           :type (hermes-segment-type seg)
+                                           :length (length text))))))
+            (setq i (1+ i))))
+        (setq snapshot rebuilt)))
+     ((< i n-old)
+      ;; Old vector longer — truncate trailing segments.
+      (delete-region pos (marker-position hermes--stream-segments-end))
+      (setq snapshot (substring snapshot 0 i)))
+     ((< i n-new)
+      ;; New vector longer — append remainder.
+      (save-excursion
+        (goto-char pos)
+        (let ((extra (make-vector (- n-new i) nil))
+              (k 0))
+          (while (< i n-new)
+            (let* ((seg (aref segments i))
+                   (text (hermes--segment-block seg)))
+              (insert text)
+              (aset extra k (list :id (hermes-segment-id seg)
+                                  :type (hermes-segment-type seg)
+                                  :length (length text))))
+            (setq i (1+ i) k (1+ k)))
+          (setq snapshot (vconcat snapshot extra))))))
+    (setq hermes--stream-segments-snapshot snapshot)
+    ;; Re-anchor the end marker.  insertion-type t keeps it aligned with
+    ;; the tail through inserts, but a pure-shrink pass may have left it
+    ;; ahead of where the snapshot now ends.
+    (set-marker hermes--stream-segments-end
+                (+ start-pos (hermes--snapshot-total-length snapshot)))
+    (hermes--apply-stream-folds start-pos
+                                (marker-position hermes--stream-segments-end))
     (hermes--bench-sync)))
 
 (defvar-local hermes--unfolded-ids nil
@@ -844,6 +957,7 @@ Also opens a bench overlay tinting the live region."
         hermes--stream-segments-end   (point-marker))
   (set-marker-insertion-type hermes--stream-segments-start nil)
   (set-marker-insertion-type hermes--stream-segments-end   t)
+  (setq hermes--stream-segments-snapshot nil)
   (setq hermes--stream-subagents-marker (copy-marker (point-marker)))
   (set-marker-insertion-type hermes--stream-subagents-marker t)
   ;; Open the bench overlay.  rear-advance so it grows with streamed
@@ -965,6 +1079,7 @@ If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
         hermes--stream-segments-end nil
         hermes--stream-subagents-marker nil
         hermes--stream-headline-marker nil
+        hermes--stream-segments-snapshot nil
         hermes--unfolded-ids nil))
 
 (defun hermes--stream-flush-cancel ()

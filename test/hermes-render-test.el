@@ -817,5 +817,106 @@ down the bench, so the final tokens never get dropped."
       (should (null hermes--stream-render-timer))
       (should (null hermes--stream-render-pending)))))
 
+;;;; Incremental segment rendering (Phase 2)
+
+(ert-deftest hermes-render-test/incremental-noop-on-identical-segments ()
+  "Re-rendering the exact same segments must not touch the buffer."
+  (with-temp-buffer
+    (hermes--stream-begin)
+    (let ((segs (vector (make-hermes-segment
+                         :type 'text :content "hello" :id "s1"))))
+      (hermes--render-stream-segments segs)
+      (let ((tick (buffer-modified-tick)))
+        (hermes--render-stream-segments segs)
+        (should (= tick (buffer-modified-tick)))))
+    (should (= 1 (length hermes--stream-segments-snapshot)))))
+
+(ert-deftest hermes-render-test/incremental-preserves-prior-segments ()
+  "Appending a new segment must NOT re-insert the prior ones.
+We prove this by tagging a character inside segment 0's text with a
+buffer-local text property and verifying that property survives the
+second render."
+  (with-temp-buffer
+    (org-mode)
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "first" :id "s1")))
+    ;; Tag a position inside the rendered first segment.
+    (let ((tag-pos (save-excursion
+                     (goto-char (marker-position hermes--stream-segments-start))
+                     (search-forward "first")
+                     (1- (point)))))
+      (put-text-property tag-pos (1+ tag-pos) 'hermes-test-tag t)
+      ;; Render again with an additional segment appended.
+      (hermes--render-stream-segments
+       (vector (make-hermes-segment :type 'text :content "first" :id "s1")
+               (make-hermes-segment :type 'reasoning :content "why" :id "s2")))
+      ;; Tag must still be at its original position — segment 0 was not
+      ;; re-inserted.
+      (should (get-text-property tag-pos 'hermes-test-tag))
+      (should (= 2 (length hermes--stream-segments-snapshot))))))
+
+(ert-deftest hermes-render-test/incremental-replaces-grown-segment ()
+  "When a text segment grows, only that segment's region is rewritten.
+The snapshot length must match the new content."
+  (with-temp-buffer
+    (org-mode)
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "Hi" :id "s1")))
+    (let ((snap-before (aref hermes--stream-segments-snapshot 0)))
+      (hermes--render-stream-segments
+       (vector (make-hermes-segment :type 'text :content "Hi there" :id "s1")))
+      (let ((snap-after (aref hermes--stream-segments-snapshot 0)))
+        (should (> (plist-get snap-after :length)
+                   (plist-get snap-before :length)))
+        (should (equal "s1" (plist-get snap-after :id)))
+        (should (eq 'text (plist-get snap-after :type)))))
+    (let ((body (buffer-substring-no-properties
+                 (marker-position hermes--stream-segments-start)
+                 (marker-position hermes--stream-segments-end))))
+      (should (string-match-p "Hi there" body)))))
+
+(ert-deftest hermes-render-test/incremental-truncates-orphan-segments ()
+  "Shrinking the segment vector deletes the trailing region."
+  (with-temp-buffer
+    (org-mode)
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "keep" :id "s1")
+             (make-hermes-segment :type 'reasoning :content "drop" :id "s2")))
+    (should (= 2 (length hermes--stream-segments-snapshot)))
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "keep" :id "s1")))
+    (should (= 1 (length hermes--stream-segments-snapshot)))
+    (let ((body (buffer-substring-no-properties
+                 (marker-position hermes--stream-segments-start)
+                 (marker-position hermes--stream-segments-end))))
+      (should (string-match-p "keep" body))
+      (should-not (string-match-p "drop" body)))))
+
+(ert-deftest hermes-render-test/incremental-fallback-on-id-mismatch ()
+  "Differing ids at the same slot trigger the fallback rebuild; the new
+content must end up in the buffer and the snapshot."
+  (with-temp-buffer
+    (org-mode)
+    (hermes--stream-begin)
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "alpha" :id "a")
+             (make-hermes-segment :type 'text :content "beta" :id "b")))
+    ;; Same id at index 0, but index 1 swaps id.  Fallback rebuild
+    ;; from index 1 should drop "beta" and insert "gamma".
+    (hermes--render-stream-segments
+     (vector (make-hermes-segment :type 'text :content "alpha" :id "a")
+             (make-hermes-segment :type 'text :content "gamma" :id "c")))
+    (should (equal "c" (plist-get (aref hermes--stream-segments-snapshot 1)
+                                  :id)))
+    (let ((body (buffer-substring-no-properties
+                 (marker-position hermes--stream-segments-start)
+                 (marker-position hermes--stream-segments-end))))
+      (should (string-match-p "alpha" body))
+      (should (string-match-p "gamma" body))
+      (should-not (string-match-p "beta" body)))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

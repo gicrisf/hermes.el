@@ -1,242 +1,166 @@
-# Plan: Unified Status Bar (Mode-Line) + Remove Bench Header-Line
+# Plan: Fix Mode-Line Update + Refined Format
 
 ## Context
-Currently both the org buffer and the bench buffer have their own `header-line-format`:
-- **Org buffer** (`hermes--render-header`): shows "Hermes · ● · model · tokens → queue"
-- **Bench buffer** (`hermes-bench-set-header`): shows the same info duplicated
+The previous plan moved the Hermes status bar from `header-line-format` to `mode-line-format`. Two issues were discovered after implementation:
 
-The user wants a **single** status bar positioned at the **bottom** of the org buffer window (directly above the bench side-window). In Emacs, the native bottom bar is `mode-line-format`.
+1. **Bug:** The connection icon shows `○` (disconnected) even when the gateway is working. This happens because `hermes--mode-line-update` is only called once at `hermes-minor-mode` startup and is **not registered on any state-change hook**. It never refreshes when the connection transitions from `:connecting` to `:connected`.
+2. **Design:** The user wants a cleaner, reordered format with fewer elements.
+
+---
 
 ## Goal
-1. Remove the bench's `header-line-format` entirely.
-2. Move the Hermes status display from `header-line-format` (top) to `mode-line-format` (bottom) on the org buffer.
-3. Preserve basic mode-line info (buffer name, position) alongside the Hermes status.
-4. Ensure clean restore when `hermes-minor-mode` is turned off.
-
----
-
-## Analysis of Options
-
-### Option A: Replace `mode-line-format` entirely
-Set `mode-line-format` to a custom list that includes only Hermes status + minimal buffer info.
-
-**Pros:** Full control, simple, works in vanilla Emacs.
-**Cons:** Loses default mode-line elements (line/column, encoding, etc.) unless we explicitly include them.
-
-### Option B: Append Hermes status to existing `mode-line-format`
-Save the original `mode-line-format`, then append the Hermes status segment.
-
-**Pros:** Preserves user's existing mode-line customizations (e.g., `doom-modeline`).
-**Cons:** Need to save/restore original format carefully to avoid duplication.
-
-### Option C: Integrate with `doom-modeline` (Doom-specific)
-Define a `doom-modeline-def-segment` for Hermes status and add it to the Doom modeline.
-
-**Pros:** Native feel for Doom users.
-**Cons:** Doom-only, adds dependency complexity, doesn't help vanilla Emacs users.
-
----
-
-## Recommendation: Option A with a minimal built-in fallback
-
-Replace `mode-line-format` with a **simple, self-contained** format that includes:
-1. Buffer identification (`mode-line-buffer-identification`)
-2. Hermes status (connection dot, model, tokens, queue)
-3. Cursor position (`mode-line-position`)
-
-This is robust because:
-- It doesn't need to save/restore anything complex.
-- It works regardless of whether the user uses `doom-modeline`, `powerline`, or vanilla.
-- When `hermes-minor-mode` turns off, we restore `mode-line-format` to its default value (`(default-value 'mode-line-format)`), which correctly handles both vanilla and Doom cases.
+1. Fix the stale connection icon by wiring `hermes--mode-line-update` into the correct hook.
+2. Reorder and reformat `hermes--mode-line-status` to match the user's preference.
+3. Simplify `mode-line-format` to remove mule-info, remote, frame-identification, position, and modes.
 
 ---
 
 ## Proposed Changes
 
-### 1. `hermes-render.el` — `hermes--render-header` becomes `hermes--mode-line-update`
+### 1. `hermes-mode.el` — Fix hook wiring
 
-The function no longer sets `header-line-format`. Instead, it updates a **variable** that the mode-line format reads dynamically.
+**Current (broken):**
+```elisp
+(add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
+```
+
+`hermes--mode-line-update` is called once at startup but never again.
+
+**Fix:** Add `hermes--mode-line-update` to `hermes-state-change-hook`. Keep `hermes--render-ui` on `hermes-ui-state-change-hook` (it updates `hermes--ui-line`, which `hermes--mode-line-status` reads).
 
 ```elisp
-(defvar-local hermes--mode-line-status ""
-  "Dynamic Hermes status text displayed in the mode-line.
-Updated by `hermes--mode-line-update' whenever the ephemeral state changes.")
+(defun hermes-minor-mode--on ()
+  ...
+  (add-hook 'hermes-state-change-hook    #'hermes--render        t t)
+  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  t t)
+  (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t t)
+  (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t t)
+  (add-hook 'hermes-state-change-hook    #'hermes--mode-line-update t t)  ; ← NEW
+  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)      ; ← keeps hermes--ui-line fresh
+  ...)
 
+(defun hermes-minor-mode--off ()
+  ...
+  (remove-hook 'hermes-state-change-hook    #'hermes--mode-line-update t)
+  (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui        t)
+  ...)
+```
+
+**Why this fixes it:** `hermes-dispatch` fires `hermes-state-change-hook` on every persistent state change (connection, model info, token usage, queue drain). `hermes--mode-line-update` now receives those events and refreshes `mode-line-format` via `force-mode-line-update`.
+
+---
+
+### 2. `hermes-render.el` — Reformat `hermes--mode-line-update`
+
+**Current format:**
+```
+ Hermes · ● · deepseek-v4-flash · 12→45 · queue: 2
+```
+
+**Desired format:**
+```
+● · deepseek-v4-flash · thinking… · (133600 tokens) · queue: 2
+```
+
+Changes:
+- Drop `Hermes` label
+- Reorder: `● · model · ui-line · (total tokens) · queue`
+- Combine `sent→received` into a single `(total tokens)` figure
+
+```elisp
 (defun hermes--mode-line-update (&optional _state)
   "Recompute `hermes--mode-line-status' from the current state.
-Called from `hermes-ui-state-change-hook'."
+Installed on `hermes-state-change-hook' so connection/model/token
+changes refresh the mode-line immediately."
   (setq hermes--mode-line-status
         (concat
-         " Hermes"
          (pcase (and hermes--state (hermes-state-connection hermes--state))
-           ('connected    " · ●")
-           ('connecting   " · ◐")
-           ('disconnected " · ○")
+           ('connected    "●")
+           ('connecting   "◐")
+           ('disconnected "○")
            (_             ""))
          (let* ((info  (and hermes--state (hermes-state-session-info hermes--state)))
                 (model (and (hash-table-p info) (gethash "model" info))))
            (if model (format " · %s" model) ""))
+         (let ((ui (or hermes--ui-line "")))
+           (unless (string-empty-p ui)
+             (format " · %s" (string-trim ui))))
          (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
                 (sent  (and usage (gethash "tokens_sent" usage)))
                 (recv  (and usage (gethash "tokens_received" usage))))
            (if (or sent recv)
-               (format " · %s→%s" (or sent "?") (or recv "?"))
+               (format " · (%s tokens)"
+                       (+ (or sent 0) (or recv 0)))
              ""))
          (let ((q (and hermes--state (hermes-state-queue hermes--state))))
            (if (and q (> (length q) 0))
                (format " · queue: %d" (length q))
-             ""))
-         " "
-         (or hermes--ui-line "")))
+             ""))))
   (force-mode-line-update))
 ```
 
-### 2. `hermes-mode.el` — `hermes-minor-mode--on` sets `mode-line-format`
+**Note on number formatting:** `(format "%s" (+ sent recv))` produces `133600`. If the user prefers European thousands-separators (`133.600`) or compact notation, a helper like `hermes--format-token-count` can be added later.
+
+---
+
+### 3. `hermes-mode.el` — Simplify `mode-line-format`
 
 ```elisp
-(defun hermes-minor-mode--on ()
-  "Setup for `hermes-minor-mode': org-local config, hooks, mode-line.
-Idempotent — safe to run when already armed."
-  ...
-  ;; Replace header-line with mode-line status.
-  (setq-local mode-line-format
-              '("%e"
-                mode-line-front-space
-                mode-line-mule-info
-                mode-line-client
-                mode-line-modified
-                mode-line-remote
-                mode-line-frame-identification
-                mode-line-buffer-identification
-                "  "
-                (:eval hermes--mode-line-status)
-                "  "
-                mode-line-position
-                "  "
-                mode-line-modes
-                mode-line-end-spaces))
-  ;; Clear any stale header-line from a previous activation.
-  (setq header-line-format nil)
-  ...)
-
-(defun hermes-minor-mode--off ()
-  "Teardown for `hermes-minor-mode'."
-  ...
-  (setq mode-line-format (default-value 'mode-line-format))
-  (setq header-line-format nil)
-  ...)
+(setq-local mode-line-format
+            '("%e"
+              mode-line-front-space
+              mode-line-modified
+              " "
+              mode-line-buffer-identification
+              "    "
+              (:eval hermes--mode-line-status)
+              mode-line-end-spaces))
 ```
 
-**Note:** Using `(default-value 'mode-line-format)` correctly restores:
-- Vanilla Emacs default
-- Doom-modeline's custom format (if Doom is active)
-- Any other global mode-line customization
+**Dropped:** `mode-line-mule-info`, `mode-line-client`, `mode-line-remote`, `mode-line-frame-identification`, `mode-line-position`, `mode-line-modes`.
 
-### 3. `hermes-bench.el` — Remove bench header-line
-
-In `hermes-bench--setup`, explicitly disable the header-line:
-
-```elisp
-(defun hermes-bench--setup (parent)
-  "Initialize the bench buffer contents for PARENT."
-  (hermes-bench-mode)
-  (setq hermes-bench--parent-buffer parent
-        hermes-bench--current-user-prompt nil)
-  (setq-local header-line-format nil)   ; ← no bench header
-  ...)
-```
-
-Remove or deprecate `hermes-bench-set-header`. It is no longer called. The function body can become a no-op (to avoid breaking any external callers), or be deleted entirely.
-
-Also update `hermes-bench--refresh-ui` to remove the `hermes-bench-set-header` call:
-
-```elisp
-(defun hermes-bench--refresh-ui (&optional _old _new)
-  "Repaint the bench splash if it's currently showing."
-  (let ((bench (hermes-bench-active-p)))
-    (when (buffer-live-p bench)
-      (with-current-buffer bench
-        (when (hermes-bench--should-show-splash-p)
-          (hermes-bench--paint-ephemeral)
-          ;; (hermes-bench-set-header)  ; ← REMOVED
-          )))))
-```
-
-And remove the call in `hermes-bench--stream-begin`:
-
-```elisp
-(defun hermes-bench--stream-begin (bench)
-  "Stream started: ensure user prompt is set, clear reasoning/answer."
-  (when (buffer-live-p bench)
-    (with-current-buffer bench
-      (let ((user (or hermes-bench--current-user-prompt ...)))
-        (hermes-bench--paint-ephemeral user "" ""))
-      ;; (hermes-bench-set-header)  ; ← REMOVED
-      )))
-```
-
-### 4. `hermes-mode.el` — Update hooks
-
-In `hermes-minor-mode--on`, the `hermes-ui-state-change-hook` should call `hermes--mode-line-update` instead of `hermes--render-ui`:
-
-```elisp
-(add-hook 'hermes-ui-state-change-hook #'hermes--mode-line-update t t)
-```
-
-In `hermes-minor-mode--off`:
-
-```elisp
-(remove-hook 'hermes-ui-state-change-hook #'hermes--mode-line-update t)
-```
-
-Remove or update `hermes--render-ui` (the old header-line function). It can be deleted since `hermes--mode-line-update` replaces it.
+**Kept:** `mode-line-modified` (`**`/`--`), `mode-line-buffer-identification` (`*hermes:abc123*`), and the dynamic Hermes status.
 
 ---
 
 ## Visual Result
 
-**Before (two bars):**
 ```
-┌─────────────────────────────────────────────┐
-│ Hermes · ● · deepseek-v4-flash              │ ← org header-line
-├─────────────────────────────────────────────┤
-│ * Hermes session :hermes:                   │
-│ ** U: Hello                                 │
-│ ...                                         │
-├─────────────────────────────────────────────┤
-│ Hermes · ● · deepseek-v4-flash · 12→45     │ ← bench header-line
-│ Hello, how can I help?                      │
-│ ------                                      │
-│ >                                           │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ * Hermes session :hermes:                                   │
+│ ** U: Hello                                                 │
+│ ** A: Hi there                                              │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│ ** *hermes:abc123*    ● · deepseek-v4-flash · (133600 tokens)│ ← mode-line
+└─────────────────────────────────────────────────────────────┘
+│ Hello, how can I help?                                      │
+│ ------                                                      │
+│ >                                                           │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**After (single bar at bottom):**
+When streaming / thinking:
 ```
-┌─────────────────────────────────────────────┐
-│ * Hermes session :hermes:                   │
-│ ** U: Hello                                 │
-│ ...                                         │
-├─────────────────────────────────────────────┤
-│ *hermes:abc123*  Hermes · ● · deepseek...  │ ← org mode-line (bottom)
-├─────────────────────────────────────────────┤
-│ Hello, how can I help?                      │
-│ ------                                      │
-│ >                                           │
-└─────────────────────────────────────────────┘
+** *hermes:abc123*    ● · deepseek-v4-flash · thinking… · (45 tokens)
+```
+
+With queue:
+```
+** *hermes:abc123*    ● · deepseek-v4-flash · (133600 tokens) · queue: 2
 ```
 
 ---
 
-## Edge Cases
+## Files to touch
 
-| Situation | Behavior |
-|-----------|----------|
-| `hermes-minor-mode` toggled off | `mode-line-format` restored to global default. Bench header stays nil. |
-| `doom-modeline` active | `(default-value 'mode-line-format)` returns Doom's format; restore works correctly. |
-| Bench killed and recreated | `hermes-bench--setup` sets `header-line-format` to nil; no duplicate bar. |
-| Multiple Hermes sessions in one org file | Each buffer has its own `mode-line-format`; only the active session's status is shown (buffer-local `hermes--state`). |
+| File | Change |
+|------|--------|
+| `hermes-mode.el` | Add `hermes--mode-line-update` to `hermes-state-change-hook`; simplify `mode-line-format` |
+| `hermes-render.el` | Rewrite `hermes--mode-line-update` body for new format and order |
 
-## Out of Scope
-- Doom-modeline custom segment integration (Option C): can be added later as an enhancement.
-- Preserving every element of a highly customized user mode-line: Option A replaces the format entirely; users who want full control can customize `mode-line-format` themselves after enabling `hermes-minor-mode`.
+No changes needed in `hermes-bench.el` (bench header-line remains nil).
+
+## Out of scope
+- Number formatting (thousands separators, compact notation).
+- Removing `hermes--render-ui` entirely — it still serves the useful purpose of updating `hermes--ui-line` from ephemeral state.

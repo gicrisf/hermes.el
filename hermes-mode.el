@@ -173,6 +173,7 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  t t)
   (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t t)
   (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t t)
+  (add-hook 'hermes-state-change-hook    #'hermes--mode-line-update t t)
   (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
   ;; Drop pending throttle timer on buffer kill so it can't fire into a
   ;; dead buffer.
@@ -182,20 +183,18 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   ;; alongside the Hermes status segment.
   (setq-local mode-line-format
               '("%e"
-                mode-line-front-space
-                mode-line-mule-info
-                mode-line-client
                 mode-line-modified
-                mode-line-remote
-                mode-line-frame-identification
+                " "
                 mode-line-buffer-identification
                 "  "
                 (:eval hermes--mode-line-status)
-                "  "
-                mode-line-position
-                "  "
-                mode-line-modes
-                mode-line-end-spaces))
+                (:eval (let* ((label (if (derived-mode-p 'hermes-mode) "Hermes-Org"))
+                             (text  (concat " " label)))
+                          (concat
+                           (propertize " " 'display
+                                       (list 'space :align-to
+                                             (list '- 'right (length text))))
+                           (propertize label 'face 'mode-line-emphasis))))))
   (setq header-line-format nil)
   (hermes--mode-line-update hermes--state))
 
@@ -206,6 +205,7 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   (remove-hook 'hermes-state-change-hook #'hermes-prompts-watch t)
   (remove-hook 'hermes-state-change-hook #'hermes-input--drain t)
   (remove-hook 'hermes-state-change-hook #'hermes-skin-watch t)
+  (remove-hook 'hermes-state-change-hook #'hermes--mode-line-update t)
   (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui t)
   (remove-hook 'kill-buffer-hook #'hermes--stream-flush-cancel t)
   (hermes--stream-flush-cancel)

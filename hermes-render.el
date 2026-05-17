@@ -1313,33 +1313,35 @@ happens, re-arms the cooldown so further deltas continue to throttle."
 
 ;;;; Mode line
 
-(defun hermes--mode-line-update (&optional _state)
+(defun hermes--mode-line-update (&optional _old _new)
   "Recompute `hermes--mode-line-status' from the current state.
-Read live from buffer-local `hermes--state' — the optional argument is
-accepted only so this can be hooked into `hermes-state-change-hook'
-\(which calls hooks with OLD NEW)."
+Installed on `hermes-state-change-hook' so connection/model/token
+changes refresh the mode-line immediately.  Hook arguments are ignored
+\(state is read live from buffer-local `hermes--state')."
   (setq hermes--mode-line-status
         (concat
-         " Hermes"
          (pcase (and hermes--state (hermes-state-connection hermes--state))
-           ('connected    " · ●")
-           ('connecting   " · ◐")
-           ('disconnected " · ○")
+           ('connected    "●")
+           ('connecting   "◐")
+           ('disconnected "○")
            (_             ""))
          (let* ((info  (and hermes--state (hermes-state-session-info hermes--state)))
                 (model (and (hash-table-p info) (gethash "model" info))))
            (if model (format " · %s" model) ""))
+         (let ((ui (or hermes--ui-line "")))
+           (if (string-empty-p (string-trim ui))
+               ""
+             (format " · %s" (string-trim ui))))
          (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
                 (sent  (and usage (gethash "tokens_sent" usage)))
                 (recv  (and usage (gethash "tokens_received" usage))))
            (if (or sent recv)
-               (format " · %s→%s" (or sent "?") (or recv "?"))
+               (format " · (%s tokens)" (+ (or sent 0) (or recv 0)))
              ""))
          (let ((q (and hermes--state (hermes-state-queue hermes--state))))
            (if (and q (> (length q) 0))
                (format " · queue: %d" (length q))
-             ""))
-         (or hermes--ui-line "")))
+             ""))))
   (force-mode-line-update))
 
 (provide 'hermes-render)

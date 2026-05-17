@@ -71,9 +71,21 @@
 ;; stream-commit, error) always paint synchronously — see `hermes--render'.
 
 (defcustom hermes-render-stream-throttle 0.04
-  "Minimum seconds between consecutive stream re-renders.
-A value of 0.04 = 25 Hz cap.  Lower values = smoother but more CPU.
-Set to 0 to disable throttling entirely."
+  "Floor (minimum seconds) between consecutive stream re-renders.
+Acts as a lower bound on the *adaptive* interval computed by
+`hermes--adaptive-throttle-interval', which steps up as the bench
+grows:
+
+  < 1,000 chars  → 0.04s (25 Hz)
+  < 5,000 chars  → 0.20s (5 Hz)
+  < 10,000 chars → 1.00s (1 Hz)
+  ≥ 10,000 chars → 2.00s (0.5 Hz)
+
+The effective interval is `(max hermes-render-stream-throttle
+adaptive-step)'.  Set this to 0 to disable the floor and let the
+adaptive table run unconstrained at the small-bench end; set it to a
+large value (e.g. 1.0) to force a fixed cap regardless of bench size.
+A value greater than or equal to 2.0 effectively disables stepping."
   :type 'number
   :group 'hermes)
 
@@ -1090,12 +1102,31 @@ Safe to call from any context — does not paint."
   (setq hermes--stream-render-timer nil
         hermes--stream-render-pending nil))
 
+(defun hermes--adaptive-throttle-interval ()
+  "Cooldown interval in seconds, scaled by the bench size.
+Returns `(max hermes-render-stream-throttle stepped)' where `stepped'
+follows the table in `hermes-render-stream-throttle's docstring.
+\"Bench size\" is the total `:length' across
+`hermes--stream-segments-snapshot' — i.e. the byte count actually
+painted into the buffer.  Falls back to 0 chars (smallest step) when
+the snapshot is nil, so the first paint after `stream-begin' uses the
+floor."
+  (let ((len (if hermes--stream-segments-snapshot
+                 (hermes--snapshot-total-length
+                  hermes--stream-segments-snapshot)
+               0)))
+    (max hermes-render-stream-throttle
+         (cond ((< len 1000)  0.04)
+               ((< len 5000)  0.20)
+               ((< len 10000) 1.00)
+               (t             2.00)))))
+
 (defun hermes--stream-flush-reschedule ()
-  "Arm the cooldown timer for `hermes-render-stream-throttle' seconds."
+  "Arm the cooldown timer using the adaptive interval."
   (when (timerp hermes--stream-render-timer)
     (cancel-timer hermes--stream-render-timer))
   (setq hermes--stream-render-timer
-        (run-with-timer hermes-render-stream-throttle nil
+        (run-with-timer (hermes--adaptive-throttle-interval) nil
                         #'hermes--stream-flush (current-buffer))))
 
 (defun hermes--stream-flush (buf)

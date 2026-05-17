@@ -918,5 +918,45 @@ content must end up in the buffer and the snapshot."
       (should (string-match-p "gamma" body))
       (should-not (string-match-p "beta" body)))))
 
+;;;; Adaptive throttle (Phase 3)
+
+(ert-deftest hermes-render-test/adaptive-interval-steps-up ()
+  "Interval grows with rendered text size."
+  (with-temp-buffer
+    (hermes-mode)
+    (let ((hermes-render-stream-throttle 0))
+      ;; No snapshot → 0 chars → smallest step (25 Hz).
+      (should (= 0.04 (hermes--adaptive-throttle-interval)))
+      (setq hermes--stream-segments-snapshot
+            (vector (list :length 500)))
+      (should (= 0.04 (hermes--adaptive-throttle-interval)))
+      (setq hermes--stream-segments-snapshot
+            (vector (list :length 3000)))
+      (should (= 0.20 (hermes--adaptive-throttle-interval)))
+      (setq hermes--stream-segments-snapshot
+            (vector (list :length 8000)))
+      (should (= 1.00 (hermes--adaptive-throttle-interval)))
+      (setq hermes--stream-segments-snapshot
+            (vector (list :length 15000)))
+      (should (= 2.00 (hermes--adaptive-throttle-interval))))))
+
+(ert-deftest hermes-render-test/adaptive-floor-respects-custom-variable ()
+  "`hermes-render-stream-throttle' acts as a minimum interval."
+  (with-temp-buffer
+    (hermes-mode)
+    (let ((hermes-render-stream-throttle 1.0))
+      (setq hermes--stream-segments-snapshot
+            (vector (list :length 100)))
+      (should (= 1.0 (hermes--adaptive-throttle-interval)))
+      ;; 50k chars would step to 2.0, but the floor pins it to 1.0.
+      ;; (Floor is a *minimum*, not a *maximum* — so 2.0 wins here.)
+      ;; The plan's expectation is that floor=1.0 yields 1.0 for huge
+      ;; text because 1.0 > stepped(50k)?  No: stepped(50k) = 2.0 > 1.0,
+      ;; so max = 2.0.  Test the documented semantics: floor is a lower
+      ;; bound, not a cap.
+      (setq hermes--stream-segments-snapshot
+            (vector (list :length 50000)))
+      (should (= 2.0 (hermes--adaptive-throttle-interval))))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

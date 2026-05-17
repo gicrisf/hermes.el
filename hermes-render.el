@@ -157,6 +157,7 @@ buffer) where the container's subtree spans the whole buffer."
   ;; the bench survives forever.
   (let ((msg-append-start nil)
         (bench-touched-p nil)
+        (committed-region nil)
         (drain-pending nil)
         ;; Structural change → reset the org-element cache at the end.
         ;; Streaming chunks (`stream-update') don't qualify: they reshape
@@ -188,7 +189,7 @@ buffer) where the container's subtree spans the whole buffer."
                    (hermes--stream-update nil os))
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
-                 (hermes--stream-commit os))
+                 (setq committed-region (hermes--stream-commit os)))
                 ((not (eq os ns))
                  (cond
                   ;; Throttling disabled — always paint.
@@ -258,7 +259,14 @@ buffer) where the container's subtree spans the whole buffer."
                  (markerp hermes--bench-end)
                  (marker-position hermes--bench-end))
         (hermes--refresh-region (marker-position hermes--bench-start)
-                                (marker-position hermes--bench-end))))))
+                                (marker-position hermes--bench-end)))
+      ;; Refresh the assistant region just sealed by `stream-commit'.
+      ;; The heading was rewritten and the raw drawer inserted inside
+      ;; `with-silent-modifications', which strips/skips the org-indent
+      ;; `line-prefix' properties and `hermes--hide-drawers' pass.
+      (when committed-region
+        (hermes--refresh-region (car committed-region)
+                                (cdr committed-region))))))
 
 (defun hermes--refresh-region (start end)
   "Run indent + drawer-hide + fold-repair passes over [START, END).
@@ -1033,7 +1041,9 @@ MSG is the committed `hermes-message'.  Replaces the line at
 (defun hermes--stream-commit (&optional old-stream)
   "Stream finished: stamp Org :ID:s on the trail, drop markers and bench.
 If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
-`** assistant' subtree describing the just-completed message."
+`** assistant' subtree describing the just-completed message.
+Returns a cons (START . END) of the committed region for post-commit
+refresh by the caller, or nil if no bench was active."
   ;; Defensive: ensure no throttled paint can fire after the bench is gone.
   (hermes--stream-flush-cancel)
   (when (and (derived-mode-p 'org-mode)
@@ -1056,7 +1066,12 @@ If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
       (save-excursion
         (goto-char (marker-position hermes--bench-end))
         (unless (bolp) (insert "\n"))
-        (hermes--insert-raw-drawer msg))
+        (hermes--insert-raw-drawer msg)
+        ;; Drawer may have extended past `hermes--bench-end' (depending
+        ;; on the marker's insertion type).  Push the end marker to the
+        ;; latest written position so the post-commit refresh covers it.
+        (when (> (point) (marker-position hermes--bench-end))
+          (set-marker hermes--bench-end (point))))
       ;; Rewrite the assistant heading from `** <model>' placeholder
       ;; into `** <response excerpt> :hermes:<model>:'.
       (hermes--finalize-assistant-heading msg)))
@@ -1078,21 +1093,31 @@ If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
   (when (overlayp hermes--bench-overlay)
     (delete-overlay hermes--bench-overlay))
   (setq hermes--bench-overlay nil)
-  (dolist (m (list hermes--bench-start
-                    hermes--bench-end
-                    hermes--stream-segments-start
-                    hermes--stream-segments-end
-                    hermes--stream-subagents-marker
-                    hermes--stream-headline-marker))
-    (when (markerp m) (set-marker m nil)))
-  (setq hermes--bench-start nil
-        hermes--bench-end nil
-        hermes--stream-segments-start nil
-        hermes--stream-segments-end nil
-        hermes--stream-subagents-marker nil
-        hermes--stream-headline-marker nil
-        hermes--stream-segments-snapshot nil
-        hermes--unfolded-ids nil))
+  ;; Snapshot the committed region before clearing markers, so the
+  ;; caller can run `hermes--refresh-region' on it (after the silent
+  ;; block exits) to restore `line-prefix' on the rewritten heading and
+  ;; collapse the just-inserted raw drawer.
+  (let ((committed-start (and (markerp hermes--bench-start)
+                              (marker-position hermes--bench-start)))
+        (committed-end   (and (markerp hermes--bench-end)
+                              (marker-position hermes--bench-end))))
+    (dolist (m (list hermes--bench-start
+                      hermes--bench-end
+                      hermes--stream-segments-start
+                      hermes--stream-segments-end
+                      hermes--stream-subagents-marker
+                      hermes--stream-headline-marker))
+      (when (markerp m) (set-marker m nil)))
+    (setq hermes--bench-start nil
+          hermes--bench-end nil
+          hermes--stream-segments-start nil
+          hermes--stream-segments-end nil
+          hermes--stream-subagents-marker nil
+          hermes--stream-headline-marker nil
+          hermes--stream-segments-snapshot nil
+          hermes--unfolded-ids nil)
+    (when (and committed-start committed-end)
+      (cons committed-start committed-end))))
 
 (defun hermes--stream-flush-cancel ()
   "Cancel any pending stream-flush timer and clear the accumulator.

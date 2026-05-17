@@ -958,5 +958,50 @@ content must end up in the buffer and the snapshot."
             (vector (list :length 50000)))
       (should (= 2.0 (hermes--adaptive-throttle-interval))))))
 
+(ert-deftest hermes-render-test/commit-refreshes-committed-region ()
+  "After stream-commit, the committed assistant region must receive
+indent + drawer-hide + fold passes.  Regression: previously
+`hermes--finalize-assistant-heading' and the raw-drawer insert ran
+inside `with-silent-modifications', stripping `line-prefix' from the
+rewritten heading and leaving the drawer body visible."
+  (with-temp-buffer
+    (hermes-mode)
+    (org-indent-mode 1)
+    ;; Stage 1: stream begins, accumulates text.
+    (let* ((old hermes--state)
+           (stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content "Hello"
+                                       :id "s1"))))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-stream s) stream))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    ;; Stage 2: commit (message.complete).
+    (let* ((old hermes--state)
+           (stream (hermes-state-stream old))
+           (msg (hermes--message-from-stream stream nil))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s) (vector msg)
+                        (hermes-state-stream s) nil))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    ;; The :HERMES_RAW: drawer body should be hidden (invisible overlay).
+    (goto-char (point-min))
+    (should (re-search-forward "^:HERMES_RAW:" nil t))
+    (let ((drawer-invis nil))
+      (save-excursion
+        (forward-line 1)
+        (setq drawer-invis
+              (or (get-text-property (point) 'invisible)
+                  (cl-some (lambda (o) (overlay-get o 'invisible))
+                           (overlays-at (point))))))
+      (should drawer-invis))
+    ;; The assistant heading line should have a `line-prefix' property,
+    ;; proving `org-indent-add-properties' ran on the rewritten heading.
+    (goto-char (point-min))
+    (should (re-search-forward "^\\*\\* " nil t))
+    (should (get-text-property (line-beginning-position) 'line-prefix))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

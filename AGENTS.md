@@ -163,7 +163,7 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (182/182 green)
+eldev test                           # run all ERT tests (184/184 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
@@ -181,10 +181,10 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 | File | Tests | Scope |
 |------|-------|-------|
 | `test/hermes-state-test.el` | 66 | Reducers (persistent + UI) + serialization round-trip |
-| `test/hermes-render-test.el` | 27 | Segmented renderer + subagent blocks + raw drawer I/O + throttling + incremental diff |
+| `test/hermes-render-test.el` | 28 | Segmented renderer + subagent blocks + raw drawer I/O + throttling + incremental diff + post-commit refresh |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
 
-**182/182 green, 0 unexpected** — all tests pass.
+**184/184 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

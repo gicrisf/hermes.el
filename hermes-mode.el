@@ -177,8 +177,27 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   ;; Drop pending throttle timer on buffer kill so it can't fire into a
   ;; dead buffer.
   (add-hook 'kill-buffer-hook            #'hermes--stream-flush-cancel nil t)
-  (with-silent-modifications
-    (hermes--render-header hermes--state)))
+  ;; Move Hermes status from the top header-line to the bottom mode-line.
+  ;; Use a self-contained format that preserves basic mode-line elements
+  ;; alongside the Hermes status segment.
+  (setq-local mode-line-format
+              '("%e"
+                mode-line-front-space
+                mode-line-mule-info
+                mode-line-client
+                mode-line-modified
+                mode-line-remote
+                mode-line-frame-identification
+                mode-line-buffer-identification
+                "  "
+                (:eval hermes--mode-line-status)
+                "  "
+                mode-line-position
+                "  "
+                mode-line-modes
+                mode-line-end-spaces))
+  (setq header-line-format nil)
+  (hermes--mode-line-update hermes--state))
 
 (defun hermes-minor-mode--off ()
   "Teardown for `hermes-minor-mode': removes hooks, clears header-line."
@@ -190,6 +209,7 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui t)
   (remove-hook 'kill-buffer-hook #'hermes--stream-flush-cancel t)
   (hermes--stream-flush-cancel)
+  (kill-local-variable 'mode-line-format)
   (setq header-line-format nil))
 
 ;;;###autoload

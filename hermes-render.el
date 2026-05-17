@@ -37,6 +37,10 @@
 (defvar-local hermes--ui-line ""
   "Right-hand status text driven by the ephemeral state.")
 
+(defvar-local hermes--mode-line-status ""
+  "Dynamic Hermes status text displayed in the mode-line.
+Updated by `hermes--mode-line-update' whenever the ephemeral state changes.")
+
 (defvar-local hermes--stream-headline-marker nil
   "Marker at the start of the in-flight `** assistant' headline.")
 
@@ -238,19 +242,17 @@ buffer) where the container's subtree spans the whole buffer."
                             structural-change t
                             any-inserted t))
                     (hermes--insert-committed-turn msg)))))))
-        ;; 3. Header line — session-info / connection / usage.
+        ;; 3. Mode line — session-info / connection / usage / queue.
         (unless (and old
                       (eq (hermes-state-session-info old)
                           (hermes-state-session-info new))
                       (eq (hermes-state-connection old)
                           (hermes-state-connection new))
                       (eq (hermes-state-usage old)
-                          (hermes-state-usage new)))
-          (hermes--render-header new))
-        ;; 4. Queue length changed → refresh header-line :eval forms.
-        (unless (eq (and old (hermes-state-queue old))
-                     (hermes-state-queue new))
-          (force-mode-line-update))))
+                          (hermes-state-usage new))
+                      (eq (hermes-state-queue old)
+                          (hermes-state-queue new)))
+          (hermes--mode-line-update new))))
     ;; Clear pending-turns once they've been written to the buffer.
     (when drain-pending
       (hermes-dispatch '(:pending-turns-clear)))
@@ -305,9 +307,12 @@ has a chance to repopulate cleanly."
     (hermes--hide-drawers start end)))
 
 (defun hermes--render-ui (_old new)
-  "Re-render the header line from the ephemeral state NEW."
+  "Update the right-hand status snippet from the ephemeral UI state NEW.
+Drives `hermes--ui-line', which `hermes--mode-line-update' splices into
+the mode-line status."
   (setq hermes--ui-line
         (format " %s" (or (hermes-ui-state-status-text new) "")))
+  (hermes--mode-line-update)
   (force-mode-line-update))
 
 ;;;; Committed messages
@@ -1306,39 +1311,35 @@ happens, re-arms the cooldown so further deltas continue to throttle."
   (when (vectorp (hermes-stream-subagents new-stream))
     (hermes--update-subagent-views (hermes-stream-subagents new-stream))))
 
-;;;; Header line
+;;;; Mode line
 
-(defun hermes--render-header (_state)
-  "Set `header-line-format'.  Reads `hermes--state' live via :eval."
-  (setq header-line-format
-        (list
+(defun hermes--mode-line-update (&optional _state)
+  "Recompute `hermes--mode-line-status' from the current state.
+Read live from buffer-local `hermes--state' — the optional argument is
+accepted only so this can be hooked into `hermes-state-change-hook'
+\(which calls hooks with OLD NEW)."
+  (setq hermes--mode-line-status
+        (concat
          " Hermes"
-         '(:eval (pcase (and hermes--state
-                             (hermes-state-connection hermes--state))
-                   ('connected    " · ●")
-                   ('connecting   " · ◐")
-                   ('disconnected " · ○")
-                   (_             "")))
-          '(:eval
-            (let* ((info (and hermes--state
-                              (hermes-state-session-info hermes--state)))
-                   (model (and (hash-table-p info) (gethash "model" info))))
-              (if model (format " · %s" model) "")))
-          '(:eval
-            (let* ((usage (and hermes--state
-                               (hermes-state-usage hermes--state)))
-                   (sent (and usage (gethash "tokens_sent" usage)))
-                   (recv (and usage (gethash "tokens_received" usage))))
-              (if (or sent recv)
-                  (format " · %s→%s"
-                          (or sent "?") (or recv "?"))
-                "")))
-          '(:eval
-            (let ((q (and hermes--state (hermes-state-queue hermes--state))))
-              (if (and q (> (length q) 0))
-                  (format " · queue: %d" (length q))
-                "")))
-         '(:eval (or hermes--ui-line ""))))
+         (pcase (and hermes--state (hermes-state-connection hermes--state))
+           ('connected    " · ●")
+           ('connecting   " · ◐")
+           ('disconnected " · ○")
+           (_             ""))
+         (let* ((info  (and hermes--state (hermes-state-session-info hermes--state)))
+                (model (and (hash-table-p info) (gethash "model" info))))
+           (if model (format " · %s" model) ""))
+         (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
+                (sent  (and usage (gethash "tokens_sent" usage)))
+                (recv  (and usage (gethash "tokens_received" usage))))
+           (if (or sent recv)
+               (format " · %s→%s" (or sent "?") (or recv "?"))
+             ""))
+         (let ((q (and hermes--state (hermes-state-queue hermes--state))))
+           (if (and q (> (length q) 0))
+               (format " · queue: %d" (length q))
+             ""))
+         (or hermes--ui-line "")))
   (force-mode-line-update))
 
 (provide 'hermes-render)

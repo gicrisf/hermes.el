@@ -148,7 +148,7 @@ user input) is the input frame.")
     ;; valid marker to delete up to.
     (setq hermes-bench--input-boundary (copy-marker (point-min) nil))
     (hermes-bench--paint-ephemeral))
-  (hermes-bench-set-header)
+  (setq-local header-line-format nil)
   (goto-char (point-max)))
 
 (defun hermes-bench-ensure (parent)
@@ -419,8 +419,7 @@ also installed on event hooks that update session metadata."
     (when (buffer-live-p bench)
       (with-current-buffer bench
         (when (hermes-bench--should-show-splash-p)
-          (hermes-bench--paint-ephemeral)
-          (hermes-bench-set-header))))))
+          (hermes-bench--paint-ephemeral))))))
 
 ;;;; Stream lifecycle (called from hermes--render)
 
@@ -432,8 +431,7 @@ also installed on event hooks that update session metadata."
                       (hermes-bench--latest-user-text
                        hermes-bench--parent-buffer)
                       "")))
-        (hermes-bench--paint-ephemeral user "" ""))
-      (hermes-bench-set-header))))
+        (hermes-bench--paint-ephemeral user "" "")))))
 
 (defun hermes-bench--stream-update (bench _old new)
   "Repaint reasoning and answer zones from NEW stream."
@@ -457,9 +455,7 @@ The bench is NOT cleared; the answer remains until the next
                  (msg (hermes--message-from-stream old-stream usage)))
             (with-silent-modifications
               (save-excursion
-                (hermes--insert-committed-turn msg))))))
-      (with-current-buffer bench
-        (hermes-bench-set-header)))))
+                (hermes--insert-committed-turn msg)))))))))
 
 ;;;; Send / interrupt / compose
 
@@ -496,46 +492,6 @@ then dispatches the text to the parent."
   (when (buffer-live-p hermes-bench--parent-buffer)
     (with-current-buffer hermes-bench--parent-buffer
       (call-interactively #'hermes-compose))))
-
-;;;; Header line
-
-(defun hermes-bench-set-header ()
-  "Set the bench `header-line-format' from the parent state."
-  (let ((parent hermes-bench--parent-buffer))
-    (setq header-line-format
-          (list
-           " Hermes"
-           `(:eval
-             (let ((s (and (buffer-live-p ,parent)
-                           (buffer-local-value 'hermes--state ,parent))))
-               (pcase (and s (hermes-state-connection s))
-                 ('connected    " · ●")
-                 ('connecting   " · ◐")
-                 ('disconnected " · ○")
-                 (_ ""))))
-           `(:eval
-             (let* ((s (and (buffer-live-p ,parent)
-                            (buffer-local-value 'hermes--state ,parent)))
-                    (info (and s (hermes-state-session-info s)))
-                    (model (and (hash-table-p info) (gethash "model" info))))
-               (if model (format " · %s" model) "")))
-           `(:eval
-             (let* ((s (and (buffer-live-p ,parent)
-                            (buffer-local-value 'hermes--state ,parent)))
-                    (u (and s (hermes-state-usage s)))
-                    (sent (and u (gethash "tokens_sent" u)))
-                    (recv (and u (gethash "tokens_received" u))))
-               (if (or sent recv)
-                   (format " · %s->%s" (or sent "?") (or recv "?"))
-                 "")))
-           `(:eval
-             (let* ((s (and (buffer-live-p ,parent)
-                            (buffer-local-value 'hermes--state ,parent)))
-                    (q (and s (hermes-state-queue s))))
-               (if (and q (> (length q) 0))
-                   (format " · queue: %d" (length q))
-                 "")))))
-    (force-mode-line-update)))
 
 (provide 'hermes-bench)
 ;;; hermes-bench.el ends here

@@ -40,6 +40,31 @@
   "Separator line between ephemeral zones and the input area."
   :type 'string :group 'hermes)
 
+(defvar hermes--last-gateway-ready)
+(declare-function hermes-state-stream "hermes-state" (state))
+(declare-function hermes-state-session-id "hermes-state" (state))
+(declare-function hermes-state-session-info "hermes-state" (state))
+
+(defconst hermes-bench--builtin-logo
+  "\
+██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
+███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
+██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
+██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
+  "Fallback NOUS HERMES splash banner.")
+
+(defface hermes-bench-logo-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for the bench splash banner."
+  :group 'hermes)
+
+(defface hermes-bench-splash-status-face
+  '((t :inherit shadow))
+  "Face for the bench splash status line."
+  :group 'hermes)
+
 (defface hermes-bench-prompt-face
   '((t :inherit minibuffer-prompt))
   "Face for the bench input prompt."
@@ -133,7 +158,11 @@ user input) is the input frame.")
          (buf (or (and (buffer-live-p existing) existing)
                   (get-buffer-create name))))
     (with-current-buffer parent
-      (setq hermes-bench--buffer buf))
+      (setq hermes-bench--buffer buf)
+      (add-hook 'hermes-ui-state-change-hook
+                #'hermes-bench--refresh-ui nil t)
+      (add-hook 'hermes-state-change-hook
+                #'hermes-bench--refresh-ui nil t))
     (with-current-buffer buf
       (unless (and (derived-mode-p 'hermes-bench-mode)
                    (eq hermes-bench--parent-buffer parent))
@@ -188,6 +217,69 @@ Returns nil when the input frame hasn't been built yet."
     (when (and start (< start (point-max)))
       (delete-region start (point-max)))))
 
+;;;; Splash
+
+(defun hermes-bench--short-sid (sid)
+  (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 8) (or sid "?")))
+
+(defun hermes-bench--strip-rich (string)
+  "Drop Rich `[style]…[/]' tags from STRING."
+  (replace-regexp-in-string "\\[/?[^]]*\\]" "" string))
+
+(defun hermes-bench--splash-logo ()
+  "Return the splash banner: gateway-provided when available, else builtin."
+  (let* ((skin (and (boundp 'hermes--last-gateway-ready)
+                    hermes--last-gateway-ready))
+         (h (and (hash-table-p skin) (gethash "skin" skin)))
+         (src (or h skin))
+         (banner (and (hash-table-p src)
+                      (or (gethash "banner_hero" src)
+                          (gethash "banner_logo" src)))))
+    (hermes-bench--strip-rich
+     (if (and (stringp banner) (not (string-empty-p banner)))
+         banner
+       hermes-bench--builtin-logo))))
+
+(defun hermes-bench--splash-status ()
+  "Return a one-line status string for the splash."
+  (let* ((parent hermes-bench--parent-buffer)
+         (state (and (buffer-live-p parent)
+                     (buffer-local-value 'hermes--state parent)))
+         (conn  (and state (hermes-state-connection state)))
+         (sid   (and state (hermes-state-session-id state)))
+         (info  (and state (hermes-state-session-info state)))
+         (model (and (hash-table-p info) (gethash "model" info)))
+         (dot   (pcase conn
+                  ('connected "●")
+                  ('connecting "◐")
+                  (_ "○")))
+         (label (cond ((eq conn 'connecting) "gateway starting…")
+                      ((null sid) "ready · no session yet")
+                      (t (format "session %s ready"
+                                 (hermes-bench--short-sid sid))))))
+    (concat dot "  " label
+            (if model (concat "  ·  " model) ""))))
+
+(defun hermes-bench--insert-splash ()
+  "Insert the splash banner + status at point."
+  (let ((logo (hermes-bench--splash-logo))
+        (start (point)))
+    (insert logo)
+    (add-face-text-property start (point) 'hermes-bench-logo-face)
+    (insert "\n\n")
+    (insert (propertize (concat "  " (hermes-bench--splash-status))
+                        'face 'hermes-bench-splash-status-face))
+    (insert "\n\n")))
+
+(defun hermes-bench--should-show-splash-p ()
+  "Return non-nil when the bench has no conversation content to display."
+  (let* ((parent hermes-bench--parent-buffer)
+         (state (and (buffer-live-p parent)
+                     (buffer-local-value 'hermes--state parent))))
+    (and (or (null hermes-bench--current-user-prompt)
+             (string-empty-p hermes-bench--current-user-prompt))
+         (not (and state (hermes-state-stream state))))))
+
 ;;;; The single renderer
 
 (defun hermes-bench--paint-ephemeral (&optional user-text reasoning answer)
@@ -209,22 +301,25 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
               nil))))
     ;; 1. Wipe everything from point-min through the old input frame.
     (delete-region (point-min) (point-max))
-    ;; 2. Ephemeral content.
     (goto-char (point-min))
-    (unless (string-empty-p effective-user)
-      (insert (propertize (concat "** " effective-user "\n\n")
-                          'face 'hermes-bench-user-face)))
-    ;; Reasoning zone — header always present.
-    (insert (propertize "*** Reasoning\n"
-                        'face 'hermes-bench-reasoning-heading-face))
-    (when (and reasoning (not (string-empty-p reasoning)))
-      (insert (propertize reasoning 'face 'hermes-bench-reasoning-face))
-      (unless (string-suffix-p "\n" reasoning) (insert "\n")))
-    (insert "\n")
-    ;; Answer zone.
-    (when (and answer (not (string-empty-p answer)))
-      (insert answer)
-      (unless (string-suffix-p "\n" answer) (insert "\n")))
+    ;; 2. Splash, or normal ephemeral zones.
+    (if (and (string-empty-p effective-user)
+             (hermes-bench--should-show-splash-p))
+        (hermes-bench--insert-splash)
+      (unless (string-empty-p effective-user)
+        (insert (propertize (concat "** " effective-user "\n\n")
+                            'face 'hermes-bench-user-face)))
+      ;; Reasoning zone — header always present.
+      (insert (propertize "*** Reasoning\n"
+                          'face 'hermes-bench-reasoning-heading-face))
+      (when (and reasoning (not (string-empty-p reasoning)))
+        (insert (propertize reasoning 'face 'hermes-bench-reasoning-face))
+        (unless (string-suffix-p "\n" reasoning) (insert "\n")))
+      (insert "\n")
+      ;; Answer zone.
+      (when (and answer (not (string-empty-p answer)))
+        (insert answer)
+        (unless (string-suffix-p "\n" answer) (insert "\n"))))
     ;; 3. Separator + prompt — input frame.
     (setq hermes-bench--input-boundary (copy-marker (point) nil))
     (insert (propertize (concat hermes-bench-separator "\n")
@@ -313,6 +408,19 @@ Looks at pending-turns first, then walks the parent's history ring."
           (and state
                (let ((hist (hermes-state-history state)))
                  (and (consp hist) (car hist))))))))
+
+;;;; Splash refresh on UI/session changes
+
+(defun hermes-bench--refresh-ui (&optional _old _new)
+  "Repaint the bench splash if it's currently showing.
+Hooked into `hermes-ui-state-change-hook' (runs in the parent buffer);
+also installed on event hooks that update session metadata."
+  (let ((bench (hermes-bench-active-p)))
+    (when (buffer-live-p bench)
+      (with-current-buffer bench
+        (when (hermes-bench--should-show-splash-p)
+          (hermes-bench--paint-ephemeral)
+          (hermes-bench-set-header))))))
 
 ;;;; Stream lifecycle (called from hermes--render)
 

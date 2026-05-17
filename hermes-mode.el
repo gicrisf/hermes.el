@@ -292,14 +292,31 @@ background; for the user-facing entry that also pops the buffer, see
     (hermes-rpc-start))
   (hermes--do-session-create callback))
 
+(defun hermes--live-session-buffers ()
+  "Return live session buffers, most-recently-touched first."
+  (let (acc)
+    (maphash (lambda (_sid b) (when (buffer-live-p b) (push b acc)))
+             hermes--session-buffers)
+    (sort acc (lambda (a b) (> (buffer-modified-tick a)
+                               (buffer-modified-tick b))))))
+
+(defun hermes--primary-session-buffer ()
+  "Return the most-recently-active live session buffer, or nil."
+  (car (hermes--live-session-buffers)))
+
 ;;;###autoload
 (defun hermes ()
-  "Start the gateway (if needed), create a session, and pop its chat buffer.
-This is the lean entry point — it does not open a dashboard.  For a landing
-screen, use `M-x hermes-dashboard' or `M-x doom-dashboard-hermes' instead."
+  "Go to the primary Hermes session, creating one if none exists.
+Pops the most-recently-touched live session buffer when there is one;
+otherwise starts the gateway (if needed) and creates a fresh session,
+popping its buffer once `session.create' resolves.  Never sends a
+prompt — the user's first input goes through the bench."
   (interactive)
-  (hermes-new-session
-   (lambda (buf) (when (buffer-live-p buf) (pop-to-buffer buf)))))
+  (let ((buf (hermes--primary-session-buffer)))
+    (cond
+     (buf (pop-to-buffer buf))
+     (t (hermes-new-session
+         (lambda (b) (when (buffer-live-p b) (pop-to-buffer b))))))))
 
 (defalias 'hermes-send #'hermes-input-send
   "Queue-aware submission entry; see `hermes-input-send'.")

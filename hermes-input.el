@@ -30,6 +30,7 @@
 
 (declare-function hermes-reconnect "hermes-mode" ())
 (declare-function hermes--parse-buffer-messages "hermes-mode" ())
+(declare-function hermes--buffer-message-count "hermes-mode" ())
 (declare-function hermes--message-text-for-display "hermes-render" (msg))
 
 (defvar-local hermes-input--history nil
@@ -47,22 +48,20 @@ after a reconnect or after opening a saved conversation file."
                  (const :tag "No limit" nil))
   :group 'hermes)
 
-(defvar-local hermes--pending-history-seed nil
-  "Non-nil when the next outgoing `prompt.submit' should be prefixed
-with a text block reconstructed from the buffer's `:HERMES_RAW:'
-drawers.  Set by `hermes--route-connection' on `'connected' when the
-buffer already has committed turns; cleared after the first
-`prompt.submit' consumes it.
+(defvar-local hermes--seeded-session-id nil
+  "Session id that was last seeded with history from this buffer.
+Compared against `(hermes-state-session-id hermes--state)' before
+every outgoing `prompt.submit'.  When the current session id differs
+from this value (or this value is nil) and the buffer has committed
+turns, a history text block is prepended to the wire payload and this
+variable is updated to the current session id.
 
-Only the idle send path (`hermes-input--send-1') and not the queue
-drain (`hermes-input--drain', `hermes-input--drain-after-reconnect')
-consumes the flag.  This is safe because the `'connected' arming
-transition can only fire when no stream is active — i.e. the idle
-path is the one taken — so the drain paths cannot observe an armed
-flag in practice.
-
-Slash commands take a different RPC path (`slash.exec') and do not
-consume the flag.")
+State-driven rather than event-driven: any prompt sent against a new
+gateway session — fresh start, reconnect, post-reconnect drain, or
+opening a saved file while the gateway is already up — is seeded
+exactly once, no matter which call path reached `prompt.submit'.
+Slash commands take a different RPC path (`slash.exec') and never
+participate in the comparison.")
 
 (defun hermes--build-history-text ()
   "Return a text block reconstructed from buffer history, or nil.
@@ -99,14 +98,29 @@ text is empty."
            "\n\n---\n\nCurrent: "))))))
 
 (defun hermes-input--seed-prefix (text)
-  "If the seed flag is set, return TEXT prefixed with history; else TEXT.
-One-shot — the flag is cleared whether or not a history block was
-produced, so an empty buffer can't leave the flag stuck."
-  (if hermes--pending-history-seed
+  "Return TEXT prefixed with a history block if this gateway session
+hasn't been seeded from this buffer yet; otherwise return TEXT.
+Idempotent: stamps `hermes--seeded-session-id' with the current
+session id on every call, so subsequent prompts on the same session
+skip the seed.  Logs a user-visible message when seeding fires so
+the user knows extra tokens are being consumed."
+  (let ((sid (hermes-state-session-id hermes--state)))
+    (cond
+     ;; No session yet — nothing to stamp against.  Leave TEXT alone;
+     ;; the next call (once a session id lands) will seed.
+     ((null sid) text)
+     ;; This session has already been seeded (or born without history
+     ;; needing a seed).  Pass through.
+     ((equal sid hermes--seeded-session-id) text)
+     ;; New session and the buffer has turns — seed and stamp.
+     ((> (hermes--buffer-message-count) 0)
       (let ((history-text (hermes--build-history-text)))
-        (setq hermes--pending-history-seed nil)
-        (if history-text (concat history-text text) text))
-    text))
+        (setq hermes--seeded-session-id sid)
+        (message "Hermes: seeding history for session %s" sid)
+        (if history-text (concat history-text text) text)))
+     ;; New session but no buffer history — stamp so we don't recheck
+     ;; the buffer on every send for the lifetime of this session.
+     (t (setq hermes--seeded-session-id sid) text))))
 
 ;;;; Post-reconnect drain
 
@@ -116,11 +130,12 @@ Subsequent items keep draining via the normal `message.complete' hook."
   (let ((q (hermes-state-queue hermes--state))
         (sid (hermes-state-session-id hermes--state)))
     (when (and q sid)
-      (let ((head (car q)))
+      (let* ((head (car q))
+             (wire (hermes-input--seed-prefix head)))
         (hermes-dispatch '(:dequeue))
         (hermes-rpc-request
          "prompt.submit"
-         (list :session_id sid :text head)
+         (list :session_id sid :text wire)
          (lambda (_r e)
            (when e (message "hermes: post-reconnect submit error: %S" e))))))))
 
@@ -141,11 +156,12 @@ deferred user-submit."
       (hermes-dispatch '(:dequeue))
       (hermes-dispatch (cons :user-submit (list :text head)))
       (when sid
-        (hermes-rpc-request
-         "prompt.submit"
-         (list :session_id sid :text head)
-         (lambda (_r e)
-           (when e (message "hermes: queued prompt.submit error: %S" e))))))))
+        (let ((wire (hermes-input--seed-prefix head)))
+          (hermes-rpc-request
+           "prompt.submit"
+           (list :session_id sid :text wire)
+           (lambda (_r e)
+             (when e (message "hermes: queued prompt.submit error: %S" e)))))))))
 
 ;;;; Catalog fetch
 

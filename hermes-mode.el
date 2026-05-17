@@ -75,12 +75,6 @@ without this cache, the very first buffer would never see the skin.")
   (maphash (lambda (_sid b)
              (when (buffer-live-p b)
                (with-current-buffer b
-                 ;; Arm the history seed on every fresh connection if the
-                 ;; buffer already has committed turns.  The flag is a
-                 ;; one-shot consumed by the first `prompt.submit'.
-                 (when (and (eq state 'connected)
-                            (> (hermes--buffer-message-count) 0))
-                   (setq hermes--pending-history-seed t))
                  (hermes-dispatch
                   (list (pcase state
                           ('connecting   :connecting)

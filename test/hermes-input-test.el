@@ -161,15 +161,17 @@ is rendered, removed from the queue, and submitted via RPC."
              (lambda () [])))
     (should-not (hermes--build-history-text))))
 
-(ert-deftest hermes-input-test/seed-prepended-and-flag-cleared-on-send ()
-  "Idle `prompt.submit' picks up the seed, prefixes the wire text, and
-clears the one-shot flag."
+(ert-deftest hermes-input-test/seed-prepended-and-sid-stamped-on-send ()
+  "An idle `prompt.submit' against an un-seeded session prefixes the
+wire text with history and stamps `hermes--seeded-session-id'."
   (cl-letf (((symbol-function 'hermes--parse-buffer-messages)
-             (lambda () (vector (hermes-input-test--mk-user "hi")))))
+             (lambda () (vector (hermes-input-test--mk-user "hi"))))
+            ((symbol-function 'hermes--buffer-message-count)
+             (lambda () 1)))
     (hermes-input-test--with-buffer
-      (setq hermes--pending-history-seed t)
+      (setq hermes--seeded-session-id nil)
       (hermes-input-send "hello")
-      (should-not hermes--pending-history-seed)
+      (should (equal "sess-1" hermes--seeded-session-id))
       (let* ((call (car hermes-input-test--rpc-calls))
              (wire (plist-get (cdr call) :text)))
         (should (equal "prompt.submit" (car call)))
@@ -177,25 +179,65 @@ clears the one-shot flag."
         (should (string-match-p "User: hi" wire))
         (should (string-match-p "Current: hello\\'" wire))))))
 
-(ert-deftest hermes-input-test/slash-command-does-not-consume-seed ()
-  "Slash commands take the `slash.exec' path and must leave the flag
-armed so the next real prompt still gets seeded."
+(ert-deftest hermes-input-test/seed-skipped-after-sid-already-stamped ()
+  "When `hermes--seeded-session-id' already matches the current session,
+the wire text is verbatim — no second seeding."
+  (cl-letf (((symbol-function 'hermes--parse-buffer-messages)
+             (lambda () (vector (hermes-input-test--mk-user "hi"))))
+            ((symbol-function 'hermes--buffer-message-count)
+             (lambda () 1)))
+    (hermes-input-test--with-buffer
+      (setq hermes--seeded-session-id "sess-1")
+      (hermes-input-send "hello")
+      (let* ((call (car hermes-input-test--rpc-calls))
+             (wire (plist-get (cdr call) :text)))
+        (should (equal "prompt.submit" (car call)))
+        (should (equal "hello" wire))))))
+
+(ert-deftest hermes-input-test/slash-command-leaves-sid-unstamped ()
+  "Slash commands take the `slash.exec' path and never touch
+`hermes--seeded-session-id', so the next real prompt still seeds."
   (hermes-input-test--with-buffer
-    (setq hermes--pending-history-seed t)
+    (setq hermes--seeded-session-id nil)
     (hermes-input-send "/clear")
-    (should hermes--pending-history-seed)
+    (should (null hermes--seeded-session-id))
     (let ((call (car hermes-input-test--rpc-calls)))
       (should (equal "slash.exec" (car call))))))
 
-(ert-deftest hermes-input-test/no-seed-no-prefix ()
-  "When the flag is nil, `prompt.submit' carries the user's text verbatim."
-  (hermes-input-test--with-buffer
-    (setq hermes--pending-history-seed nil)
-    (hermes-input-send "hello")
-    (let* ((call (car hermes-input-test--rpc-calls))
-           (wire (plist-get (cdr call) :text)))
-      (should (equal "prompt.submit" (car call)))
-      (should (equal "hello" wire)))))
+(ert-deftest hermes-input-test/empty-buffer-stamps-sid-without-prefix ()
+  "Un-seeded session against a buffer with no committed turns: no
+prefix is added, but the sid is stamped so we don't re-check on
+every send for the lifetime of the session."
+  (cl-letf (((symbol-function 'hermes--buffer-message-count)
+             (lambda () 0)))
+    (hermes-input-test--with-buffer
+      (setq hermes--seeded-session-id nil)
+      (hermes-input-send "hello")
+      (should (equal "sess-1" hermes--seeded-session-id))
+      (let* ((call (car hermes-input-test--rpc-calls))
+             (wire (plist-get (cdr call) :text)))
+        (should (equal "prompt.submit" (car call)))
+        (should (equal "hello" wire))))))
+
+(ert-deftest hermes-input-test/drain-after-reconnect-seeds-once ()
+  "Post-reconnect drain submits the queued head with the seed prefix
+when the new session hasn't been stamped yet, and stamps it."
+  (cl-letf (((symbol-function 'hermes--parse-buffer-messages)
+             (lambda () (vector (hermes-input-test--mk-user "hi"))))
+            ((symbol-function 'hermes--buffer-message-count)
+             (lambda () 1)))
+    (hermes-input-test--with-buffer
+      (setq hermes--seeded-session-id nil
+            hermes--state
+            (hermes--with-copy hermes--state hermes-state-copy s
+              (setf (hermes-state-queue s) '("queued-1"))))
+      (hermes-input--drain-after-reconnect)
+      (should (equal "sess-1" hermes--seeded-session-id))
+      (let* ((call (car hermes-input-test--rpc-calls))
+             (wire (plist-get (cdr call) :text)))
+        (should (equal "prompt.submit" (car call)))
+        (should (string-match-p "User: hi" wire))
+        (should (string-match-p "Current: queued-1\\'" wire))))))
 
 (provide 'hermes-input-test)
 ;;; hermes-input-test.el ends here

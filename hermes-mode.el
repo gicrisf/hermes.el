@@ -237,11 +237,7 @@ the session container heading."
   (save-excursion
     (goto-char (point-min))
     (insert (concat (make-string hermes--container-level ?*)
-                    " Hermes session :hermes:\n")))
-  (add-hook 'kill-buffer-hook
-            (lambda () (hermes-bench-hide (current-buffer))) nil t)
-  (unless noninteractive
-    (hermes-bench-ensure (current-buffer))))
+                    " Hermes session :hermes:\n"))))
 
 (defun hermes-send-or-focus-bench ()
   "If the bench is active, focus its input; otherwise call `hermes-send'."
@@ -361,9 +357,14 @@ background; for the user-facing entry that also pops the buffer, see
    (t
     (let ((buf (hermes--primary-session-buffer)))
       (if buf
-          (pop-to-buffer buf)
+          (progn
+            (pop-to-buffer buf)
+            (hermes-bench-ensure buf))
         (hermes-new-session
-         (lambda (b) (when (buffer-live-p b) (pop-to-buffer b)))))))))
+         (lambda (b)
+           (when (buffer-live-p b)
+             (pop-to-buffer b)
+             (hermes-bench-ensure b)))))))))
 
 (defalias 'hermes-send #'hermes-input-send
   "Queue-aware submission entry; see `hermes-input-send'.")
@@ -478,11 +479,6 @@ so turn insertion follows the relative depth."
                    (hermes--register-session sid state marker)
                    (setq hermes--state state))
                  (puthash sid buf hermes--session-buffers)
-                 (add-hook 'kill-buffer-hook
-                           (lambda () (hermes-bench-hide (current-buffer)))
-                           nil t)
-                 (unless noninteractive
-                   (hermes-bench-ensure buf))
                  (when hermes--last-gateway-ready
                    (hermes-dispatch
                     (cons "gateway.ready" hermes--last-gateway-ready)

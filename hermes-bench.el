@@ -151,6 +151,10 @@ user input) is the input frame.")
   (setq-local header-line-format nil)
   (goto-char (point-max)))
 
+(defun hermes-bench--kill-parent-hook ()
+  "Kill the bench when its parent buffer is killed."
+  (hermes-bench-hide (current-buffer)))
+
 (defun hermes-bench-ensure (parent)
   "Ensure a bench buffer exists and is displayed for PARENT."
   (let* ((name (hermes-bench--buffer-name parent))
@@ -159,10 +163,7 @@ user input) is the input frame.")
                   (get-buffer-create name))))
     (with-current-buffer parent
       (setq hermes-bench--buffer buf)
-      (add-hook 'hermes-ui-state-change-hook
-                #'hermes-bench--refresh-ui nil t)
-      (add-hook 'hermes-state-change-hook
-                #'hermes-bench--refresh-ui nil t))
+      (add-hook 'kill-buffer-hook #'hermes-bench--kill-parent-hook nil t))
     (with-current-buffer buf
       (unless (and (derived-mode-p 'hermes-bench-mode)
                    (eq hermes-bench--parent-buffer parent))
@@ -240,36 +241,14 @@ Returns nil when the input frame hasn't been built yet."
          banner
        hermes-bench--builtin-logo))))
 
-(defun hermes-bench--splash-status ()
-  "Return a one-line status string for the splash."
-  (let* ((parent hermes-bench--parent-buffer)
-         (state (and (buffer-live-p parent)
-                     (buffer-local-value 'hermes--state parent)))
-         (conn  (and state (hermes-state-connection state)))
-         (sid   (and state (hermes-state-session-id state)))
-         (info  (and state (hermes-state-session-info state)))
-         (model (and (hash-table-p info) (gethash "model" info)))
-         (dot   (pcase conn
-                  ('connected "●")
-                  ('connecting "◐")
-                  (_ "○")))
-         (label (cond ((eq conn 'connecting) "gateway starting…")
-                      ((null sid) "ready · no session yet")
-                      (t (format "session %s ready"
-                                 (hermes-bench--short-sid sid))))))
-    (concat dot "  " label
-            (if model (concat "  ·  " model) ""))))
-
 (defun hermes-bench--insert-splash ()
-  "Insert the splash banner + status at point."
-  (let ((logo (hermes-bench--splash-logo))
-        (start (point)))
-    (insert logo)
-    (add-face-text-property start (point) 'hermes-bench-logo-face)
+  "Insert the splash banner at point."
+  (let ((logo (hermes-bench--splash-logo)))
     (insert "\n\n")
-    (insert (propertize (concat "  " (hermes-bench--splash-status))
-                        'face 'hermes-bench-splash-status-face))
-    (insert "\n\n")))
+    (let ((start (point)))
+      (insert logo)
+      (add-face-text-property start (point) 'hermes-bench-logo-face)
+      (insert "\n\n"))))
 
 (defun hermes-bench--should-show-splash-p ()
   "Return non-nil when the bench has no conversation content to display."
@@ -408,18 +387,6 @@ Looks at pending-turns first, then walks the parent's history ring."
           (and state
                (let ((hist (hermes-state-history state)))
                  (and (consp hist) (car hist))))))))
-
-;;;; Splash refresh on UI/session changes
-
-(defun hermes-bench--refresh-ui (&optional _old _new)
-  "Repaint the bench splash if it's currently showing.
-Hooked into `hermes-ui-state-change-hook' (runs in the parent buffer);
-also installed on event hooks that update session metadata."
-  (let ((bench (hermes-bench-active-p)))
-    (when (buffer-live-p bench)
-      (with-current-buffer bench
-        (when (hermes-bench--should-show-splash-p)
-          (hermes-bench--paint-ephemeral))))))
 
 ;;;; Stream lifecycle (called from hermes--render)
 

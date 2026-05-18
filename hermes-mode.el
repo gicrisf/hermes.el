@@ -28,6 +28,7 @@
 (require 'hermes-compose)
 (require 'hermes-org)
 (require 'hermes-bench)
+(require 'hermes-config)
 
 ;;;; Routing: filter event → buffer
 
@@ -139,6 +140,8 @@ without this cache, the very first buffer would never see the skin.")
     (define-key m (kbd "C-c C-l") #'hermes-compose)
     (define-key m (kbd "C-c C-k") #'hermes-interrupt)
     (define-key m (kbd "C-c C-v") #'hermes-view-log)
+    (define-key m (kbd "C-c C-m") #'hermes-set-model)
+    (define-key m (kbd "C-c C-f") #'hermes-toggle-fast)
     m)
   "Keymap for `hermes-mode'.")
 

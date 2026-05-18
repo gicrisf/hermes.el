@@ -18,6 +18,7 @@ hermes-bench.el      Persistent bottom bench for hermes-mode (user prompt, reaso
 hermes-sessions.el   tabulated-list-mode sidebar of live sessions
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
+hermes-config.el     Wrappers for config.get/set, toolsets.list, tools.configure (model/fast/reasoning/yolo/personality/skin/toolsets commands)
 ```
 
 **Key design principle:** The Org buffer is the canonical source of truth for
@@ -118,6 +119,12 @@ Restart or `M-x load-file` the file.
 | hermes-mode | `C-c C-i` | Focus bench input (or send via minibuffer if no bench) |
 | hermes-mode | `C-c C-k` | Interrupt current turn |
 | hermes-mode | `C-c C-l` | Multi-line compose |
+| hermes-mode | `C-c C-m` | Set model (prefix arg: refresh provider list) |
+| hermes-mode | `C-c C-f` | Toggle fast mode |
+| anywhere | `M-x hermes-toggle-reasoning` | Cycle reasoning (prefix arg: pick) |
+| anywhere | `M-x hermes-toggle-yolo` | Toggle YOLO mode |
+| anywhere | `M-x hermes-set-personality` / `hermes-set-skin` | Set personality / skin |
+| anywhere | `M-x hermes-toolsets-toggle` | Enable/disable toolsets |
 | Bench | `RET` / `C-c C-c` | Send prompt |
 | Bench | `C-c C-k` | Interrupt parent session |
 | Bench | `C-c C-l` | Multi-line compose |
@@ -134,6 +141,11 @@ Restart or `M-x load-file` the file.
 | `SPC h c` | Multi-line composer |
 | `SPC h l` | Session list sidebar |
 | `SPC h k` | Interrupt primary session |
+| `SPC h m` | Set model |
+| `SPC h f` | Toggle fast mode |
+| `SPC h r` | Cycle reasoning |
+| `SPC h y` | Toggle YOLO |
+| `SPC h t` | Toggle toolsets |
 | hermes-mode `C-c C-i` | Focus bench input |
 | hermes-mode `C-c C-k` | Interrupt |
 | hermes-mode `C-c C-l` | Multi-line compose |

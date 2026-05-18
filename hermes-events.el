@@ -89,7 +89,12 @@
     ;; Slash and commands
     "slash.exec"             ; {session_id, command}         (long handler, async)
     "command.dispatch"       ; {session_id?, name, arg}
-    "commands.catalog")      ; {} → {pairs, sub, canon, categories, skill_count, warning}
+    "commands.catalog"       ; {} → {pairs, sub, canon, categories, skill_count, warning}
+    ;; Config + tools
+    "config.get"             ; {key, session_id?}            → key-dependent payload
+    "config.set"             ; {key, value, session_id?}     → {key, value, ...}
+    "toolsets.list"          ; {session_id?}                 → {toolsets:[{name, enabled, ...}]}
+    "tools.configure")       ; {session_id?, action, names}  → {changed, enabled_toolsets, ...}
   "All JSON-RPC methods the Emacs client may invoke.")
 
 ;;;; Methods that the gateway dispatches to a worker pool.

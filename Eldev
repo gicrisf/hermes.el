@@ -15,6 +15,7 @@
         "hermes-compose.el"
         "hermes-dashboard.el"
         "hermes-org.el"
+        "hermes-config.el"
         "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"

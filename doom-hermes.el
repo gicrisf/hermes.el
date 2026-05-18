@@ -26,7 +26,12 @@
   (define-key hermes-leader-map (kbd "c") #'hermes-compose)
   (define-key hermes-leader-map (kbd "l") #'hermes-sessions)
   (define-key hermes-leader-map (kbd "g") #'hermes)
-  (define-key hermes-leader-map (kbd "k") #'hermes-interrupt-everywhere))
+  (define-key hermes-leader-map (kbd "k") #'hermes-interrupt-everywhere)
+  (define-key hermes-leader-map (kbd "m") #'hermes-set-model)
+  (define-key hermes-leader-map (kbd "f") #'hermes-toggle-fast)
+  (define-key hermes-leader-map (kbd "r") #'hermes-toggle-reasoning)
+  (define-key hermes-leader-map (kbd "y") #'hermes-toggle-yolo)
+  (define-key hermes-leader-map (kbd "t") #'hermes-toolsets-toggle))
 
 ;; ── Global helpers ────────────────────────────────────────────────────────
 

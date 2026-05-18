@@ -319,5 +319,121 @@ with `completing-read-multiple', then prompts for an action and issues
                                            (append (gethash "changed" r2) nil)
                                            ", ")))))))))))))))
 
+;;;; Skills
+
+(defun hermes-skills-reload ()
+  "Rescan the skills directory and report added/removed skills."
+  (interactive)
+  (hermes-rpc-request
+   "skills.reload" '()
+   (lambda (r e)
+     (cond
+      (e (message "hermes: skills.reload error: %S" e))
+      (r (let ((output (and (hash-table-p r) (gethash "output" r))))
+           (message "%s" (or output "hermes: skills reloaded"))))))))
+
+(defun hermes--skills-list-buffer (skills-map)
+  "Render SKILLS-MAP (category → vector of names) into `*Hermes Skills*'."
+  (let ((buf (get-buffer-create "*Hermes Skills*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (outline-mode)
+        (if (not (hash-table-p skills-map))
+            (insert "No skills returned.\n")
+          (let (categories)
+            (maphash (lambda (k _v) (push k categories)) skills-map)
+            (dolist (cat (sort categories #'string<))
+              (insert (format "* %s\n" cat))
+              (let* ((raw (gethash cat skills-map))
+                     (names (cond ((vectorp raw) (append raw nil))
+                                  ((listp raw)   raw)
+                                  (t nil))))
+                (dolist (name names)
+                  (insert (format "  - %s\n" name)))))))
+        (goto-char (point-min)))
+      (setq buffer-read-only t))
+    (display-buffer buf)))
+
+(defun hermes-skills-list ()
+  "List installed skills grouped by category in `*Hermes Skills*'."
+  (interactive)
+  (hermes-rpc-request
+   "skills.manage" (list :action "list")
+   (lambda (r e)
+     (cond
+      (e (message "hermes: skills.manage list error: %S" e))
+      (r (hermes--skills-list-buffer
+          (and (hash-table-p r) (gethash "skills" r))))))))
+
+(defun hermes--skills-search-candidates (result)
+  "Build a (display . name) alist from a `skills.manage search' RESULT."
+  (let* ((raw (and (hash-table-p result) (gethash "results" result)))
+         (items (cond ((vectorp raw) (append raw nil))
+                      ((listp raw)   raw)
+                      (t nil))))
+    (mapcar (lambda (it)
+              (let ((name (gethash "name" it))
+                    (desc (gethash "description" it)))
+                (cons (if (and desc (not (string-empty-p desc)))
+                          (format "%s — %s" name desc)
+                        name)
+                      name)))
+            items)))
+
+(defun hermes--skills-search (query callback)
+  "Run `skills.manage search' for QUERY, then invoke CALLBACK with the
+selected skill name (or nil if the user aborted or no results)."
+  (hermes-rpc-request
+   "skills.manage" (list :action "search" :query query)
+   (lambda (r e)
+     (cond
+      (e (message "hermes: skills.manage search error: %S" e))
+      (r (let ((candidates (hermes--skills-search-candidates r)))
+           (if (null candidates)
+               (progn (message "hermes: no skills matching %S" query)
+                      (funcall callback nil))
+             (let* ((choice (completing-read
+                             (format "Skill (matching %S): " query)
+                             (mapcar #'car candidates) nil t))
+                    (name (cdr (assoc choice candidates))))
+               (funcall callback name)))))))))
+
+(defun hermes-skills-search (query)
+  "Search the skills hub for QUERY and copy the chosen name to the kill ring."
+  (interactive (list (read-string "Search skills: ")))
+  (when (string-empty-p (string-trim query))
+    (user-error "Empty query"))
+  (hermes--skills-search
+   query
+   (lambda (name)
+     (when name
+       (kill-new name)
+       (message "hermes: %s (copied to kill ring)" name)))))
+
+(defun hermes-skills-install (&optional prompt-name)
+  "Install a skill from the hub.
+Without prefix arg, runs the search flow then installs the selected skill.
+With prefix arg PROMPT-NAME, prompts for a skill name verbatim."
+  (interactive "P")
+  (let ((install
+         (lambda (name)
+           (when (and name (not (string-empty-p name)))
+             (hermes-rpc-request
+              "skills.manage" (list :action "install" :name name)
+              (lambda (r e)
+                (cond
+                 (e (message "hermes: skills.manage install error: %S" e))
+                 (r (let ((installed-name (and (hash-table-p r)
+                                                (gethash "name" r))))
+                      (message "hermes: installed %s"
+                               (or installed-name name)))))))))))
+    (if prompt-name
+        (funcall install (read-string "Install skill (name): "))
+      (let ((query (read-string "Search and install skill: ")))
+        (when (string-empty-p (string-trim query))
+          (user-error "Empty query"))
+        (hermes--skills-search query install)))))
+
 (provide 'hermes-config)
 ;;; hermes-config.el ends here

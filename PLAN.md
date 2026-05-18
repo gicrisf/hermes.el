@@ -1,76 +1,86 @@
-# Plan: Follow point-max after bench (and non-bench) commits
+# Plan: Skills management commands
 
 ## Problem
 
-When a turn commits from the bench, `hermes--render` appends the finished assistant turn at `point-max` of the org buffer. Because all edits are wrapped in `with-silent-modifications` + `save-excursion`, windows showing the org buffer stay pinned to their old *numerical* position and end up somewhere in the middle of the newly inserted text. The user has to manually scroll down to see the committed content.
+The Hermes gateway exposes two skills-related RPC methods that the Emacs client does not currently call:
 
-A related gap: if the user starts the bench without ever touching the org buffer (e.g. a fresh session), the org buffer window is not at `point-max`, so the commit-follow logic won't capture it.
+- `skills.reload` — rescans the skills directory and reports added/removed skills.
+- `skills.manage` — list, search, install, inspect, or browse skills from the skills hub.
 
-## Proposed change
+These are listed in the gap matrix as low-value, but they are genuinely useful: installing skills mid-session is a common workflow, and reloading after adding local skills is faster than restarting the gateway.
 
-### Part A: Pre-align the parent org buffer on bench entry / send
+## Gateway API
 
-**Files:** `hermes-bench.el` — `hermes-bench--show` (creation/focus) and `hermes-bench-send`
+### `skills.reload`
+- Params: `{}` (no `session_id`)
+- Response: `{"output": "...", "result": {"added": [...], "removed": [...], "total": N}}`
+- Handler type: quick (synchronous)
 
-Before the user can send from the bench, ensure any live windows showing the **parent org buffer** (`hermes-bench--parent-buffer`) are scrolled to `point-max`.
+### `skills.manage`
+- Params: `{"action": "...", "query": "...", "page": N, "page_size": N}` (no `session_id`)
+- Actions:
+  - `list` → `{"skills": {"category": ["skill1", ...], ...}}`
+  - `search` → `{"results": [{"name": "...", "description": "..."}, ...]}`
+  - `install` → `{"installed": true, "name": "..."}`
+  - `inspect` → `{"info": {...}}`
+  - `browse` → paginated hub results
+- Handler type: long (asynchronous, processed in worker pool)
 
-- Use `get-buffer-window-list parent nil t` to find windows showing that specific org buffer.
-- For each live window, if `window-point` is not already at `point-max`, call `set-window-point` to `point-max`.
+## Proposed changes
 
-This guarantees that:
-- Fresh sessions start with the org buffer aligned to the bottom.
-- Users who scrolled up in the org buffer and then focused the bench are brought back to the tail before the next turn.
-- The pre-commit capture in Part B naturally includes the parent org buffer windows.
+### 1. Register methods in `hermes-events.el`
 
-Because the bench knows its exact parent via `hermes-bench--parent-buffer`, this scroll is scoped to **only** that org buffer — no side effects on unrelated buffers.
+Add `"skills.reload"` and `"skills.manage"` to `hermes-rpc-methods`.
 
-### Part B: capture tail-following windows before the paint block
+### 2. Add interactive commands in `hermes-config.el`
 
-**File:** `hermes-render.el` — function `hermes--render`
+All commands are global (no `session_id`), so they do not use `hermes--config-resolve-target`.
 
-Before entering `with-silent-modifications`, compute:
+#### `hermes-skills-reload`
+- Calls `skills.reload`.
+- Echoes the `output` string (from the response) to the minibuffer message area.
 
-- `old-point-max` — the current `point-max` of the buffer.
-- `tail-windows` — a list of live windows showing the current buffer whose `window-point` equals `old-point-max`.
+#### `hermes-skills-list`
+- Calls `skills.manage` with `action: "list"`.
+- Displays the category→skills map in a temporary `*Hermes Skills*` buffer in `tabulated-list-mode` or plain `outline-mode`.
 
-Use `get-buffer-window-list (current-buffer) nil t` and filter with `window-point`.
+#### `hermes-skills-search`
+- Prompts the user for a query string.
+- Calls `skills.manage` with `action: "search"` and `query`.
+- Presents the `results` array via `completing-read`.
+- Candidates are formatted as `"name — description"`.
+- On selection, copies the skill name to the kill ring and shows it in the message area (so the user can then run `hermes-skills-install`).
 
-### Part C: advance captured windows after the commit
+#### `hermes-skills-install`
+- **Without prefix arg:** runs the search flow (same as `hermes-skills-search`), then immediately calls `skills.manage` with `action: "install"` and the selected skill name.
+- **With prefix arg (C-u):** prompts for a skill name verbatim (bypasses search), then calls `skills.manage` with `action: "install"`.
+- On success, echoes `"Installed <name>"`. On error, echoes the error message.
 
-After the `with-silent-modifications` block exits, in the existing `derived-mode-p 'org-mode` post-pass, when **either** `msg-append-start` is non-nil (bench commit or pending-turn drain) **or** `committed-region` is non-nil (non-bench `stream-commit`):
+### 3. Keybindings
 
-- Compute `new-point-max`.
-- For each window in `tail-windows` that is still `window-live-p`, call `set-window-point` to `new-point-max`.
+**Vanilla:**
+- `M-x hermes-skills-reload`
+- `M-x hermes-skills-list`
+- `M-x hermes-skills-search`
+- `M-x hermes-skills-install`
 
-### Why this spot?
-
-`hermes--render` is the single paint entry point. `msg-append-start` is set exactly when the buffer appends at `point-max` (bench commit via `hermes-bench--stream-commit`, or queued turn drain via `hermes--insert-committed-turn`). `committed-region` is set for non-bench `stream-commit`.
-
-By capturing windows **before** modifications and advancing them **only** after committed inserts, we avoid interfering with in-flight stream deltas (where the user may have scrolled up to read earlier content while tokens stream in).
-
-### Edge cases handled
-
-- **Window closed during async render:** guarded by `window-live-p`.
-- **Buffer not visible:** `get-buffer-window-list` returns nil → no-op.
-- **User scrolled up during stream:** `window-point` ≠ `old-point-max` → window is not in `tail-windows` → untouched.
-- **Bench window selected:** only windows showing the org buffer are touched; bench is a separate buffer.
-- **Fresh session / never touched org buffer:** Part A pre-aligns the parent org buffer before the first send, so Part B captures it.
+**Doom Emacs (add to `doom-hermes.el`):**
+- `SPC h S r` — reload
+- `SPC h S l` — list
+- `SPC h S s` — search
+- `SPC h S i` — install
 
 ## Testing
 
-1. Run `eldev test` after implementation to verify no regressions in `hermes-render-test` (which already covers `stream-commit`, bench overlay removal, and marker clearing).
-2. Optionally add an ERT test in `test/hermes-render-test.el`:
-   - Open the org buffer in a window.
-   - Move `window-point` to `point-max`.
-   - Drive `hermes--render` through a `message.complete` transition.
-   - Assert that `window-point` now equals the new `point-max`.
-3. Optionally add a bench-specific ERT test:
-   - Create a parent org buffer with content.
-   - Open a bench for that parent.
-   - Assert that the parent org buffer's visible window is now at `point-max`.
+1. Run `eldev test` to ensure no regressions.
+2. Manually test against a live gateway:
+   - `M-x hermes-skills-reload` should show a minibuffer message with the reload result.
+   - `M-x hermes-skills-list` should populate a buffer with categorized skills.
+   - `M-x hermes-skills-search` with query `"git"` should return matching skills via completing-read.
+   - `M-x hermes-skills-install` should install a selected skill and confirm.
 
-## Decision: bench-only or both paths?
+## Notes
 
-Apply Part B to **both** bench and non-bench commits (whenever `msg-append-start` or `committed-region` is set). The user's expectation ("I was at the bottom, keep me at the bottom") is identical in both modes. Restricting it to bench-only would leave minor-mode users with the same scroll-lag bug.
-
-Part A (pre-alignment) applies only to the bench path, because that's where the parent-buffer relationship is explicit and unambiguous.
+- Both RPCs are global (no `session_id`), so they work even when no session is active.
+- `skills.manage` is a long handler — responses arrive asynchronously. All commands must use `hermes-rpc-request` with a callback (consistent with `hermes-toolsets-toggle`).
+- `skills.reload` is quick, but using the same async callback pattern keeps the implementation uniform.

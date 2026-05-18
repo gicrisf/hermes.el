@@ -96,7 +96,10 @@
     "config.get"             ; {key, session_id?}            → key-dependent payload
     "config.set"             ; {key, value, session_id?}     → {key, value, ...}
     "toolsets.list"          ; {session_id?}                 → {toolsets:[{name, enabled, ...}]}
-    "tools.configure")       ; {session_id?, action, names}  → {changed, enabled_toolsets, ...}
+    "tools.configure"        ; {session_id?, action, names}  → {changed, enabled_toolsets, ...}
+    ;; Skills
+    "skills.reload"          ; {}                            → {output, result:{added, removed, total}}
+    "skills.manage")         ; {action, query?, page?, page_size?} (long handler, async)
   "All JSON-RPC methods the Emacs client may invoke.")
 
 ;;;; Methods that the gateway dispatches to a worker pool.

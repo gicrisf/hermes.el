@@ -32,7 +32,15 @@
   (define-key hermes-leader-map (kbd "r") #'hermes-toggle-reasoning)
   (define-key hermes-leader-map (kbd "y") #'hermes-toggle-yolo)
   (define-key hermes-leader-map (kbd "t") #'hermes-toolsets-toggle)
-  (define-key hermes-leader-map (kbd "S") #'hermes-steer))
+  (define-key hermes-leader-map (kbd "S") #'hermes-steer)
+  ;; Skills sub-prefix.  Plan called for `S' as the prefix, but it is
+  ;; already taken by `hermes-steer'; use `K' (sKills) instead.
+  (define-prefix-command 'hermes-skills-leader-map)
+  (define-key hermes-leader-map (kbd "K") 'hermes-skills-leader-map)
+  (define-key hermes-skills-leader-map (kbd "r") #'hermes-skills-reload)
+  (define-key hermes-skills-leader-map (kbd "l") #'hermes-skills-list)
+  (define-key hermes-skills-leader-map (kbd "s") #'hermes-skills-search)
+  (define-key hermes-skills-leader-map (kbd "i") #'hermes-skills-install))
 
 ;; ── Global helpers ────────────────────────────────────────────────────────
 

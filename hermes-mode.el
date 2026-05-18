@@ -362,12 +362,24 @@ background; for the user-facing entry that also pops the buffer, see
       (if buf
           (progn
             (pop-to-buffer-same-window buf)
-            (hermes-bench-ensure buf))
+            (hermes-bench-ensure buf)
+            (hermes--focus-bench-input buf))
         (hermes-new-session
          (lambda (b)
            (when (buffer-live-p b)
              (pop-to-buffer-same-window b)
-             (hermes-bench-ensure b)))))))))
+             (hermes-bench-ensure b)
+             (hermes--focus-bench-input b)))))))))
+
+(defun hermes--focus-bench-input (buf)
+  "Select the bench window for BUF and move point to its input end."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (let* ((bench (hermes-bench-active-p))
+             (win   (and bench (get-buffer-window bench))))
+        (when (window-live-p win)
+          (select-window win)
+          (goto-char (point-max)))))))
 
 (defalias 'hermes-send #'hermes-input-send
   "Queue-aware submission entry; see `hermes-input-send'.")

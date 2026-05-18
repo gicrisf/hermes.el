@@ -1,121 +1,51 @@
-# Plan: Wire `session.steer`
+# Plan: Follow point-max after bench (and non-bench) commits
 
-## Decisions
+## Problem
 
-- **Option C**: Respect gateway `busy` config for RET behavior + explicit `C-c C-s` steer command.
-- **Unknown busy mode**: default to `queue` (current behavior, safe).
-- **Steer visibility**: Show steer messages in bench ephemeral area with `[steer]` prefix.
-- **Steer does not create committed turn**: No Org buffer heading, just injects into stream.
+When a turn commits from the bench, `hermes--render` appends the finished assistant turn at `point-max` of the org buffer. Because all edits are wrapped in `with-silent-modifications` + `save-excursion`, windows showing the org buffer stay pinned to their old *numerical* position and end up somewhere in the middle of the newly inserted text. The user has to manually scroll down to see the committed content.
 
----
+## Proposed change
 
-## RPC method
+**File:** `hermes-render.el` — function `hermes--render`
 
-`session.steer` — `{session_id, text}` → `{status: "queued" | "rejected", text}`
+### Step 1: capture tail-following windows before the paint block
 
-Safe mid-turn, no interrupt needed. Also available as `/steer <text>` slash command.
+Before entering `with-silent-modifications`, compute:
 
----
+- `old-point-max` — the current `point-max` of the buffer.
+- `tail-windows` — a list of live windows showing the current buffer whose `window-point` equals `old-point-max`.
 
-## Files to touch
+Use `get-buffer-window-list (current-buffer) nil t` and filter with `window-point`.
 
-### `hermes-events.el`
+### Step 2: advance captured windows after the commit
 
-Add `"session.steer"` to `hermes-rpc-methods`.
+After the `with-silent-modifications` block exits, in the existing `derived-mode-p 'org-mode` post-pass, when **either** `msg-append-start` is non-nil (bench commit or pending-turn drain) **or** `committed-region` is non-nil (non-bench `stream-commit`):
 
-### `hermes-state.el`
+- Compute `new-point-max`.
+- For each window in `tail-windows` that is still `window-live-p`, call `set-window-point` to `new-point-max`.
 
-1. Add `busy-mode` slot to `hermes-state` struct (default `nil`).
-2. Update reducer for `"session.info"`: extract `busy` field from payload into `busy-mode`.
+### Why this spot?
 
-### `hermes-input.el`
+`hermes--render` is the single paint entry point. `msg-append-start` is set exactly when the buffer appends at `point-max` (bench commit via `hermes-bench--stream-commit`, or queued turn drain via `hermes--insert-committed-turn`). `committed-region` is set for non-bench `stream-commit`.
 
-Modify `hermes-input--send-1` busy branch (currently lines 334-337):
+By capturing windows **before** modifications and advancing them **only** after committed inserts, we avoid interfering with in-flight stream deltas (where the user may have scrolled up to read earlier content while tokens stream in).
 
-```elisp
-((hermes-state-stream hermes--state)
- (pcase (hermes-state-busy-mode hermes--state)
-   ('steer
-    (hermes-rpc-request
-     "session.steer"
-     (list :session_id sid :text text)
-     (lambda (r e)
-       (cond
-        (e (message "hermes: steer error: %S" e))
-        ((equal (gethash "status" r) "rejected")
-         (message "hermes: steer rejected"))
-        (t (message "hermes: steer queued"))))))
-   ('interrupt
-    (hermes-interrupt)
-    ;; After interrupt, the stream clears; the drain hook will
-    ;; process the queue. Push the text onto the queue.
-    (hermes-dispatch (cons :enqueue (list :text text))))
-   (_ ;; queue (default when unknown)
-    (hermes-dispatch (cons :enqueue (list :text text)))
-    (message "Hermes: Message queued (%d ahead of you)"
-             (length (hermes-state-queue hermes--state))))))
-```
+### Edge cases handled
 
-### `hermes-bench.el`
+- **Window closed during async render:** guarded by `window-live-p`.
+- **Buffer not visible:** `get-buffer-window-list` returns nil → no-op.
+- **User scrolled up during stream:** `window-point` ≠ `old-point-max` → window is not in `tail-windows` → untouched.
+- **Bench window selected:** only windows showing the org buffer are touched; bench is a separate buffer.
 
-1. Add `hermes-bench-steer` function:
-   - Read text from input area
-   - Call `hermes-steer` (defined in `hermes-config.el`)
-   - Show `[steer] <text>` in ephemeral area immediately
+## Testing
 
-2. Bind `C-c C-s` in `hermes-bench-mode-map`.
+1. Run `eldev test` after implementation to verify no regressions in `hermes-render-test` (which already covers `stream-commit`, bench overlay removal, and marker clearing).
+2. Optionally add an ERT test in `test/hermes-render-test.el`:
+   - Open the org buffer in a window.
+   - Move `window-point` to `point-max`.
+   - Drive `hermes--render` through a `message.complete` transition.
+   - Assert that `window-point` now equals the new `point-max`.
 
-3. Add `hermes-bench--paint-steer` helper:
-   - Insert `[steer] <text>` above reasoning zone with a distinct face
-   - Or: prepend `[steer]` to the existing user prompt display
+## Decision: bench-only or both paths?
 
-### `hermes-config.el`
-
-Add `hermes-steer` function (callable from anywhere):
-
-```elisp
-(defun hermes-steer (text)
-  "Send TEXT as a steer message to the current session's in-flight turn."
-  (interactive (list (read-string "Steer: ")))
-  (let ((sid (hermes--config-resolve-target)))
-    (hermes-rpc-request
-     "session.steer"
-     (list :session_id sid :text text)
-     (lambda (r e)
-       (cond
-        (e (message "hermes: steer error: %S" e))
-        ((equal (gethash "status" r) "rejected")
-         (message "hermes: steer rejected"))
-        (t (message "hermes: steer queued")))))))
-```
-
-### `doom-hermes.el`
-
-Add `SPC h S` (capital S for steer) or `SPC h C-s` binding.
-
----
-
-## Bench ephemeral area display
-
-When a steer message is sent, the bench should show it above the reasoning/answer zones:
-
-```
-** U: original user prompt
-
-[steer] please focus on the async data race
-
-*** Reasoning
-...
-```
-
-Implementation: add `hermes-bench--steer-messages` (buffer-local list of strings). On `hermes-bench--paint-ephemeral`, if the list is non-empty, insert each steer message with `[steer] ` prefix and `hermes-bench-steer-face` before the reasoning zone.
-
-Clear the list on `stream-commit` (turn ends).
-
----
-
-## Open questions (none — all resolved)
-
-1. Default when unknown busy: `queue` ✅
-2. Special prefix: `[steer]` ✅
-3. Show in bench: yes, above reasoning ✅
+Apply it to **both** bench and non-bench commits (whenever `msg-append-start` or `committed-region` is set). The user's expectation ("I was at the bottom, keep me at the bottom") is identical in both modes. Restricting it to bench-only would leave minor-mode users with the same scroll-lag bug.

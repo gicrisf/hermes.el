@@ -173,7 +173,16 @@ buffer) where the container's subtree spans the whole buffer."
         ;; only the current assistant turn, and resetting on every token
         ;; defeats the cache for the whole buffer.
         (structural-change nil)
-        (old-stream-snapshot (and old (hermes-state-stream old))))
+        (old-stream-snapshot (and old (hermes-state-stream old)))
+        ;; Capture windows whose point sits at `point-max' before the
+        ;; paint, so we can keep them pinned to the tail after a
+        ;; committed insert.  Done outside `with-silent-modifications'
+        ;; so the snapshot reflects the user's current view.
+        (old-point-max (point-max))
+        (tail-windows nil))
+    (dolist (win (get-buffer-window-list (current-buffer) nil t))
+      (when (= (window-point win) old-point-max)
+        (push win tail-windows)))
     (with-silent-modifications
       (save-excursion
         ;; 1. Stream lifecycle runs FIRST.  When `message.complete' or the
@@ -285,7 +294,17 @@ buffer) where the container's subtree spans the whole buffer."
       ;; `line-prefix' properties and `hermes--hide-drawers' pass.
       (when committed-region
         (hermes--refresh-region (car committed-region)
-                                (cdr committed-region))))
+                                (cdr committed-region)))
+      ;; Follow point-max for windows that were pinned to the tail
+      ;; before the paint.  Only fires on committed inserts (bench
+      ;; commit, pending-turn drain, or non-bench stream-commit); in-
+      ;; flight stream deltas don't advance windows so a user who
+      ;; scrolled up to read earlier content stays put.
+      (when (or msg-append-start committed-region)
+        (let ((new-point-max (point-max)))
+          (dolist (win tail-windows)
+            (when (window-live-p win)
+              (set-window-point win new-point-max))))))
     ;; Refresh mode-line after every render tick so status is always in
     ;; sync — covers edge cases where the reducer hands back an `eq' struct
     ;; and `hermes-state-change-hook' doesn't fire.

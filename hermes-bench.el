@@ -198,6 +198,17 @@ Cleared by `hermes-bench--stream-commit' when the turn ends.")
   "Kill the bench when its parent buffer is killed."
   (hermes-bench-hide (current-buffer)))
 
+(defun hermes-bench--align-parent-to-tail (parent)
+  "Move every window showing PARENT to `point-max'.
+Pre-aligns the org buffer so the post-commit follow logic in
+`hermes--render' captures the window as tail-tracking."
+  (when (buffer-live-p parent)
+    (let ((end (with-current-buffer parent (point-max))))
+      (dolist (win (get-buffer-window-list parent nil t))
+        (when (and (window-live-p win)
+                   (/= (window-point win) end))
+          (set-window-point win end))))))
+
 (defun hermes-bench-ensure (parent)
   "Ensure a bench buffer exists and is displayed for PARENT."
   (let* ((name (hermes-bench--buffer-name parent))
@@ -219,6 +230,7 @@ Cleared by `hermes-bench--stream-commit' when the turn ends.")
            (preserve-size . (nil . t))
            (window-parameters . ((no-other-window . nil)
                                  (no-delete-other-windows . t)))))
+    (hermes-bench--align-parent-to-tail parent)
     buf))
 
 (defun hermes-bench-hide (parent)
@@ -518,6 +530,10 @@ then dispatches the text to the parent."
     (hermes-bench--clear-input)
     ;; 3. Wipe old turn, show new user prompt + empty reasoning/answer.
     (hermes-bench--paint-ephemeral text "" "")
+    ;; 3a. Pull parent org buffer's windows to point-max so the
+    ;; post-commit follow logic in `hermes--render' sees them as
+    ;; tail-tracking.
+    (hermes-bench--align-parent-to-tail parent)
     ;; 4. Dispatch to parent (fires :user-submit + RPC).
     (with-current-buffer parent
       (hermes-input-send text))

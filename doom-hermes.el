@@ -40,7 +40,8 @@
   (define-key hermes-skills-leader-map (kbd "r") #'hermes-skills-reload)
   (define-key hermes-skills-leader-map (kbd "l") #'hermes-skills-list)
   (define-key hermes-skills-leader-map (kbd "s") #'hermes-skills-search)
-  (define-key hermes-skills-leader-map (kbd "i") #'hermes-skills-install))
+  (define-key hermes-skills-leader-map (kbd "i") #'hermes-skills-install)
+  (define-key hermes-skills-leader-map (kbd "u") #'hermes-skills-uninstall))
 
 ;; ── Global helpers ────────────────────────────────────────────────────────
 

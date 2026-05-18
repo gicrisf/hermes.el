@@ -435,5 +435,28 @@ With prefix arg PROMPT-NAME, prompts for a skill name verbatim."
           (user-error "Empty query"))
         (hermes--skills-search query install)))))
 
+(defun hermes-skills-uninstall (name &optional now)
+  "Uninstall the skill named NAME via `/skills uninstall'.
+With prefix arg NOW, appends `--now' so the change takes effect
+immediately (cache-aware invalidation).  Requires an active session
+because `slash.exec' routes through a session_id."
+  (interactive
+   (list (read-string "Uninstall skill: ")
+         current-prefix-arg))
+  (let ((trimmed (string-trim (or name ""))))
+    (when (string-empty-p trimmed)
+      (user-error "Empty skill name"))
+    (let ((sid (hermes--config-resolve-target))
+          (cmd (format "skills uninstall %s%s"
+                       trimmed (if now " --now" ""))))
+      (hermes-rpc-request
+       "slash.exec" (list :session_id sid :command cmd)
+       (lambda (r e)
+         (cond
+          (e (message "hermes: skills uninstall error: %S" e))
+          (r (let ((output (and (hash-table-p r) (gethash "output" r))))
+               (message "%s" (or output
+                                 (format "hermes: uninstalled %s" trimmed)))))))))))
+
 (provide 'hermes-config)
 ;;; hermes-config.el ends here

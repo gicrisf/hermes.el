@@ -1,103 +1,108 @@
-# Plan: Skills management commands
+# Plan: Canonical bench resolution utilities
+
+## Background
+
+The skills command implementation revealed a subtle but recurring problem: when a user invokes a command from the **bench buffer** (the bottom side-window where input happens), code that wants to display feedback in the bench must first resolve "am I in the bench buffer?" to "what's the parent org buffer?". This logic was ad-hoc in `hermes--skills-show-output` and will keep being rediscovered by every new feature that displays status in the bench.
 
 ## Problem
 
-The Hermes gateway exposes two skills-related RPC methods that the Emacs client does not currently call:
+There is no single canonical way to answer these questions:
+- Is the current buffer a bench buffer?
+- What is the parent org buffer of this bench?
+- Is there an active bench for this buffer (regardless of whether I'm in it)?
 
-- `skills.reload` — rescans the skills directory and reports added/removed skills.
-- `skills.manage` — list, search, install, inspect, or browse skills from the skills hub.
-
-These are listed in the gap matrix as low-value, but they are genuinely useful: installing skills mid-session is a common workflow, and reloading after adding local skills is faster than restarting the gateway.
-
-## Gateway API
-
-### `skills.reload`
-- Params: `{}` (no `session_id`)
-- Response: `{"output": "...", "result": {"added": [...], "removed": [...], "total": N}}`
-- Handler type: quick (synchronous)
-
-### `skills.manage`
-- Params: `{"action": "...", "query": "...", "page": N, "page_size": N}` (no `session_id`)
-- Actions:
-  - `list` → `{"skills": {"category": ["skill1", ...], ...}}`
-  - `search` → `{"results": [{"name": "...", "description": "..."}, ...]}`
-  - `install` → `{"installed": true, "name": "..."}`
-  - `inspect` → `{"info": {...}}`
-  - `browse` → paginated hub results
-- Handler type: long (asynchronous, processed in worker pool)
-
-### `slash.exec` fallback for uninstall
-The TUI does not expose `uninstall` via `skills.manage`. Instead, `/skills uninstall <name>` falls through to `slash.exec`, which dispatches to the CLI worker. The Emacs client should mirror this behavior.
-- Params: `{"session_id": "...", "command": "skills uninstall <name> [--now]"}`
-- Response: `{"output": "..."}`
-- Requires an active session (unlike the other skills RPCs).
+Every caller currently does its own `(eq major-mode 'hermes-bench-mode)` check or manually reads `hermes-bench--parent-buffer`. This is fragile and will break as soon as someone adds a new command without knowing about the bench/parent duality.
 
 ## Proposed changes
 
-### 1. Register methods in `hermes-events.el`
+### 1. Add three utility functions to `hermes-bench.el`
 
-Add `"skills.reload"` and `"skills.manage"` to `hermes-rpc-methods`.
+#### `hermes-bench-buffer-p`
+```elisp
+(defun hermes-bench-buffer-p (&optional buffer)
+  "Return non-nil if BUFFER (or current buffer) is a bench buffer.
+Checks `major-mode' against `hermes-bench-mode'.")
+```
 
-### 2. Add interactive commands in `hermes-config.el`
+#### `hermes-bench-resolve-parent`
+```elisp
+(defun hermes-bench-resolve-parent (&optional buffer)
+  "Resolve BUFFER to its parent org buffer.
+If BUFFER is a bench buffer, return `hermes-bench--parent-buffer'.
+If BUFFER is already an org/hermes buffer, return it as-is.
+Otherwise return nil.")
+```
 
-All commands are global (no `session_id`), so they do not use `hermes--config-resolve-target`.
+#### `hermes-bench-live-p`
+```elisp
+(defun hermes-bench-live-p (&optional buffer)
+  "Return non-nil if an active bench exists for BUFFER.
+BUFFER may be a bench buffer or a parent org buffer.
+Returns the live bench buffer, or nil.")
+```
 
-#### `hermes-skills-reload`
-- Calls `skills.reload`.
-- Echoes the `output` string (from the response) to the minibuffer message area.
+### 2. Refactor `hermes-bench-active-p`
 
-#### `hermes-skills-list`
-- Calls `skills.manage` with `action: "list"`.
-- Displays the category→skills map in a temporary `*Hermes Skills*` buffer in `tabulated-list-mode` or plain `outline-mode`.
+`hermes-bench-active-p` already does parent→bench lookup. Keep it as the low-level primitive, but document that `hermes-bench-live-p` is the preferred public API for "is there a bench?" checks.
 
-#### `hermes-skills-search`
-- Prompts the user for a query string.
-- Calls `skills.manage` with `action: "search"` and `query`.
-- Presents the `results` array via `completing-read`.
-- Candidates are formatted as `"name — description"`.
-- On selection, copies the skill name to the kill ring and shows it in the message area (so the user can then run `hermes-skills-install`).
+### 3. Replace ad-hoc bench detection in `hermes-config.el`
 
-#### `hermes-skills-install`
-- **Without prefix arg:** runs the search flow (same as `hermes-skills-search`), then immediately calls `skills.manage` with `action: "install"` and the selected skill name.
-- **With prefix arg (C-u):** prompts for a skill name verbatim (bypasses search), then calls `skills.manage` with `action: "install"`.
-- On success, echoes `"Installed <name>"`. On error, echoes the error message.
+In `hermes--skills-show-output`, replace the inline `major-mode` check:
 
-#### `hermes-skills-uninstall`
-- **Requires an active session** — uses `hermes--config-resolve-target` to get a `session_id` for `slash.exec`.
-- Prompts for a skill name (or accepts it as an interactive argument).
-- Sends `slash.exec` with command `"skills uninstall <name>"`.
-- With prefix arg (C-u), appends `" --now"` to the command so the change takes effect immediately (cache-aware invalidation).
-- Echoes the `output` from the response. On error, echoes the error message.
+```elisp
+;; Before (current, ad-hoc)
+(when (and (buffer-live-p buf)
+           (eq (buffer-local-value 'major-mode buf)
+               'hermes-bench-mode))
+  (setq buf (buffer-local-value 'hermes-bench--parent-buffer buf)))
 
-### 3. Keybindings
+;; After (using canonical utility)
+(setq buf (hermes-bench-resolve-parent buf))
+```
 
-**Vanilla:**
-- `M-x hermes-skills-reload`
-- `M-x hermes-skills-list`
-- `M-x hermes-skills-search`
-- `M-x hermes-skills-install`
-- `M-x hermes-skills-uninstall`
+Also remove the `parent-buf` parameter from `hermes--skills-show-output` — `hermes-bench-resolve-parent` with no args handles the `current-buffer` case automatically.
 
-**Doom Emacs (add to `doom-hermes.el`):**
-- `SPC h K r` — reload
-- `SPC h K l` — list
-- `SPC h K s` — search
-- `SPC h K i` — install
-- `SPC h K u` — uninstall
+### 4. Audit other callers
+
+Search for these patterns across the codebase and migrate to canonical utilities:
+- `(eq major-mode 'hermes-bench-mode)` → `hermes-bench-buffer-p`
+- `(buffer-local-value 'hermes-bench--parent-buffer ...)` → `hermes-bench-resolve-parent`
+- `(hermes-bench-active-p (current-buffer))` without first resolving parent → `hermes-bench-live-p`
+
+Expected files to touch:
+- `hermes-bench.el` — add utilities, update docstrings
+- `hermes-config.el` — replace ad-hoc detection in skills commands
+- Possibly `hermes-mode.el`, `hermes-render.el` if they have bench-related conditionals
+
+### 5. Add ERT tests
+
+In `test/hermes-render-test.el` (or a new `test/hermes-bench-test.el`):
+
+- `hermes-bench-test/buffer-p-nil-for-org-buffer`
+- `hermes-bench-test/buffer-p-t-for-bench-buffer`
+- `hermes-bench-test/resolve-parent-from-bench`
+- `hermes-bench-test/resolve-parent-returns-self-for-org`
+- `hermes-bench-test/live-p-returns-bench-for-parent`
+- `hermes-bench-test/live-p-returns-bench-for-bench`
+
+## Files to change
+
+| File | What |
+|------|------|
+| `hermes-bench.el` | Add `hermes-bench-buffer-p`, `hermes-bench-resolve-parent`, `hermes-bench-live-p` |
+| `hermes-config.el` | Replace ad-hoc bench detection in `hermes--skills-show-output` |
+| `test/hermes-render-test.el` (or new `test/hermes-bench-test.el`) | Add unit tests for the three utilities |
 
 ## Testing
 
-1. Run `eldev test` to ensure no regressions.
-2. Manually test against a live gateway:
-   - `M-x hermes-skills-reload` should show a minibuffer message with the reload result.
-   - `M-x hermes-skills-list` should populate a buffer with categorized skills.
-   - `M-x hermes-skills-search` with query `"git"` should return matching skills via completing-read.
-   - `M-x hermes-skills-install` should install a selected skill and confirm.
-   - `M-x hermes-skills-uninstall` should uninstall a skill and confirm (test with and without `C-u`).
+1. `eldev test` — must remain 193/193 green (or 199/199+ after adding bench tests).
+2. Live gateway test:
+   - `M-x hermes-skills-uninstall` from the **bench buffer** — error should appear in bench
+   - `M-x hermes-skills-uninstall` from the **org buffer** — error should still appear in bench
+   - `M-x hermes-skills-reload` from either buffer — output should appear correctly
 
 ## Notes
 
-- `skills.reload` and `skills.manage` are global (no `session_id`), so they work even when no session is active.
-- `skills.manage` is a long handler — responses arrive asynchronously. All commands must use `hermes-rpc-request` with a callback (consistent with `hermes-toolsets-toggle`).
-- `skills.reload` is quick, but using the same async callback pattern keeps the implementation uniform.
-- `hermes-skills-uninstall` requires an active session because it routes through `slash.exec`, which needs a `session_id`. This matches the TUI behavior.
+- This is a **pure refactor** — no behavior change for users. The only observable difference is cleaner code.
+- `hermes-bench-resolve-parent` should be the single point of truth for "which org buffer owns this bench?". Any future feature that needs to display in the bench should call it first.
+- Keep `hermes-bench-active-p` as the low-level primitive for direct parent→bench lookup. `hermes-bench-live-p` is the convenience wrapper that handles both directions.

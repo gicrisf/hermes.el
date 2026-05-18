@@ -164,6 +164,8 @@ available, falling back to whichever is present."
 ;;;; Steer (mid-turn injection)
 
 (declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
+(declare-function hermes-bench-resolve-parent "hermes-bench" (&optional buffer))
+(declare-function hermes-bench-live-p "hermes-bench" (&optional buffer))
 (declare-function hermes-bench-add-steer "hermes-bench" (parent text))
 
 (defun hermes-steer (text)
@@ -450,22 +452,17 @@ a hash table whose values are vectors/lists of names."
                skills-map))
     (sort (delete-dups names) #'string<)))
 
-(defun hermes--skills-show-output (output &optional error-p parent-buf)
+(defun hermes--skills-show-output (output &optional error-p)
   "Show OUTPUT in the bench (if active), otherwise pop `*Hermes Skills*'.
 If the bench is unavailable and output is single-line, fall back to the
-minibuffer.  ERROR-P applies `error' face.  PARENT-BUF is the buffer to
-query for a live bench; defaults to `current-buffer'."
+minibuffer.  ERROR-P applies `error' face."
   (let* ((clean (or (ansi-color-apply (or output "")) ""))
-         (buf (or parent-buf (current-buffer))))
-    ;; If we're in the bench buffer, resolve to its parent org buffer.
-    (when (and (buffer-live-p buf)
-               (eq (buffer-local-value 'major-mode buf)
-                   'hermes-bench-mode))
-      (setq buf (buffer-local-value 'hermes-bench--parent-buffer buf)))
+         (buf (hermes-bench-resolve-parent)))
     (cond
      ((string-empty-p clean)
       (message "hermes: (no output)"))
      ((and (fboundp 'hermes-bench-show-status)
+           buf
            (hermes-bench-active-p buf))
       (hermes-bench-show-status buf clean error-p))
      ((string-match-p "\n" (string-trim-right clean))
@@ -509,7 +506,9 @@ invalidation).  Requires an active session."
                                               (gethash "output" r2)))
                                  (clean (ansi-color-apply (or output "")))
                                  (error-p (string-match-p "^Error:" clean)))
-                            (hermes--skills-show-output output error-p parent-buf)))))))))))))))
+                            (when (buffer-live-p parent-buf)
+                              (with-current-buffer parent-buf
+                                (hermes--skills-show-output output error-p)))))))))))))))))
 
 (provide 'hermes-config)
 ;;; hermes-config.el ends here

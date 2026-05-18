@@ -22,4 +22,5 @@
                            "test/hermes-render-test.el"
                            "test/hermes-md-test.el"
                            "test/hermes-input-test.el"
-                           "test/hermes-org-test.el"))
+                           "test/hermes-org-test.el"
+                           "test/hermes-bench-test.el"))

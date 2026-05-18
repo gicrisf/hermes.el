@@ -178,11 +178,41 @@ Cleared after one paint cycle.")
   (format " *hermes-bench:%s*" (buffer-name parent)))
 
 (defun hermes-bench-active-p (&optional parent)
-  "Return the live bench buffer paired with PARENT, or nil."
+  "Return the live bench buffer paired with PARENT, or nil.
+Low-level primitive: assumes PARENT is the parent org buffer.  Prefer
+`hermes-bench-live-p' when the caller may be in either the bench or its
+parent."
   (let* ((p (or parent (current-buffer)))
          (b (and (buffer-live-p p)
                  (buffer-local-value 'hermes-bench--buffer p))))
     (and (buffer-live-p b) b)))
+
+(defun hermes-bench-buffer-p (&optional buffer)
+  "Return non-nil if BUFFER (or current buffer) is a bench buffer."
+  (let ((buf (or buffer (current-buffer))))
+    (and (buffer-live-p buf)
+         (eq (buffer-local-value 'major-mode buf) 'hermes-bench-mode))))
+
+(defun hermes-bench-resolve-parent (&optional buffer)
+  "Resolve BUFFER to its parent org buffer.
+If BUFFER is a bench buffer, return its `hermes-bench--parent-buffer'.
+If BUFFER already has a paired bench (i.e. is itself a parent), return
+it as-is.  Otherwise return nil."
+  (let ((buf (or buffer (current-buffer))))
+    (cond
+     ((not (buffer-live-p buf)) nil)
+     ((hermes-bench-buffer-p buf)
+      (let ((p (buffer-local-value 'hermes-bench--parent-buffer buf)))
+        (and (buffer-live-p p) p)))
+     ((buffer-local-value 'hermes-bench--buffer buf) buf)
+     (t nil))))
+
+(defun hermes-bench-live-p (&optional buffer)
+  "Return the live bench buffer associated with BUFFER, or nil.
+BUFFER may be a bench buffer or its parent org buffer; in either case
+the paired bench is returned when it exists."
+  (let ((parent (hermes-bench-resolve-parent buffer)))
+    (and parent (hermes-bench-active-p parent))))
 
 (defun hermes-bench--setup (parent)
   "Initialize the bench buffer contents for PARENT."

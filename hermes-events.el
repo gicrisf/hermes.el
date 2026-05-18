@@ -89,6 +89,7 @@
     "secret.respond"         ; {request_id, value}
     ;; Slash and commands
     "slash.exec"             ; {session_id, command}         (long handler, async)
+    "shell.exec"             ; {command}                     → {stdout, stderr, code}
     "command.dispatch"       ; {session_id?, name, arg}
     "commands.catalog"       ; {} → {pairs, sub, canon, categories, skill_count, warning}
     ;; Config + tools

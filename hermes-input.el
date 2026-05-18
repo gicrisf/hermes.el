@@ -283,6 +283,68 @@ ends."
       (let ((hermes--state target-state))
         (hermes-input--send-1 text))))))
 
+;;;; Shell interpolation — !cmd and $(cmd)
+
+(defun hermes-input--shell-matches (text)
+  "Return a list of (BEG END COMMAND) for every $(...) substring in TEXT.
+Non-greedy on the inner command body — does not recurse into nested $()."
+  (let ((pos 0) matches)
+    (while (string-match "\\$(\\([^)]+\\))" text pos)
+      (push (list (match-beginning 0)
+                  (match-end 0)
+                  (match-string 1 text))
+            matches)
+      (setq pos (match-end 0)))
+    (nreverse matches)))
+
+(defun hermes-input--shell-format-error (e)
+  (format "(error: %s)"
+          (or (and (hash-table-p e) (gethash "message" e))
+              (format "%S" e))))
+
+(defun hermes-input--shell-format-result (r)
+  (let ((stdout (gethash "stdout" r))
+        (stderr (gethash "stderr" r))
+        (code   (gethash "code"   r)))
+    (concat (or stdout "")
+            (if (and stderr (not (string-empty-p stderr)))
+                (concat "\n" stderr) "")
+            (if (and (numberp code) (not (zerop code)))
+                (format "\n[exit %d]" code) ""))))
+
+(defun hermes-input--shell-expand (text matches k)
+  "Run shell.exec for each MATCH; call K with TEXT after substitution.
+Substitutions are applied right-to-left to preserve byte offsets."
+  (let* ((n (length matches))
+         (results (make-vector n nil))
+         (remaining n)
+         (buf (current-buffer)))
+    (cl-loop
+     for idx from 0
+     for m in matches do
+     (let ((i idx)
+           (cmd (nth 2 m)))
+       (hermes-rpc-request
+        "shell.exec" (list :command cmd)
+        (lambda (r e)
+          (let ((out (cond
+                      (e (hermes-input--shell-format-error e))
+                      ((hash-table-p r) (hermes-input--shell-format-result r))
+                      (t ""))))
+            (aset results i (string-trim-right out)))
+          (setq remaining (1- remaining))
+          (when (zerop remaining)
+            (let ((expanded text))
+              (cl-loop for j from (1- n) downto 0
+                       for mm = (nth j matches)
+                       do (setq expanded
+                                (concat (substring expanded 0 (nth 0 mm))
+                                        (aref results j)
+                                        (substring expanded (nth 1 mm)))))
+              (if (buffer-live-p buf)
+                  (with-current-buffer buf (funcall k expanded))
+                (funcall k expanded))))))))))
+
 (defun hermes-input--send-1 (text)
   "Internal worker for `hermes-input-send'.  Assumes `hermes--state' and
 `hermes--current-session-id' are bound to the target session."
@@ -302,6 +364,32 @@ ends."
     (cond
      ;; Empty input or consumed by reconnect branch → no-op.
      ((or (null text) (string-empty-p text)) nil)
+     ;; Bang prefix — run shell command via gateway, show output as a system
+     ;; message, do NOT submit to the model.  Mirrors the TUI's `!cmd' form.
+     ((eq (aref text 0) ?!)
+      (let ((cmd (substring text 1))
+            (buf (current-buffer)))
+        (if (string-empty-p cmd)
+            (message "hermes: empty shell command")
+          (hermes-rpc-request
+           "shell.exec" (list :command cmd)
+           (lambda (r e)
+             (let* ((body (cond
+                           (e (hermes-input--shell-format-error e))
+                           ((hash-table-p r) (hermes-input--shell-format-result r))
+                           (t "")))
+                    (msg (format "$ %s\n%s" cmd body)))
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (hermes-dispatch
+                    (cons :system-message (list :text msg)))))))))))
+     ;; $(cmd) interpolation — expand asynchronously, then recurse so the
+     ;; expanded text flows through the normal slash/queue/submit logic.
+     ;; Slash commands are exempt (`/` is dispatched verbatim).
+     ((and (not (eq (aref text 0) ?/))
+           (hermes-input--shell-matches text))
+      (let ((matches (hermes-input--shell-matches text)))
+        (hermes-input--shell-expand text matches #'hermes-input--send-1)))
      ;; No session yet (e.g. reconnect in flight) — queue without dispatch.
      ((null sid)
       (hermes-dispatch (cons :user-submit (list :text text)))

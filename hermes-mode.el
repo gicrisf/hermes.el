@@ -145,6 +145,16 @@ without this cache, the very first buffer would never see the skin.")
     m)
   "Keymap for `hermes-mode'.")
 
+(with-eval-after-load 'which-key
+  (when (fboundp 'which-key-add-keymap-based-replacements)
+    (which-key-add-keymap-based-replacements hermes-mode-map
+      "C-c C-i" "Send / focus bench"
+      "C-c C-l" "Compose multi-line"
+      "C-c C-k" "Interrupt session"
+      "C-c C-v" "View log"
+      "C-c C-m" "Set model"
+      "C-c C-f" "Toggle fast mode")))
+
 (defun hermes-minor-mode--on ()
   "Setup for `hermes-minor-mode': org-local config, hooks, header-line.
 Idempotent — safe to run when already armed.  In Phase 1 the major mode
@@ -582,6 +592,50 @@ reference.  Verify with the gateway spec before relying on resume."
                 (goto-char (point-min)) (copy-marker (point) nil)))
              (message "hermes: resumed as %s (%d turns parsed)"
                       sid (length history))))))))))
+
+;;;; Debug inspectors
+
+(defun hermes-inspect-turn ()
+  "Pretty-print the `:HERMES_RAW:' drawer at point into a temp buffer."
+  (interactive)
+  (let ((raw (save-excursion (hermes--extract-raw-drawer))))
+    (unless raw
+      (user-error "No :HERMES_RAW: drawer at point"))
+    (let ((buf (get-buffer-create "*Hermes Turn Inspector*")))
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (emacs-lisp-mode)
+          (pp raw (current-buffer))
+          (goto-char (point-min)))
+        (setq buffer-read-only t))
+      (display-buffer buf))))
+
+(defun hermes-debug-state ()
+  "Pop a buffer inspecting the live `hermes--state' atom."
+  (interactive)
+  (unless (and (boundp 'hermes--state) hermes--state)
+    (user-error "No Hermes state in this buffer"))
+  (let* ((st hermes--state)
+         (data `(:session-id    ,(hermes-state-session-id st)
+                 :connection    ,(hermes-state-connection st)
+                 :stream        ,(and (hermes-state-stream st) t)
+                 :queue-length  ,(length (hermes-state-queue st))
+                 :pending       ,(hermes-state-pending st)
+                 :history-len   ,(length (hermes-state-history st))
+                 :slash-catalog ,(and (hermes-state-slash-catalog st) t)
+                 :session-info  ,(hermes-state-session-info st)
+                 :usage         ,(hermes-state-usage st)
+                 :busy-mode     ,(hermes-state-busy-mode st)))
+         (buf (get-buffer-create "*Hermes State Inspector*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (emacs-lisp-mode)
+        (pp data (current-buffer))
+        (goto-char (point-min)))
+      (setq buffer-read-only t))
+    (display-buffer buf)))
 
 (provide 'hermes-mode)
 ;;; hermes-mode.el ends here

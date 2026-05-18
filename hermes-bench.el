@@ -166,6 +166,14 @@ Cleared after one paint cycle.")
     m)
   "Keymap for `hermes-bench-mode'.")
 
+(with-eval-after-load 'which-key
+  (when (fboundp 'which-key-add-keymap-based-replacements)
+    (which-key-add-keymap-based-replacements hermes-bench-mode-map
+      "C-c C-c" "Send prompt"
+      "C-c C-k" "Interrupt session"
+      "C-c C-l" "Compose multi-line"
+      "C-c C-s" "Steer mid-turn")))
+
 (define-derived-mode hermes-bench-mode text-mode "Hermes-Bench"
   "Major mode for the Hermes bottom bench panel."
   (setq truncate-lines nil)

@@ -127,6 +127,16 @@ available, falling back to whichever is present."
   (when (stringp candidate)
     (car (split-string candidate " " t))))
 
+(defvar hermes--model-annotation-table nil
+  "Dynamically bound hash table for model completion annotations.
+Maps candidate strings to annotation suffixes (e.g. `\"  — OpenRouter\"').
+Bound around the `completing-read' call in `hermes--set-model-prompt'.")
+
+(defun hermes--model-annotation (cand)
+  "Return annotation for CAND from `hermes--model-annotation-table'."
+  (and hermes--model-annotation-table
+       (gethash cand hermes--model-annotation-table)))
+
 (defun hermes--set-model-prompt (result)
   "Prompt for a model given the provider RESULT hash, then issue `config.set'."
   (let* ((current   (gethash "model" result))
@@ -135,11 +145,24 @@ available, falling back to whichever is present."
                           ((listp providers)   providers)
                           (t nil)))
          (candidates (mapcar #'hermes--provider-candidate raw))
+         (hermes--model-annotation-table (make-hash-table :test 'equal))
+         (_ (dolist (p raw)
+              (let ((cand  (hermes--provider-candidate p))
+                    (label (and (hash-table-p p) (gethash "label" p))))
+                (when (and label (not (string-empty-p label)))
+                  (puthash cand (concat "  — " label)
+                           hermes--model-annotation-table)))))
+         (table (lambda (string pred action)
+                  (if (eq action 'metadata)
+                      '(metadata
+                        (category . hermes-model)
+                        (annotation-function . hermes--model-annotation))
+                    (complete-with-action action candidates string pred))))
          (_ (when (null candidates)
               (message "hermes: no providers returned — enter a model slug manually")))
          (initial   (hermes--model-short-name current))
          (prompt    (format "Model (current %s): " (or current "—")))
-         (raw-choice (completing-read prompt candidates nil nil initial))
+         (raw-choice (completing-read prompt table nil nil initial))
          (provider-id (when (member raw-choice candidates)
                         (hermes--candidate-provider-id raw-choice)))
          (choice (cond

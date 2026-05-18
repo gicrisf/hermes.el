@@ -358,6 +358,11 @@ background; for the user-facing entry that also pops the buffer, see
        (t
         (hermes--create-session-under-heading)))))
    (t
+    ;; No auto-resume from gateway DB by design: the org buffer is the
+    ;; canonical history. Resuming a gateway session whose org buffer was
+    ;; discarded would yield an empty buffer with a ghost session behind
+    ;; it. To resume, open the saved .org file and run `M-x hermes' from
+    ;; there — `hermes--resume-heading-session' picks up :HERMES_SESSION:.
     (let ((buf (hermes--primary-session-buffer)))
       (if buf
           (progn

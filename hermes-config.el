@@ -70,16 +70,19 @@ prefix arg to `hermes-set-model'.")
 
 (defun hermes-config--fetch-providers (callback)
   "Fetch provider info via `config.get provider' and pass to CALLBACK.
-CALLBACK is called as (RESULT ERROR).  Caches the result in
-`hermes-config--last-providers' on success."
-  (let ((buf (current-buffer)))
-    (hermes-config-get
-     "provider"
-     (lambda (result error)
-       (when (and result (buffer-live-p buf))
-         (with-current-buffer buf
-           (setq hermes-config--last-providers result)))
-       (funcall callback result error)))))
+CALLBACK is called as (RESULT ERROR).  If `hermes-config--last-providers'
+already holds a result, the cached value is used and no RPC is sent.
+On a successful gateway response, the result is cached for future calls."
+  (if hermes-config--last-providers
+      (funcall callback hermes-config--last-providers nil)
+    (let ((buf (current-buffer)))
+      (hermes-config-get
+       "provider"
+       (lambda (result error)
+         (when (and result (buffer-live-p buf))
+           (with-current-buffer buf
+             (setq hermes-config--last-providers result)))
+         (funcall callback result error))))))
 
 ;;;; Model helper
 
@@ -105,18 +108,46 @@ Aborts with `user-error' if a stream is in flight."
              (with-current-buffer buf
                (hermes--set-model-prompt result))))))))))
 
+(defun hermes--provider-candidate (p)
+  "Render a provider dict P as a completion candidate string.
+Returns a string of the form `id (label)' when both fields are
+available, falling back to whichever is present."
+  (let ((id    (and (hash-table-p p) (gethash "id" p)))
+        (label (and (hash-table-p p) (gethash "label" p))))
+    (cond
+     ((and id label (not (equal id label))) (format "%s (%s)" id label))
+     (id    id)
+     (label label)
+     ((stringp p) p)
+     (t     (format "%s" p)))))
+
+(defun hermes--candidate-provider-id (candidate)
+  "Extract the provider id from CANDIDATE (`id' or `id (label)')."
+  (when (stringp candidate)
+    (car (split-string candidate " " t))))
+
 (defun hermes--set-model-prompt (result)
   "Prompt for a model given the provider RESULT hash, then issue `config.set'."
   (let* ((current   (gethash "model" result))
          (providers (gethash "providers" result))
-         (candidates (cond
-                      ((vectorp providers) (append providers nil))
-                      ((listp providers)   providers)
-                      (t nil)))
-         (prompt    (format "Model (current %s): "
-                            (or current "—")))
-         (choice    (completing-read prompt candidates nil nil
-                                     (hermes--model-short-name current))))
+         (raw       (cond ((vectorp providers) (append providers nil))
+                          ((listp providers)   providers)
+                          (t nil)))
+         (candidates (mapcar #'hermes--provider-candidate raw))
+         (_ (when (null candidates)
+              (message "hermes: no providers returned — enter a model slug manually")))
+         (initial   (hermes--model-short-name current))
+         (prompt    (format "Model (current %s): " (or current "—")))
+         (raw-choice (completing-read prompt candidates nil nil initial))
+         (provider-id (when (member raw-choice candidates)
+                        (hermes--candidate-provider-id raw-choice)))
+         (choice (cond
+                  ;; Picked a provider candidate: prompt for full slug,
+                  ;; pre-filling `provider/'.
+                  (provider-id
+                   (read-string (format "Model slug for %s: " provider-id)
+                                (concat provider-id "/")))
+                  (t raw-choice))))
     (when (and choice (not (string-empty-p (string-trim choice))))
       (hermes-config-set
        "model" choice

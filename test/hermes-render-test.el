@@ -1005,5 +1005,70 @@ rewritten heading and leaving the drawer body visible."
     (should (re-search-forward "^\\*\\* " nil t))
     (should (get-text-property (line-beginning-position) 'line-prefix))))
 
+;;;; Tail-following windows after commit
+
+(ert-deftest hermes-render-test/window-follows-tail-on-stream-commit ()
+  "A window pinned to `point-max' advances after non-bench `stream-commit'."
+  (let ((buf (generate-new-buffer " *hermes-render-test-window*")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (hermes-mode)
+            ;; Stage 1 — stream begins.
+            (let* ((old hermes--state)
+                   (stream (make-hermes-stream
+                            :segments (vector (make-hermes-segment
+                                               :type 'text :content "Hello"
+                                               :id "s1"))))
+                   (new (hermes--with-copy hermes--state hermes-state-copy s
+                          (setf (hermes-state-stream s) stream))))
+              (setq hermes--state new)
+              (hermes--render old new))
+            ;; Pin the window to point-max and remember it.
+            (let ((win (selected-window))
+                  (pre-pmax (point-max)))
+              (set-window-point win pre-pmax)
+              (should (= (window-point win) pre-pmax))
+              ;; Stage 2 — message.complete: stream cleared, no pending-turn
+              ;; (assistant commit goes through `hermes--stream-commit',
+              ;; which sets `committed-region').
+              (let* ((old hermes--state)
+                     (new (hermes--with-copy hermes--state hermes-state-copy s
+                            (setf (hermes-state-stream s) nil))))
+                (setq hermes--state new)
+                (hermes--render old new))
+              (should (> (point-max) pre-pmax))
+              (should (= (window-point win) (point-max))))))
+      (kill-buffer buf))))
+
+(ert-deftest hermes-render-test/window-not-followed-when-scrolled-up ()
+  "If `window-point' is above the tail, the renderer leaves it alone."
+  (let ((buf (generate-new-buffer " *hermes-render-test-window-scrolled*")))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) buf)
+          (with-current-buffer buf
+            (hermes-mode)
+            (let* ((old hermes--state)
+                   (stream (make-hermes-stream
+                            :segments (vector (make-hermes-segment
+                                               :type 'text :content "Hello"
+                                               :id "s1"))))
+                   (new (hermes--with-copy hermes--state hermes-state-copy s
+                          (setf (hermes-state-stream s) stream))))
+              (setq hermes--state new)
+              (hermes--render old new))
+            (let* ((win (selected-window))
+                   (parked (point-min)))
+              (set-window-point win parked)
+              (let* ((old hermes--state)
+                     (new (hermes--with-copy hermes--state hermes-state-copy s
+                            (setf (hermes-state-stream s) nil))))
+                (setq hermes--state new)
+                (hermes--render old new))
+              (should (= (window-point win) parked)))))
+      (kill-buffer buf))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

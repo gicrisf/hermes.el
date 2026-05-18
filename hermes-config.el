@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ansi-color)
 (require 'hermes-rpc)
 (require 'hermes-state)
 (require 'hermes-org)
@@ -435,28 +436,80 @@ With prefix arg PROMPT-NAME, prompts for a skill name verbatim."
           (user-error "Empty query"))
         (hermes--skills-search query install)))))
 
-(defun hermes-skills-uninstall (name &optional now)
-  "Uninstall the skill named NAME via `/skills uninstall'.
-With prefix arg NOW, appends `--now' so the change takes effect
-immediately (cache-aware invalidation).  Requires an active session
-because `slash.exec' routes through a session_id."
-  (interactive
-   (list (read-string "Uninstall skill: ")
-         current-prefix-arg))
-  (let ((trimmed (string-trim (or name ""))))
-    (when (string-empty-p trimmed)
-      (user-error "Empty skill name"))
-    (let ((sid (hermes--config-resolve-target))
-          (cmd (format "skills uninstall %s%s"
-                       trimmed (if now " --now" ""))))
-      (hermes-rpc-request
-       "slash.exec" (list :session_id sid :command cmd)
-       (lambda (r e)
-         (cond
-          (e (message "hermes: skills uninstall error: %S" e))
-          (r (let ((output (and (hash-table-p r) (gethash "output" r))))
-               (message "%s" (or output
-                                 (format "hermes: uninstalled %s" trimmed)))))))))))
+(defun hermes--skills-flatten (skills-map)
+  "Return a sorted flat list of skill names from SKILLS-MAP.
+SKILLS-MAP is the `skills' field of a `skills.manage list' response —
+a hash table whose values are vectors/lists of names."
+  (let (names)
+    (when (hash-table-p skills-map)
+      (maphash (lambda (_cat raw)
+                 (let ((items (cond ((vectorp raw) (append raw nil))
+                                    ((listp raw)   raw)
+                                    (t nil))))
+                   (dolist (n items) (push n names))))
+               skills-map))
+    (sort (delete-dups names) #'string<)))
+
+(defun hermes--skills-show-output (output &optional error-p parent-buf)
+  "Show OUTPUT in the bench (if active), otherwise pop `*Hermes Skills*'.
+If the bench is unavailable and output is single-line, fall back to the
+minibuffer.  ERROR-P applies `error' face.  PARENT-BUF is the buffer to
+query for a live bench; defaults to `current-buffer'."
+  (let* ((clean (or (ansi-color-apply (or output "")) ""))
+         (buf (or parent-buf (current-buffer))))
+    ;; If we're in the bench buffer, resolve to its parent org buffer.
+    (when (and (buffer-live-p buf)
+               (eq (buffer-local-value 'major-mode buf)
+                   'hermes-bench-mode))
+      (setq buf (buffer-local-value 'hermes-bench--parent-buffer buf)))
+    (cond
+     ((string-empty-p clean)
+      (message "hermes: (no output)"))
+     ((and (fboundp 'hermes-bench-show-status)
+           (hermes-bench-active-p buf))
+      (hermes-bench-show-status buf clean error-p))
+     ((string-match-p "\n" (string-trim-right clean))
+      (let ((disp (get-buffer-create "*Hermes Skills*")))
+        (with-current-buffer disp
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert clean)
+            (goto-char (point-min)))
+          (setq buffer-read-only t))
+        (display-buffer disp)))
+     (t (message "%s" clean)))))
+
+(defun hermes-skills-uninstall (&optional now)
+  "Uninstall a skill via `/skills uninstall' (routed through `slash.exec').
+Fetches the installed skills via `skills.manage list', presents a
+flat picker, then dispatches the chosen name.  With prefix arg NOW,
+appends `--now' so the change takes effect immediately (cache-aware
+invalidation).  Requires an active session."
+  (interactive "P")
+  (let ((sid (hermes--config-resolve-target))
+        (parent-buf (current-buffer)))
+    (hermes-rpc-request
+     "skills.manage" (list :action "list")
+     (lambda (r e)
+       (cond
+        (e (message "hermes: skills.manage list error: %S" e))
+        (r (let* ((map (and (hash-table-p r) (gethash "skills" r)))
+                  (names (hermes--skills-flatten map)))
+             (if (null names)
+                 (user-error "hermes: no skills to uninstall")
+               (let* ((choice (completing-read "Uninstall skill: " names nil t))
+                      (cmd (format "skills uninstall %s%s"
+                                   choice (if now " --now" ""))))
+                  (hermes-rpc-request
+                   "slash.exec" (list :session_id sid :command cmd)
+                   (lambda (r2 e2)
+                     (cond
+                      (e2 (message "hermes: skills uninstall error: %S" e2))
+                      (r2 (let* ((output (and (hash-table-p r2)
+                                              (gethash "output" r2)))
+                                 (clean (ansi-color-apply (or output "")))
+                                 (error-p (string-match-p "^Error:" clean)))
+                            (hermes--skills-show-output output error-p parent-buf)))))))))))))))
 
 (provide 'hermes-config)
 ;;; hermes-config.el ends here

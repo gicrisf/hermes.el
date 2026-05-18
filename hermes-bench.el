@@ -145,6 +145,10 @@ user input) is the input frame.")
   "List of `[steer]' messages (oldest-first) shown above the reasoning zone.
 Cleared by `hermes-bench--stream-commit' when the turn ends.")
 
+(defvar-local hermes-bench--status-message nil
+  "Transient status plist (:text :error-p) rendered above the separator.
+Cleared after one paint cycle.")
+
 ;;;; Buffer-local state (parent buffer)
 
 (defvar-local hermes-bench--buffer nil
@@ -363,7 +367,15 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
       (let ((trimmed (and answer (string-trim-right answer))))
         (when (and trimmed (not (string-empty-p trimmed)))
           (insert trimmed)
-          (insert "\n"))))
+          (insert "\n")))
+      ;; Transient status message (skills command feedback, etc.).
+      (when hermes-bench--status-message
+        (let ((text (plist-get hermes-bench--status-message :text))
+              (err (plist-get hermes-bench--status-message :error-p)))
+          (insert (propertize text
+                              'face (if err 'error 'hermes-bench-user-face))
+                  "\n"))
+        (setq hermes-bench--status-message nil)))
     ;; 3. Separator + prompt — input frame.
     (setq hermes-bench--input-boundary (copy-marker (point) nil))
     (insert (propertize (concat hermes-bench-separator "\n")
@@ -569,6 +581,28 @@ and dispatches the steer RPC against the parent session."
   (when (buffer-live-p hermes-bench--parent-buffer)
     (with-current-buffer hermes-bench--parent-buffer
       (call-interactively #'hermes-compose))))
+
+(defun hermes-bench-show-status (parent text &optional error-p)
+  "Show TEXT as a transient status line in the bench paired with PARENT.
+If ERROR-P is non-nil, apply `error' face.  The text is stored in
+`hermes-bench--status-message' and rendered immediately."
+  (let ((bench (hermes-bench-active-p parent)))
+    (when bench
+      (with-current-buffer bench
+        (setq hermes-bench--status-message
+              (list :text text :error-p error-p))
+        ;; Trigger repaint so the status appears immediately.
+        (let* ((state  (and (buffer-live-p parent)
+                            (buffer-local-value 'hermes--state parent)))
+               (stream (and state (hermes-state-stream state))))
+          (if (hermes-stream-p stream)
+              (pcase-let ((`(,reasoning . ,answer)
+                           (hermes-bench--segments-by-zone
+                            (hermes-stream-segments stream))))
+                (hermes-bench--paint-ephemeral nil reasoning answer))
+             (hermes-bench--paint-ephemeral nil nil nil)))))))
+
+(declare-function ansi-color-apply "ansi-color" (string))
 
 (provide 'hermes-bench)
 ;;; hermes-bench.el ends here

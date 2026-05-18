@@ -109,6 +109,20 @@ Add to `~/.config/doom/config.el`:
 
 Restart or `M-x load-file` the file.
 
+### Transient popup (optional)
+
+For users with Transient installed (Doom, Spacemacs, or Magit users):
+
+```elisp
+(require 'hermes-transient)
+```
+
+This binds `C-c C-t` in `hermes-mode` buffers to a grouped popup menu.
+The popup is context-sensitive: session-level commands (send, config,
+steer, skills uninstall) are hidden when no Hermes session is active.
+Skills reload/list/search/install are always available and will auto-start
+the gateway if needed.
+
 ## Usage
 
 ### Vanilla Emacs keybindings
@@ -146,7 +160,9 @@ Restart or `M-x load-file` the file.
 | `SPC h r` | Cycle reasoning |
 | `SPC h y` | Toggle YOLO |
 | `SPC h t` | Toggle toolsets |
+| `SPC h .` | Transient command popup (requires `hermes-transient`) |
 | hermes-mode `C-c C-i` | Focus bench input |
+| hermes-mode `C-c C-t` | Transient command popup (requires `hermes-transient`) |
 | hermes-mode `C-c C-k` | Interrupt |
 | hermes-mode `C-c C-l` | Multi-line compose |
 

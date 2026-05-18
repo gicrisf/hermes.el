@@ -5,6 +5,7 @@
 (add-to-list 'load-path "~/Projects/emacs-hermes")
 
 (require 'hermes-mode)
+(require 'hermes-transient nil t)   ; soft: no error if user lacks transient
 
 ;; ── hermes-mode: normal-state C-c bindings (keep org navigation) ──────────
 
@@ -41,7 +42,9 @@
   (define-key hermes-skills-leader-map (kbd "l") #'hermes-skills-list)
   (define-key hermes-skills-leader-map (kbd "s") #'hermes-skills-search)
   (define-key hermes-skills-leader-map (kbd "i") #'hermes-skills-install)
-  (define-key hermes-skills-leader-map (kbd "u") #'hermes-skills-uninstall))
+  (define-key hermes-skills-leader-map (kbd "u") #'hermes-skills-uninstall)
+  (when (fboundp 'hermes-transient)
+    (define-key hermes-leader-map (kbd ".") #'hermes-transient)))
 
 ;; ── Global helpers ────────────────────────────────────────────────────────
 

@@ -288,15 +288,18 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
       (unless (string-empty-p effective-user)
         (insert (propertize (concat "** U: " effective-user "\n\n")
                             'face 'hermes-bench-user-face)))
-      ;; Reasoning zone.
-      (when (and reasoning (not (string-empty-p reasoning)))
-        (insert (propertize reasoning 'face 'hermes-bench-reasoning-face))
-        (unless (string-suffix-p "\n" reasoning) (insert "\n"))
-        (insert "\n"))
+      ;; Reasoning zone — trim model-supplied trailing whitespace so we
+      ;; control the exact spacing between zones (otherwise stray "\n\n"
+      ;; in the stream stacks with the separator newlines below).
+      (let ((trimmed (and reasoning (string-trim-right reasoning))))
+        (when (and trimmed (not (string-empty-p trimmed)))
+          (insert (propertize trimmed 'face 'hermes-bench-reasoning-face))
+          (insert "\n\n")))
       ;; Answer zone.
-      (when (and answer (not (string-empty-p answer)))
-        (insert answer)
-        (unless (string-suffix-p "\n" answer) (insert "\n"))))
+      (let ((trimmed (and answer (string-trim-right answer))))
+        (when (and trimmed (not (string-empty-p trimmed)))
+          (insert trimmed)
+          (insert "\n"))))
     ;; 3. Separator + prompt — input frame.
     (setq hermes-bench--input-boundary (copy-marker (point) nil))
     (insert (propertize (concat hermes-bench-separator "\n")

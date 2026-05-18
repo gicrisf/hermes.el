@@ -160,6 +160,34 @@ available, falling back to whichever is present."
                         (if (and w (not (string-empty-p w)))
                             (format " (%s)" w) ""))))))))))
 
+;;;; Steer (mid-turn injection)
+
+(declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
+(declare-function hermes-bench-add-steer "hermes-bench" (parent text))
+
+(defun hermes-steer (text)
+  "Send TEXT as a steer message to the current session's in-flight turn.
+Safe mid-turn: the gateway threads the message into the running turn
+without interrupting it.  If a bench is paired with the target buffer,
+the message is also shown above its reasoning zone."
+  (interactive (list (read-string "Steer: ")))
+  (let ((sid    (hermes--config-resolve-target))
+        (parent (current-buffer))
+        (trimmed (string-trim (or text ""))))
+    (when (string-empty-p trimmed)
+      (user-error "Empty steer message"))
+    (when (fboundp 'hermes-bench-add-steer)
+      (hermes-bench-add-steer parent trimmed))
+    (hermes-rpc-request
+     "session.steer"
+     (list :session_id sid :text trimmed)
+     (lambda (r e)
+       (cond
+        (e (message "hermes: steer error: %S" e))
+        ((equal (and (hash-table-p r) (gethash "status" r)) "rejected")
+         (message "hermes: steer rejected"))
+        (t (message "hermes: steer queued")))))))
+
 ;;;; Toggle helpers
 
 (defun hermes-toggle-fast ()

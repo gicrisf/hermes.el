@@ -32,6 +32,8 @@
 (declare-function hermes--parse-buffer-messages "hermes-mode" ())
 (declare-function hermes--buffer-message-count "hermes-mode" ())
 (declare-function hermes--message-text-for-display "hermes-render" (msg))
+(declare-function hermes-interrupt "hermes-mode" ())
+(declare-function hermes-bench-add-steer "hermes-bench" (parent text))
 
 (defvar-local hermes-input--history nil
   "Buffer-local mirror of `hermes-state-history' for `read-string' HISTORY.")
@@ -332,9 +334,28 @@ ends."
      ;; *after* the still-rendering assistant turn — corrupting structure.
      ;; See `hermes-input--drain' for the deferred user-submit + RPC.
      ((hermes-state-stream hermes--state)
-      (hermes-dispatch (cons :enqueue (list :text text)))
-      (message "Hermes: Message queued (%d ahead of you)"
-               (length (hermes-state-queue hermes--state))))
+      (pcase (hermes-state-busy-mode hermes--state)
+        ("steer"
+         (when (fboundp 'hermes-bench-add-steer)
+           (hermes-bench-add-steer (current-buffer) text))
+         (hermes-rpc-request
+          "session.steer"
+          (list :session_id sid :text text)
+          (lambda (r e)
+            (cond
+             (e (message "hermes: steer error: %S" e))
+             ((equal (and (hash-table-p r) (gethash "status" r)) "rejected")
+              (message "hermes: steer rejected"))
+             (t (message "hermes: steer queued"))))))
+        ("interrupt"
+         (hermes-interrupt)
+         ;; After interrupt the stream clears; the drain hook will
+         ;; submit this text once the queue head becomes head-of-line.
+         (hermes-dispatch (cons :enqueue (list :text text))))
+        (_  ; "queue" (default) or unknown
+         (hermes-dispatch (cons :enqueue (list :text text)))
+         (message "Hermes: Message queued (%d ahead of you)"
+                  (length (hermes-state-queue hermes--state))))))
      ;; Idle → optimistic commit + immediate prompt.submit.
      (t
       ;; Display the user's actual input — the seed prefix is for the

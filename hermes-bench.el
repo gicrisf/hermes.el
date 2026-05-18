@@ -123,6 +123,11 @@
   "Face for reasoning text in the bench."
   :group 'hermes)
 
+(defface hermes-bench-steer-face
+  '((t :inherit warning :weight bold))
+  "Face for `[steer]' messages shown above the reasoning zone."
+  :group 'hermes)
+
 ;;;; Buffer-local state (bench buffer)
 
 (defvar-local hermes-bench--parent-buffer nil
@@ -135,6 +140,10 @@ user input) is the input frame.")
 
 (defvar-local hermes-bench--current-user-prompt nil
   "Last user prompt painted into the bench (preserved across rebuilds).")
+
+(defvar-local hermes-bench--steer-messages nil
+  "List of `[steer]' messages (oldest-first) shown above the reasoning zone.
+Cleared by `hermes-bench--stream-commit' when the turn ends.")
 
 ;;;; Buffer-local state (parent buffer)
 
@@ -149,6 +158,7 @@ user input) is the input frame.")
     (define-key m (kbd "C-c C-c") #'hermes-bench-send)
     (define-key m (kbd "C-c C-k") #'hermes-bench-interrupt-parent)
     (define-key m (kbd "C-c C-l") #'hermes-bench-compose)
+    (define-key m (kbd "C-c C-s") #'hermes-bench-steer)
     m)
   "Keymap for `hermes-bench-mode'.")
 
@@ -323,6 +333,13 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
       (unless (string-empty-p effective-user)
         (insert (propertize (concat "** U: " effective-user "\n\n")
                             'face 'hermes-bench-user-face)))
+      ;; Steer messages — shown between user prompt and reasoning so the
+      ;; user can see what was injected into the running turn.
+      (when hermes-bench--steer-messages
+        (dolist (steer hermes-bench--steer-messages)
+          (insert (propertize (concat "[steer] " steer "\n")
+                              'face 'hermes-bench-steer-face)))
+        (insert "\n"))
       ;; Reasoning zone — trim model-supplied trailing whitespace so we
       ;; control the exact spacing between zones (otherwise stray "\n\n"
       ;; in the stream stacks with the separator newlines below).
@@ -450,6 +467,9 @@ Looks at pending-turns first, then walks the parent's history ring."
 The bench is NOT cleared; the answer remains until the next
 `hermes-bench-send'."
   (when (buffer-live-p bench)
+    (with-current-buffer bench
+      ;; Steer messages were valid for the now-ending turn only.
+      (setq hermes-bench--steer-messages nil))
     (let ((parent (buffer-local-value 'hermes-bench--parent-buffer bench)))
       (when (and (buffer-live-p parent)
                  (hermes-stream-p old-stream))
@@ -459,6 +479,27 @@ The bench is NOT cleared; the answer remains until the next
             (with-silent-modifications
               (save-excursion
                 (hermes--insert-committed-turn msg)))))))))
+
+(defun hermes-bench-add-steer (parent text)
+  "Append TEXT as a `[steer]' message to the bench paired with PARENT.
+No-op if PARENT has no live bench.  Repaints so the message is visible
+above the reasoning zone immediately, preserving any in-flight stream
+content."
+  (let ((bench (hermes-bench-active-p parent)))
+    (when (and bench (stringp text) (not (string-empty-p text)))
+      (with-current-buffer bench
+        (setq hermes-bench--steer-messages
+              (append hermes-bench--steer-messages (list text))))
+      (let* ((state  (and (buffer-live-p parent)
+                          (buffer-local-value 'hermes--state parent)))
+             (stream (and state (hermes-state-stream state))))
+        (with-current-buffer bench
+          (if (hermes-stream-p stream)
+              (pcase-let ((`(,reasoning . ,answer)
+                           (hermes-bench--segments-by-zone
+                            (hermes-stream-segments stream))))
+                (hermes-bench--paint-ephemeral nil reasoning answer))
+            (hermes-bench--paint-ephemeral nil nil nil)))))))
 
 ;;;; Send / interrupt / compose
 
@@ -488,6 +529,23 @@ then dispatches the text to the parent."
   (when (buffer-live-p hermes-bench--parent-buffer)
     (with-current-buffer hermes-bench--parent-buffer
       (call-interactively #'hermes-interrupt))))
+
+(declare-function hermes-steer "hermes-config" (text))
+
+(defun hermes-bench-steer ()
+  "Send the current input-area text as a `session.steer' message.
+Clears the input area, shows `[steer] <text>' above the reasoning zone,
+and dispatches the steer RPC against the parent session."
+  (interactive)
+  (let ((text (string-trim (hermes-bench--input-text)))
+        (parent hermes-bench--parent-buffer))
+    (unless (buffer-live-p parent)
+      (user-error "Bench has no live parent buffer"))
+    (when (string-empty-p text)
+      (user-error "Nothing to steer"))
+    (hermes-bench--clear-input)
+    (with-current-buffer parent
+      (hermes-steer text))))
 
 (defun hermes-bench-compose ()
   "Open the multi-line composer targeting the parent buffer."

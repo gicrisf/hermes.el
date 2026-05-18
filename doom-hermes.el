@@ -31,7 +31,8 @@
   (define-key hermes-leader-map (kbd "f") #'hermes-toggle-fast)
   (define-key hermes-leader-map (kbd "r") #'hermes-toggle-reasoning)
   (define-key hermes-leader-map (kbd "y") #'hermes-toggle-yolo)
-  (define-key hermes-leader-map (kbd "t") #'hermes-toolsets-toggle))
+  (define-key hermes-leader-map (kbd "t") #'hermes-toolsets-toggle)
+  (define-key hermes-leader-map (kbd "S") #'hermes-steer))
 
 ;; ── Global helpers ────────────────────────────────────────────────────────
 

@@ -111,7 +111,8 @@
   slash-catalog
   (queue nil)
   (history nil)
-  skin)
+  skin
+  busy-mode)         ; string from gateway `busy' config: "queue" | "steer" | "interrupt" | nil
 
 ;;;; Ephemeral UI state — never persisted to the buffer
 
@@ -600,6 +601,9 @@ which case dispatch routes to the correct typed reconstructor."
              (maphash (lambda (k v) (puthash k v merged)) p)
              (setf (hermes-state-session-info s) merged)
              (when sid (setf (hermes-state-session-id s) sid))
+             (let ((busy (hermes--get p "busy")))
+               (when (and busy (stringp busy) (not (string-empty-p busy)))
+                 (setf (hermes-state-busy-mode s) busy)))
              (when usage-payload
                (let ((u (or (hermes-state-usage state)
                             (make-hash-table :test 'equal))))

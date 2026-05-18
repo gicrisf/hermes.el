@@ -134,6 +134,9 @@ Returns nil if no such ancestor exists."
 - In an arbitrary Org buffer with `hermes-minor-mode' enabled, walks
   up from point to find the enclosing `:hermes:' container and looks
   the corresponding state up in `hermes--buffer-sessions'.
+- In a `hermes-bench-mode' buffer, delegates to the paired parent
+  buffer so commands invoked from the bench resolve against the
+  parent's session.
 Returns nil when no session is reachable."
   (cond
    ((derived-mode-p 'hermes-mode)
@@ -147,7 +150,12 @@ Returns nil when no session is reachable."
       ;; (e.g. file just reopened).  The caller distinguishes that
       ;; from "no container at all" (nil return) so it can trigger
       ;; an on-demand resume.
-      (and sid (cons sid state))))))
+      (and sid (cons sid state))))
+   ((and (boundp 'hermes-bench--parent-buffer)
+         hermes-bench--parent-buffer
+         (buffer-live-p hermes-bench--parent-buffer))
+    (with-current-buffer hermes-bench--parent-buffer
+      (hermes--resolve-session-target)))))
 
 ;;;; Resume / rehydration
 

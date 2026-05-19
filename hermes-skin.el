@@ -77,6 +77,12 @@ re-rendered.  Disappears when the turn commits."
     (let ((colors (gethash "colors" skin)))
       (and (hash-table-p colors) (gethash key colors)))))
 
+(defvar hermes-skin-applied-hook nil
+  "Hook run after `hermes-skin-apply' finishes.
+Each function is called with one argument — the SKIN hash table.
+Subscribers should refresh any buffers whose styling depends on the
+skin (e.g. side-window backgrounds in other buffers).")
+
 (defun hermes-skin-apply (skin)
   "Apply SKIN (a hash table from gateway.ready) to the current buffer."
   ;; Tear down previous remaps so applying a fresh skin is clean.
@@ -108,7 +114,8 @@ re-rendered.  Disappears when the turn commits."
     (dolist (pair remaps)
       (when (cdr pair)
         (push (face-remap-add-relative (car pair) :foreground (cdr pair))
-              hermes-skin--remap-cookies)))))
+              hermes-skin--remap-cookies))))
+  (run-hook-with-args 'hermes-skin-applied-hook skin))
 
 (defun hermes-skin-watch (old new)
   "State-change hook: re-apply the skin when it changes."

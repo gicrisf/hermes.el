@@ -48,6 +48,14 @@
   "Separator line between ephemeral zones and the input area."
   :type 'string :group 'hermes)
 
+(defcustom hermes-bench-background-color nil
+  "Explicit background color for the bench buffer.
+When nil, the bench falls back to the gateway skin color
+(`ui_bench'), or to `hermes-bench-buffer-face' as a last resort."
+  :type '(choice (const :tag "Use skin / theme default" nil)
+                 (color :tag "Custom color"))
+  :group 'hermes)
+
 (defvar hermes--last-gateway-ready)
 (declare-function hermes-state-stream "hermes-state" (state))
 (declare-function hermes-state-session-id "hermes-state" (state))
@@ -128,6 +136,26 @@
   "Face for `[steer]' messages shown above the reasoning zone."
   :group 'hermes)
 
+(defface hermes-bench-buffer-face
+  '((((class color) (background dark))
+     :background "#1c1f26" :extend t)
+    (((class color) (background light))
+     :background "#f4f4f4" :extend t)
+    (t :inherit default))
+  "Background face applied to the entire bench buffer window."
+  :group 'hermes)
+
+(defface hermes-bench-hl-line-face
+  '((((class color) (background dark))
+     :background "#2a2e38" :extend t)
+    (((class color) (background light))
+     :background "#e0e0e0" :extend t)
+    (t :inherit hl-line))
+  "Face for `hl-line-mode' in the bench buffer.
+Kept separate from `hl-line' so users and skins can override it
+without affecting the rest of Emacs."
+  :group 'hermes)
+
 ;;;; Buffer-local state (bench buffer)
 
 (defvar-local hermes-bench--parent-buffer nil
@@ -140,6 +168,10 @@ user input) is the input frame.")
 
 (defvar-local hermes-bench--current-user-prompt nil
   "Last user prompt painted into the bench (preserved across rebuilds).")
+
+(defvar-local hermes-bench--bg-cookie nil
+  "`face-remap-add-relative' cookie for the bench background.
+Removed and recreated when the skin changes.")
 
 (defvar-local hermes-bench--steer-messages nil
   "List of `[steer]' messages (oldest-first) shown above the reasoning zone.
@@ -174,16 +206,71 @@ Cleared after one paint cycle.")
       "C-c C-l" "Compose multi-line"
       "C-c C-s" "Steer mid-turn")))
 
+;; `define-derived-mode' bodies run BEFORE `after-change-major-mode-hook',
+;; which is where `global-display-line-numbers-mode' enables itself in
+;; new buffers — so disabling it in the body is overwritten.  Two
+;; defences: exempt the mode (Emacs 28+ supports
+;; `display-line-numbers-exempt-modes') and override via the mode hook,
+;; which runs AFTER the global mode has had its turn.
+(with-eval-after-load 'display-line-numbers
+  (when (boundp 'display-line-numbers-exempt-modes)
+    (add-to-list 'display-line-numbers-exempt-modes 'hermes-bench-mode)))
+
+(defun hermes-bench--disable-line-numbers ()
+  "Force `display-line-numbers-mode' off in the current bench buffer."
+  (display-line-numbers-mode -1))
+
 (define-derived-mode hermes-bench-mode text-mode "Hermes-Bench"
   "Major mode for the Hermes bottom bench panel."
   (setq truncate-lines nil)
   (visual-line-mode 1)
+  (hl-line-mode 1)
+  (setq-local hl-line-face 'hermes-bench-hl-line-face)
   (setq-local cursor-type 'bar))
+
+(add-hook 'hermes-bench-mode-hook #'hermes-bench--disable-line-numbers)
 
 ;;;; Lifecycle
 
 (defun hermes-bench--buffer-name (parent)
   (format " *hermes-bench:%s*" (buffer-name parent)))
+
+(defun hermes-bench--effective-bg (skin)
+  "Return the background color string to use for the bench buffer.
+Respects `hermes-bench-background-color'; when that is nil, uses
+SKIN.colors.ui_bench if present, otherwise the default from
+`hermes-bench-buffer-face'."
+  (or hermes-bench-background-color
+      (and (hash-table-p skin)
+           (let ((colors (gethash "colors" skin)))
+             (and (hash-table-p colors) (gethash "ui_bench" colors))))
+      (face-background 'hermes-bench-buffer-face nil 'default)))
+
+(defun hermes-bench--refresh-bg-all (skin)
+  "Refresh the bench background of every live bench buffer from SKIN.
+Subscribed to `hermes-skin-applied-hook'."
+  (dolist (buf (buffer-list))
+    (when (and (buffer-live-p buf)
+               (buffer-local-value 'hermes-bench--bg-cookie buf))
+      (with-current-buffer buf
+        (hermes-bench--apply-bg skin)))))
+
+(with-eval-after-load 'hermes-skin
+  (add-hook 'hermes-skin-applied-hook #'hermes-bench--refresh-bg-all))
+
+(defun hermes-bench--apply-bg (&optional skin)
+  "Refresh the bench buffer's background remap from SKIN.
+If SKIN is nil, falls back to `hermes--last-gateway-ready'.  Removes
+the previous cookie first so the effect is idempotent."
+  (let ((bg (hermes-bench--effective-bg
+             (or skin (and (boundp 'hermes--last-gateway-ready)
+                           hermes--last-gateway-ready)))))
+    (when hermes-bench--bg-cookie
+      (face-remap-remove-relative hermes-bench--bg-cookie)
+      (setq hermes-bench--bg-cookie nil))
+    (when bg
+      (setq hermes-bench--bg-cookie
+            (face-remap-add-relative 'default :background bg)))))
 
 (defun hermes-bench-active-p (&optional parent)
   "Return the live bench buffer paired with PARENT, or nil.
@@ -225,6 +312,7 @@ the paired bench is returned when it exists."
 (defun hermes-bench--setup (parent)
   "Initialize the bench buffer contents for PARENT."
   (hermes-bench-mode)
+  (hermes-bench--apply-bg)
   (setq hermes-bench--parent-buffer parent
         hermes-bench--current-user-prompt nil)
   (let ((inhibit-read-only t))

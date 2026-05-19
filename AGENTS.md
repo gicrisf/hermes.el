@@ -123,6 +123,25 @@ steer, skills uninstall) are hidden when no Hermes session is active.
 Skills reload/list/search/install are always available and will auto-start
 the gateway if needed.
 
+### Desktop notifications (optional)
+
+```elisp
+(require 'hermes-notifications)
+```
+
+Fires a desktop notification (via the built-in `notifications` library —
+DBus on Linux, Notification Center on macOS) when a turn finishes or a
+blocking prompt (approval/clarify/sudo/secret) appears while the Hermes
+buffer is hidden.  Disable at runtime by setting
+`hermes-notifications-enabled' to nil.
+
+### Debugging
+
+- `M-x hermes-inspect-turn` — pretty-print the `:HERMES_RAW:` drawer
+  at point into a temporary buffer.
+- `M-x hermes-debug-state` — inspect the live state atom for the
+  current session.
+
 ## Usage
 
 ### Vanilla Emacs keybindings

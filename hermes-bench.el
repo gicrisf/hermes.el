@@ -226,7 +226,8 @@ Cleared after one paint cycle.")
   (visual-line-mode 1)
   (hl-line-mode 1)
   (setq-local hl-line-face 'hermes-bench-hl-line-face)
-  (setq-local cursor-type 'bar))
+  (setq-local cursor-type 'bar)
+  (add-hook 'pre-command-hook #'hermes-bench--ensure-input-point nil t))
 
 (add-hook 'hermes-bench-mode-hook #'hermes-bench--disable-line-numbers)
 
@@ -389,6 +390,65 @@ Returns nil when the input frame hasn't been built yet."
         ;; Past the prompt string, clamped to point-max.
         (min (point-max) (+ (point) (length hermes-bench-prompt)))))))
 
+(defun hermes-bench--in-input-area-p ()
+  "Return non-nil if point is in the editable input area."
+  (let ((start (hermes-bench--input-start)))
+    (and start (>= (point) start))))
+
+(defconst hermes-bench--motion-commands
+  '(nil
+    ;; Vanilla navigation
+    forward-char backward-char
+    next-line previous-line
+    beginning-of-line end-of-line
+    beginning-of-buffer end-of-buffer
+    scroll-up scroll-down
+    scroll-up-command scroll-down-command
+    goto-char mouse-set-point mouse-goto-line
+    ;; Copy / kill ring (read-only zone is safe for these)
+    kill-ring-save clipboard-kill-ring-save
+    mouse-save-then-kill
+    ;; Search / isearch
+    isearch-forward isearch-backward
+    isearch-forward-regexp isearch-backward-regexp
+    isearch-repeat-forward isearch-repeat-backward
+    ;; Mark / region
+    set-mark-command mark-page exchange-point-and-mark
+    ;; Evil normal-state motion commands
+    evil-forward-char evil-backward-char
+    evil-next-line evil-previous-line
+    evil-beginning-of-line evil-end-of-line
+    evil-goto-first-line evil-goto-line
+    evil-scroll-page-down evil-scroll-page-up
+    evil-scroll-line-down evil-scroll-line-up
+    evil-goto-mark evil-set-marker
+    evil-jump-forward evil-jump-backward
+    evil-search-next evil-search-previous
+    evil-ex-search-next evil-ex-search-previous
+    evil-find-char evil-find-char-backward
+    evil-find-char-to evil-find-char-to-backward
+    evil-repeat-find-char evil-repeat-find-char-reverse
+    evil-goto-percentage
+    evil-window-top evil-window-middle evil-window-bottom
+    ;; Evil visual mode (selection without modification)
+    evil-visual-char evil-visual-line evil-visual-block
+    evil-exit-visual-state
+    ;; Evil misc safe commands
+    evil-escape)
+  "Commands that move or inspect text without modifying it.
+These are allowed to run outside the input area.
+All other commands trigger an auto-jump to `hermes-bench--input-start'.")
+
+(defun hermes-bench--ensure-input-point ()
+  "If point is outside the input area, move it to the input start.
+Does nothing if the current command is a motion command."
+  (when (and hermes-bench--input-boundary
+             (not (hermes-bench--in-input-area-p))
+             (not (memq this-command hermes-bench--motion-commands)))
+    (let ((start (hermes-bench--input-start)))
+      (when start
+        (goto-char start)))))
+
 (defun hermes-bench--input-text ()
   "Return the input-area text verbatim (no trim)."
   (let ((start (hermes-bench--input-start)))
@@ -514,6 +574,8 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
                         'read-only t
                         'front-sticky '(read-only)
                         'rear-nonsticky '(read-only)))
+    (put-text-property (point-min) (point) 'read-only t)
+    (put-text-property (point-min) (1+ (point-min)) 'front-sticky '(read-only))
     ;; 4. Restore input text + point.
     (unless (string-empty-p saved-input)
       (insert saved-input))

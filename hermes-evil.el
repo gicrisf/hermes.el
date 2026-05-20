@@ -18,6 +18,12 @@
 
 (require 'hermes-mode)
 
+;; Ensure `evil-define-key' macro is available at compile time so
+;; byte-compilation in environments without Evil loaded does not
+;; fall back to a broken function call.
+(eval-when-compile
+  (require 'evil nil t))
+
 (with-eval-after-load 'evil
   (evil-define-key 'normal hermes-mode-map
     (kbd "C-c C-i") #'hermes-send-or-focus-bench

@@ -33,4 +33,4 @@
 
 ---
 
-*Document generated from analysis of `hermes-agent` commit (May 2026) and `emacs-hermes` codebase.*
+*Document generated from analysis of `hermes-agent` commit (May 2026) and `hermes.el` codebase.*

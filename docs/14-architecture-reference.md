@@ -1,4 +1,4 @@
-# emacs-hermes — Architecture (Supplementary Reference)
+# hermes.el — Architecture (Supplementary Reference)
 
 > **Note:** This document is a comprehensive architecture dump from 2026-05-14,
 > updated 2026-05-16 after the buffer-as-truth refactor. For current struct shapes
@@ -7,7 +7,7 @@
 
 ## Overview
 
-emacs-hermes is an Emacs client for the [Hermes AI agent](https://github.com/NousResearch/hermes-agent).
+hermes.el is an Emacs client for the [Hermes AI agent](https://github.com/NousResearch/hermes-agent).
 It communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway` process.
 The conversation buffer is a read-only `org-mode` derived buffer with hierarchical
 headlines, property drawers, and Org IDs for cross-referencing.

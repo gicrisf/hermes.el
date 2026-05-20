@@ -1,4 +1,4 @@
-# emacs-hermes
+# hermes.el
 
 Emacs client for the [Hermes AI agent](https://github.com/NousResearch/hermes-agent).
 Communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway`.
@@ -25,7 +25,7 @@ pip install hermes-agent   # or from source: pip install -e /path/to/hermes-agen
 ### 2. Configure Emacs
 
 ```elisp
-(add-to-list 'load-path "/path/to/emacs-hermes")
+(add-to-list 'load-path "/path/to/hermes.el")
 (require 'hermes-mode)
 M-x hermes
 ```

@@ -1,6 +1,6 @@
 # Hermes Emacs Frontend vs. Official TUI — Reference Document
 
-> **Purpose:** Comprehensive analysis of the official Hermes TUI (`ui-tui` + `tui_gateway`) compared to the Emacs frontend (`emacs-hermes`). This document captures protocol semantics, state shapes, event handling, and implementation gaps for future development.
+> **Purpose:** Comprehensive analysis of the official Hermes TUI (`ui-tui` + `tui_gateway`) compared to the Emacs frontend (`hermes.el`). This document captures protocol semantics, state shapes, event handling, and implementation gaps for future development.
 >
 > **Date:** 2026-05-13 (updated 2026-05-14)
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).

@@ -92,14 +92,14 @@ No theme-specific face overrides are needed in the dashboard file. Switching the
 ### File location
 
 ```
-~/Projects/emacs-hermes/doom-hermes-theme.el
+~/Projects/hermes.el/doom-hermes-theme.el
 ```
 
 ### Doom Emacs
 
 ```elisp
 ;; in ~/.config/doom/config.el
-(load-file "~/Projects/emacs-hermes/doom-hermes-theme.el")
+(load-file "~/Projects/hermes.el/doom-hermes-theme.el")
 (setq doom-theme 'doom-hermes)              ; make default
 ;; or keep default theme and switch at will:
 ;; M-x load-theme RET doom-hermes RET
@@ -108,7 +108,7 @@ No theme-specific face overrides are needed in the dashboard file. Switching the
 ### Vanilla Emacs
 
 ```elisp
-(add-to-list 'custom-theme-load-path "~/Projects/emacs-hermes/")
+(add-to-list 'custom-theme-load-path "~/Projects/hermes.el/")
 M-x load-theme RET doom-hermes RET
 ```
 

@@ -1,8 +1,8 @@
 ;;; doom-hermes.el --- Evil keybindings and leader prefix for Hermes
 ;;; Load from ~/.config/doom/config.el:
-;;;   (load-file "~/Projects/emacs-hermes/doom-hermes.el")
+;;;   (load-file "~/Projects/hermes.el/doom-hermes.el")
 
-(add-to-list 'load-path "~/Projects/emacs-hermes")
+(add-to-list 'load-path "~/Projects/hermes.el")
 
 (require 'hermes-mode)
 (require 'hermes-transient nil t)   ; soft: no error if user lacks transient

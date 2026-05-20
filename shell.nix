@@ -21,7 +21,7 @@ in
 pkgs.mkShell {
   buildInputs = [ pkgs.emacs eldev ];
   shellHook = ''
-    echo "emacs-hermes development shell"
+    echo "hermes.el development shell"
     echo "Run 'eldev test' to run tests"
   '';
 }

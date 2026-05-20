@@ -1,4 +1,4 @@
-# emacs-hermes
+# hermes.el
 
 Emacs client for the [Hermes AI agent](https://github.com/NousResearch/hermes-agent).
 Communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway`.
@@ -70,7 +70,7 @@ All reference docs are in [`docs/`](docs/):
 ### Quick start
 
 ```sh
-cd ~/Projects/emacs-hermes
+cd ~/Projects/hermes.el
 python3 -m venv .venv                     # create virtual environment
 .venv/bin/pip install -e hermes-agent      # install the gateway
 nix-shell                                  # enter dev shell (Emacs + Eldev)
@@ -87,7 +87,7 @@ The default auto-detects `.venv/bin/python` relative to the project root.
 ### Vanilla Emacs
 
 ```elisp
-(add-to-list 'load-path "~/Projects/emacs-hermes")
+(add-to-list 'load-path "~/Projects/hermes.el")
 (require 'hermes-mode)
 M-x hermes
 ```
@@ -104,7 +104,7 @@ on the first `RET`.
 Add to `~/.config/doom/config.el`:
 
 ```elisp
-(load-file "~/Projects/emacs-hermes/doom-hermes.el")
+(load-file "~/Projects/hermes.el/doom-hermes.el")
 ```
 
 Restart or `M-x load-file` the file.

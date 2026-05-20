@@ -12,9 +12,6 @@
 ;; and dispatcher can all reference the same source of truth and so that
 ;; bad names fail loudly at compile time instead of silently at runtime.
 
-;; Verified against hermes-agent/tui_gateway/server.py and
-;; hermes-agent/ui-tui/src/.
-
 ;;; Code:
 
 ;;;; Incoming events (gateway → TUI)

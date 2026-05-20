@@ -39,11 +39,16 @@
             echo "hermes.el development shell"
             echo "Run 'eldev test' to run tests"
 
-            # If a local venv exists, expose it via HERMES_DEV_PYTHON so Emacs
-            # picks it up automatically (see `hermes-rpc-python').
-            if [ -x ".venv/bin/python" ]; then
-              export HERMES_DEV_PYTHON="$PWD/.venv/bin/python"
-              echo "Using venv python at $HERMES_DEV_PYTHON"
+            # The upstream hermes-agent package bundles its own Python
+            # environment.  Extract it from the wrapper so Emacs can spawn
+            # `python -m tui_gateway.entry' with the right interpreter.
+            HERMES_BIN=$(command -v hermes)
+            if [ -n "$HERMES_BIN" ]; then
+              HERMES_PY=$(grep -o "HERMES_PYTHON='[^']*'" "$HERMES_BIN" 2>/dev/null | cut -d"'" -f2)
+              if [ -n "$HERMES_PY" ] && [ -x "$HERMES_PY" ]; then
+                export HERMES_DEV_PYTHON="$HERMES_PY"
+                echo "Using hermes-agent python at $HERMES_DEV_PYTHON"
+              fi
             fi
           '';
         };

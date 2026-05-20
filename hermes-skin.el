@@ -7,8 +7,7 @@
 ;;; Commentary:
 
 ;; The gateway emits a skin payload on `gateway.ready' (and `skin.changed')
-;; with a `colors' hash whose keys come from `hermes-agent/hermes_cli/
-;; skin_engine.py'.  We expose four buffer-tinted faces and remap them
+;; with a `colors' hash.  We expose four buffer-tinted faces and remap them
 ;; (buffer-locally) to skin colors on every state change that updates the
 ;; skin slot.  Renderers tag each headline with the appropriate face so
 ;; user / assistant / tool / system lines are visually distinct.

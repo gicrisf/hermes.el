@@ -97,7 +97,7 @@
       (let* ((result (hermes-bench-completion-at-point))
              (start (hermes-bench--input-start)))
         (should result)
-        (should (= (1+ start) (nth 0 result)))
+        (should (= start (nth 0 result)))
         (should (= (point) (nth 1 result)))
         (should (member "/clear" (nth 2 result)))
         (should (functionp (plist-get (nthcdr 3 result)

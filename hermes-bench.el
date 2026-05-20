@@ -250,7 +250,7 @@ buffer's `hermes--state' and delegates to `hermes-input--slash-complete'."
                                           hermes-bench--parent-buffer))
                (catalog (and state (hermes-state-slash-catalog state))))
           (when catalog
-            (hermes-input--slash-complete (1+ input-start) (point) catalog)))))))
+            (hermes-input--slash-complete input-start (point) catalog)))))))
 
 (define-derived-mode hermes-bench-mode text-mode "Hermes-Bench"
   "Major mode for the Hermes bottom bench panel."

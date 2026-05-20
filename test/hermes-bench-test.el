@@ -3,6 +3,8 @@
 (require 'ert)
 (require 'hermes-mode)
 (require 'hermes-bench)
+(require 'hermes-input)
+(require 'hermes-state)
 
 (defun hermes-bench-test--make-parent ()
   "Return a fresh parent buffer in `hermes-mode'."
@@ -58,6 +60,64 @@
     (should (eq bench (hermes-bench-live-p bench)))
     (with-current-buffer bench
       (should (eq bench (hermes-bench-live-p))))))
+
+;;;; Slash-command CAPF in the bench
+
+(defun hermes-bench-test--seed-catalog (parent)
+  "Install a fake slash catalog with `/clear' on PARENT's `hermes--state'."
+  (with-current-buffer parent
+    (let ((h (make-hash-table :test 'equal)))
+      (puthash "pairs"
+               (vector (vector "/clear" "Clear conversation history"))
+               h)
+      (setf (hermes-state-slash-catalog hermes--state) h))))
+
+(defun hermes-bench-test--type-input (bench text)
+  "Insert TEXT into BENCH's input area, point at end."
+  (with-current-buffer bench
+    (let ((start (hermes-bench--input-start))
+          (inhibit-read-only t))
+      (goto-char start)
+      (delete-region start (point-max))
+      (insert text))))
+
+(ert-deftest hermes-bench-test/capf-hook-installed ()
+  "Bench mode installs `hermes-bench-completion-at-point' on the CAPF hook."
+  (hermes-bench-test--with-pair _parent bench
+    (with-current-buffer bench
+      (should (memq #'hermes-bench-completion-at-point
+                    completion-at-point-functions)))))
+
+(ert-deftest hermes-bench-test/capf-finds-slash-after-prompt ()
+  "CAPF triggers when `/' immediately follows the bench prompt."
+  (hermes-bench-test--with-pair parent bench
+    (hermes-bench-test--seed-catalog parent)
+    (hermes-bench-test--type-input bench "/cle")
+    (with-current-buffer bench
+      (let* ((result (hermes-bench-completion-at-point))
+             (start (hermes-bench--input-start)))
+        (should result)
+        (should (= (1+ start) (nth 0 result)))
+        (should (= (point) (nth 1 result)))
+        (should (member "/clear" (nth 2 result)))
+        (should (functionp (plist-get (nthcdr 3 result)
+                                      :company-doc-buffer)))))))
+
+(ert-deftest hermes-bench-test/capf-nil-before-slash ()
+  "CAPF returns nil when input does not start with `/'."
+  (hermes-bench-test--with-pair parent bench
+    (hermes-bench-test--seed-catalog parent)
+    (hermes-bench-test--type-input bench "hello")
+    (with-current-buffer bench
+      (should-not (hermes-bench-completion-at-point)))))
+
+(ert-deftest hermes-bench-test/capf-nil-outside-input-area ()
+  "CAPF returns nil when point is in the ephemeral zone."
+  (hermes-bench-test--with-pair parent bench
+    (hermes-bench-test--seed-catalog parent)
+    (with-current-buffer bench
+      (goto-char (point-min))
+      (should-not (hermes-bench-completion-at-point)))))
 
 (provide 'hermes-bench-test)
 ;;; hermes-bench-test.el ends here

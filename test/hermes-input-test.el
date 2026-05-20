@@ -239,5 +239,50 @@ when the new session hasn't been stamped yet, and stamps it."
         (should (string-match-p "User: hi" wire))
         (should (string-match-p "Current: queued-1\\'" wire))))))
 
+;;;; CAPF metadata
+
+(defun hermes-input-test--fake-catalog ()
+  "Return a fake slash catalog hash with one entry."
+  (let ((h (make-hash-table :test 'equal)))
+    (puthash "pairs" (vector (vector "/clear" "Clear conversation history")) h)
+    h))
+
+(ert-deftest hermes-input-test/capf-returns-doc-buffer-function ()
+  "`hermes-input--slash-complete' returns a plist with `:company-doc-buffer'."
+  (let* ((catalog (hermes-input-test--fake-catalog))
+         (result (hermes-input--slash-complete 1 5 catalog)))
+    (should result)
+    (should (functionp (plist-get (nthcdr 3 result) :company-doc-buffer)))
+    (should (functionp (plist-get (nthcdr 3 result) :annotation-function)))
+    (should (member "/clear" (nth 2 result)))))
+
+(ert-deftest hermes-input-test/doc-buffer-contains-description ()
+  "Doc buffer contains the candidate name and description."
+  (let* ((catalog (hermes-input-test--fake-catalog))
+         (buf (hermes-input--slash-doc-buffer "/clear" catalog)))
+    (should (bufferp buf))
+    (should (equal " *hermes-slash-doc*" (buffer-name buf)))
+    (with-current-buffer buf
+      (should (string-match-p "/clear" (buffer-string)))
+      (should (string-match-p "Clear conversation history" (buffer-string))))))
+
+(ert-deftest hermes-input-test/doc-buffer-nil-for-unknown ()
+  "Doc buffer is nil for unknown candidate."
+  (let ((catalog (hermes-input-test--fake-catalog)))
+    (should-not (hermes-input--slash-doc-buffer "/nonexistent" catalog))))
+
+(ert-deftest hermes-input-test/minibuffer-capf-still-works ()
+  "Minibuffer CAPF still produces candidates + annotation."
+  (let ((hermes-input--catalog-from-minibuffer (hermes-input-test--fake-catalog)))
+    (with-temp-buffer
+      (insert "/cle")
+      (let ((result (hermes-input-completion-at-point)))
+        (should result)
+        (should (member "/clear" (nth 2 result)))
+        (let ((ann (plist-get (nthcdr 3 result) :annotation-function)))
+          (should (functionp ann))
+          (should (equal " — Clear conversation history"
+                         (funcall ann "/clear"))))))))
+
 (provide 'hermes-input-test)
 ;;; hermes-input-test.el ends here

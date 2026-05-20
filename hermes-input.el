@@ -185,43 +185,73 @@ deferred user-submit."
 (defvar hermes-input--catalog-from-minibuffer nil
   "Dynamically bound by `hermes-send' so the minibuffer can see the catalog.")
 
-(defun hermes-input--slash-catalog-pairs ()
-  "Return the catalog's `pairs' as a list, or nil."
-  (let ((cat hermes-input--catalog-from-minibuffer))
-    (when (hash-table-p cat)
-      (let ((pairs (gethash "pairs" cat)))
-        (cond ((vectorp pairs) (append pairs nil))
-              ((listp pairs)   pairs))))))
+(defun hermes-input--catalog-pairs (catalog)
+  "Return CATALOG's `pairs' as a list, or nil."
+  (when (hash-table-p catalog)
+    (let ((p (gethash "pairs" catalog)))
+      (cond ((vectorp p) (append p nil))
+            ((listp p)   p)))))
+
+(defun hermes-input--pair-name (p)
+  (cond ((stringp p) p)
+        ((vectorp p) (aref p 0))
+        ((consp p)   (car p))))
+
+(defun hermes-input--pair-desc (p)
+  (cond ((vectorp p) (and (> (length p) 1) (aref p 1)))
+        ((consp p)  (cdr-safe p))))
+
+(defun hermes-input--slash-doc-buffer (candidate catalog)
+  "Return a buffer with the description of CANDIDATE from CATALOG, or nil."
+  (let* ((pairs (hermes-input--catalog-pairs catalog))
+         (pair  (cl-find-if (lambda (p)
+                              (equal candidate (hermes-input--pair-name p)))
+                            pairs))
+         (desc  (hermes-input--pair-desc pair)))
+    (when (and (stringp desc) (not (string-empty-p desc)))
+      (let ((buf (get-buffer-create " *hermes-slash-doc*")))
+        (with-current-buffer buf
+          (setq buffer-read-only nil)
+          (erase-buffer)
+          (insert (format "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n%s\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n%s\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nHermes slash command\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                          candidate desc))
+          (setq-local truncate-lines nil)
+          (setq buffer-read-only t))
+        buf))))
+
+(defun hermes-input--slash-complete (beg end catalog)
+  "Core CAPF worker for slash commands.
+BEG and END delimit the completion region.  CATALOG is the hash-table
+returned by `commands.catalog'.  Returns a CAPF value with
+`:annotation-function' and `:company-doc-buffer', or nil."
+  (let* ((pairs (hermes-input--catalog-pairs catalog))
+         (names (mapcar #'hermes-input--pair-name pairs)))
+    (when names
+      (list beg end names
+            :annotation-function
+            (lambda (cand)
+              (let* ((pair (cl-find-if
+                            (lambda (p)
+                              (equal cand (hermes-input--pair-name p)))
+                            pairs))
+                     (desc (hermes-input--pair-desc pair)))
+                (and (stringp desc) (concat " — " desc))))
+            :company-doc-buffer
+            (lambda (cand)
+              (hermes-input--slash-doc-buffer cand catalog))))))
 
 (defun hermes-input-completion-at-point ()
-  "completion-at-point function for `/'-prefixed slash commands."
+  "completion-at-point function for `/'-prefixed slash commands.
+Minibuffer context only — reads catalog from
+`hermes-input--catalog-from-minibuffer' (dynamically bound by
+`hermes-send')."
   (save-excursion
     (let ((end (point))
           (bol (line-beginning-position)))
       (when (and (> end bol)
                  (eq (char-after bol) ?/))
-        (let* ((beg (1+ bol))
-               (pairs (hermes-input--slash-catalog-pairs))
-               (names (mapcar (lambda (p)
-                                (cond ((stringp p) p)
-                                      ((vectorp p) (aref p 0))
-                                      ((consp p)   (car p))))
-                              pairs)))
-          (when names
-            (list beg end names
-                  :annotation-function
-                  (lambda (cand)
-                    (let* ((pair (cl-find-if
-                                  (lambda (p)
-                                    (equal cand
-                                           (cond ((stringp p) p)
-                                                 ((vectorp p) (aref p 0))
-                                                 ((consp p)   (car p)))))
-                                  pairs))
-                           (desc (cond ((vectorp pair) (and (> (length pair) 1)
-                                                            (aref pair 1)))
-                                       ((consp pair)  (cdr-safe pair)))))
-                      (and (stringp desc) (concat " — " desc)))))))))))
+        (hermes-input--slash-complete
+         (1+ bol) end hermes-input--catalog-from-minibuffer)))))
 
 (defvar hermes-input-minibuffer-map
   (let ((m (make-sparse-keymap)))

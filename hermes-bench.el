@@ -23,6 +23,8 @@
 (require 'hermes-tool-formatters)
 
 (declare-function hermes-input-send "hermes-input" (text))
+(declare-function hermes-input--slash-complete "hermes-input" (beg end catalog))
+(declare-function hermes-state-slash-catalog "hermes-state" (state))
 (declare-function hermes-interrupt "hermes-mode" ())
 (declare-function hermes-compose "hermes-compose" ())
 (declare-function hermes-image-attach-file "hermes-image" (&optional file))
@@ -232,6 +234,24 @@ Cleared after one paint cycle.")
   "Force `display-line-numbers-mode' off in the current bench buffer."
   (display-line-numbers-mode -1))
 
+(defun hermes-bench-completion-at-point ()
+  "Slash-command CAPF for the bench input area.
+The slash must appear immediately after the bench prompt (i.e. at
+`hermes-bench--input-start').  Pulls the catalog from the paired parent
+buffer's `hermes--state' and delegates to `hermes-input--slash-complete'."
+  (when (and hermes-bench--parent-buffer
+             (buffer-live-p hermes-bench--parent-buffer)
+             (hermes-bench--in-input-area-p))
+    (let ((input-start (hermes-bench--input-start)))
+      (when (and input-start
+                 (> (point) input-start)
+                 (eq (char-after input-start) ?/))
+        (let* ((state (buffer-local-value 'hermes--state
+                                          hermes-bench--parent-buffer))
+               (catalog (and state (hermes-state-slash-catalog state))))
+          (when catalog
+            (hermes-input--slash-complete (1+ input-start) (point) catalog)))))))
+
 (define-derived-mode hermes-bench-mode text-mode "Hermes-Bench"
   "Major mode for the Hermes bottom bench panel."
   (setq truncate-lines nil)
@@ -239,7 +259,9 @@ Cleared after one paint cycle.")
   (hl-line-mode 1)
   (setq-local hl-line-face 'hermes-bench-hl-line-face)
   (setq-local cursor-type 'bar)
-  (add-hook 'pre-command-hook #'hermes-bench--ensure-input-point nil t))
+  (add-hook 'pre-command-hook #'hermes-bench--ensure-input-point nil t)
+  (add-hook 'completion-at-point-functions
+            #'hermes-bench-completion-at-point nil t))
 
 (add-hook 'hermes-bench-mode-hook #'hermes-bench--disable-line-numbers)
 

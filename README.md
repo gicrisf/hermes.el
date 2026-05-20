@@ -16,13 +16,10 @@ M-x hermes
 
 ## Setup
 
-### 1. Install the gateway
-
-```sh
-pip install hermes-agent   # or from source: pip install -e /path/to/hermes-agent
-```
-
-### 2. Configure Emacs
+Install the Hermes agent first — see the
+[Hermes installation docs](https://github.com/NousResearch/hermes-agent).
+Once the gateway module (`tui_gateway.entry`) is available in your Python
+environment, `hermes.el` will use the system `python3` by default.
 
 ```elisp
 (add-to-list 'load-path "/path/to/hermes.el")
@@ -30,7 +27,7 @@ pip install hermes-agent   # or from source: pip install -e /path/to/hermes-agen
 M-x hermes
 ```
 
-If `hermes-agent` is in a virtualenv, point Emacs to its Python:
+If you run Hermes inside a virtualenv, point Emacs to its interpreter:
 
 ```elisp
 (setq hermes-rpc-python "/path/to/venv/bin/python")

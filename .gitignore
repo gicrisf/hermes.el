@@ -1,6 +1,6 @@
 Eldev-local
 .eldev/
 *.elc
-hermes-agent/
+.venv/
 .claude/
 pi-coding-agent/

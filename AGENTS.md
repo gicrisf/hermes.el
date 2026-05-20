@@ -67,22 +67,22 @@ All reference docs are in [`docs/`](docs/):
 - Python 3.11+ (for the Hermes agent gateway)
 - A working Hermes agent installation or checkout
 
-### Quick start
+Install the Hermes agent first — see the
+[Hermes installation docs](https://github.com/NousResearch/hermes-agent).
+Once the gateway module (`tui_gateway.entry`) is available in your Python
+environment, `hermes.el` will use the system `python3` by default.
 
-```sh
-cd ~/Projects/hermes.el
-python3 -m venv .venv                     # create virtual environment
-.venv/bin/pip install -e hermes-agent      # install the gateway
-nix-shell                                  # enter dev shell (Emacs + Eldev)
-```
-
-Alternatively, activate the venv manually and set `hermes-rpc-python` in Emacs:
+If you run Hermes inside a virtualenv, point Emacs to its interpreter:
 
 ```elisp
-(setq hermes-rpc-python "/path/to/.venv/bin/python")
+(setq hermes-rpc-python "/path/to/venv/bin/python")
 ```
 
-The default auto-detects `.venv/bin/python` relative to the project root.
+For finer control you can override the entire spawn command:
+
+```elisp
+(setq hermes-rpc-command '("hermes-gateway"))
+```
 
 ### Vanilla Emacs
 

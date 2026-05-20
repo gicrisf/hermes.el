@@ -7,7 +7,7 @@
 
 ;;; Commentary:
 
-;; Spawns `python -m tui_gateway.entry' as a subprocess and speaks
+;; Spawns the Hermes gateway as a subprocess and speaks
 ;; newline-delimited JSON-RPC 2.0 over stdio.
 ;;
 ;; - Outgoing requests get an auto-incrementing integer id and a callback
@@ -39,8 +39,16 @@
   :type 'string :group 'hermes)
 
 (defcustom hermes-rpc-gateway-module "tui_gateway.entry"
-  "Python module name passed as `python -m <module>'."
+  "Python module name passed as `python -m <module>'.
+Only used when `hermes-rpc-command' is nil."
   :type 'string :group 'hermes)
+
+(defcustom hermes-rpc-command nil
+  "Override the full gateway spawn command as a list of strings.
+If nil, falls back to
+  (list hermes-rpc-python \"-m\" hermes-rpc-gateway-module)."
+  :type '(choice (const nil) (repeat string))
+  :group 'hermes)
 
 (defcustom hermes-rpc-cwd nil
   "Working directory for the gateway subprocess.
@@ -106,15 +114,6 @@ Each element is the JSON-RPC frame plist as produced by
 ;;;; Process lifecycle
 
 ;;;###autoload
-(defun hermes-rpc--find-python ()
-  "Return a python executable, preferring a project-local venv."
-  (let* ((default-dir (or hermes-rpc-cwd default-directory))
-         (venv-py (expand-file-name ".venv/bin/python" default-dir)))
-    (if (file-executable-p venv-py)
-        venv-py
-      hermes-rpc-python)))
-
-;;;###autoload
 (defun hermes-rpc-start ()
   "Spawn the gateway subprocess.  No-op if one is already running."
   (interactive)
@@ -126,12 +125,13 @@ Each element is the JSON-RPC frame plist as produced by
         hermes-rpc--next-id 0)
   (clrhash hermes-rpc--pending)
   (let* ((default-directory (or hermes-rpc-cwd default-directory))
-         (python (hermes-rpc--find-python))
+         (cmd (or hermes-rpc-command
+                  (list hermes-rpc-python "-m" hermes-rpc-gateway-module)))
          (process-environment (append hermes-rpc-env process-environment))
          (stderr-buf (generate-new-buffer " *hermes-rpc-stderr*"))
          (proc (make-process
                 :name "hermes-rpc"
-                :command (list python "-m" hermes-rpc-gateway-module)
+                :command cmd
                 :buffer nil
                 :stderr stderr-buf
                 :connection-type 'pipe

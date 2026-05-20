@@ -11,7 +11,7 @@
 ;; user when a turn finishes or a blocking prompt appears while they
 ;; are editing in another buffer.
 ;;
-;; Usage: (require 'hermes-notifications)
+;; Usage: `(require 'hermes-notifications)' after `hermes-mode' is loaded.
 ;;
 ;; Known limitation: gateway `background.complete' events are not
 ;; currently tracked in the state atom, so only turn completion and

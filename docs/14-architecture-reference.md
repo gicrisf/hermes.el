@@ -71,8 +71,9 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-dashboard.el` | 393 | Vanilla Emacs dashboard (`*Hermes*`) |
 | `hermes-events.el` | 97 | Event/method name registry |
 | `doom-dashboard-hermes.el` | 442 | Standalone Doom-styled dashboard (`*doom-hermes*`) |
-| `doom-hermes.el` | 46 | Evil bindings + SPC h leader prefix |
-| `doom-hermes-theme.el` | 161 | Hermes-branded dark theme |
+| `hermes-doom.el` | 66 | Doom `SPC h` leader prefix; pulls in Evil, Transient, Notifications |
+| `hermes-evil.el` | 28 | Normal-state Evil C-c bindings (works in any Evil-equipped Emacs) |
+| `hermes-doom-theme.el` | 161 | Hermes-branded dark theme |
 | **Total** | **~3,342** | |
 
 ---
@@ -585,9 +586,10 @@ during parse — the buffer remains valid.
 
 ## Doom Integration
 
-### Evil Bindings (`doom-hermes.el`)
+### Evil Bindings (`hermes-evil.el`) & Doom Leader (`hermes-doom.el`)
 
-The `SPC h` leader prefix handles collision detection and provides:
+`hermes-evil.el` provides normal-state C-c bindings in `hermes-mode` buffers.
+`hermes-doom.el` provides the `SPC h` leader prefix:
 
 | Key | Action |
 |-----|--------|
@@ -607,7 +609,7 @@ In `hermes-mode` normal state:
 | `C-c C-k` | Interrupt |
 | `C-c C-l` | Multi-line compose |
 
-### Theme (`doom-hermes-theme.el`)
+### Theme (`hermes-doom-theme.el`)
 
 | Role | Hex | Source |
 |------|-----|--------|

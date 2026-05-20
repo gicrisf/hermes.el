@@ -6,17 +6,19 @@
 
 ;;; Commentary:
 
-;; Optional Transient popup for Hermes commands.  This file is NOT loaded
-;; by `hermes-mode.el'.  Users who have Transient installed (Doom, Magit,
-;; etc.) should add `(require 'hermes-transient)' to their init.
+;; Optional Transient popup for Hermes commands.  Load with
+;; `(require 'hermes-transient)' after `hermes-mode' is loaded.
 ;;
 ;; When loaded, this file binds `C-c C-t' in `hermes-mode-map' to the
-;; main transient prefix.  In Doom, `doom-hermes.el' additionally binds
+;; main transient prefix.  In Doom, `hermes-doom.el' additionally binds
 ;; it under the `SPC h' leader.
+;;
+;; Safe to load without Transient installed: the prefix definition and
+;; keybinding are skipped, leaving the helper commands available.
 
 ;;; Code:
 
-(require 'transient)
+(require 'transient nil t)
 (require 'hermes-mode)
 
 (defun hermes-transient--in-session-p ()
@@ -69,49 +71,50 @@ Idempotent: safe to call when the gateway is already up."
 ;; no Hermes session is reachable.  This keeps the popup useful from
 ;; arbitrary buffers (Session/Skills/Misc only) and from active Hermes
 ;; sessions (all groups visible).
-;;;###autoload
-(transient-define-prefix hermes-transient ()
-  "Hermes command dispatch popup.
+(when (fboundp 'transient-define-prefix)
+  ;;;###autoload
+  (transient-define-prefix hermes-transient ()
+    "Hermes command dispatch popup.
 Shows session commands always; input, config, and session-scoped
 skills commands only when a Hermes session is reachable."
-  ["Session"
-   ("o" "Open / create session" hermes)
-   ("n" "New session" hermes-transient--new-session)
-   ("l" "Session list" hermes-sessions)]
+    ["Session"
+     ("o" "Open / create session" hermes)
+     ("n" "New session" hermes-transient--new-session)
+     ("l" "Session list" hermes-sessions)]
 
-  ["Input" :if hermes-transient--in-session-p
-   ("i" "Send / focus bench" hermes-send-or-focus-bench)
-   ("c" "Compose" hermes-compose)
-   ("k" "Interrupt" hermes-interrupt)
-   ("S" "Steer" hermes-steer)]
+    ["Input" :if hermes-transient--in-session-p
+     ("i" "Send / focus bench" hermes-send-or-focus-bench)
+     ("c" "Compose" hermes-compose)
+     ("k" "Interrupt" hermes-interrupt)
+     ("S" "Steer" hermes-steer)]
 
-  ["Config" :if hermes-transient--in-session-p
-   ("m" "Model" hermes-set-model)
-   ("f" "Fast mode" hermes-toggle-fast)
-   ("r" "Reasoning" hermes-toggle-reasoning)
-   ("y" "YOLO" hermes-toggle-yolo)
-   ("p" "Personality" hermes-set-personality)
-   ("s" "Skin" hermes-set-skin)
-   ("t" "Toolsets" hermes-toolsets-toggle)]
+    ["Config" :if hermes-transient--in-session-p
+     ("m" "Model" hermes-set-model)
+     ("f" "Fast mode" hermes-toggle-fast)
+     ("r" "Reasoning" hermes-toggle-reasoning)
+     ("y" "YOLO" hermes-toggle-yolo)
+     ("p" "Personality" hermes-set-personality)
+     ("s" "Skin" hermes-set-skin)
+     ("t" "Toolsets" hermes-toolsets-toggle)]
 
-  ["Project" :if hermes-transient--in-session-p
-   ("d" "Set cwd" hermes-project-set-cwd)
-   ("C" "Toggle auto-context" hermes-project-toggle-auto-context)
-   ("a" "Attach project file" hermes-project-attach-file)]
+    ["Project" :if hermes-transient--in-session-p
+     ("d" "Set cwd" hermes-project-set-cwd)
+     ("C" "Toggle auto-context" hermes-project-toggle-auto-context)
+     ("a" "Attach project file" hermes-project-attach-file)]
 
-  ["Skills"
-   ("R" "Reload" hermes-transient--skills-reload)
-   ("L" "List" hermes-transient--skills-list)
-   ("/" "Search" hermes-transient--skills-search)
-   ("I" "Install" hermes-transient--skills-install)
-   ("U" "Uninstall" hermes-skills-uninstall :if hermes-transient--in-session-p)]
+    ["Skills"
+     ("R" "Reload" hermes-transient--skills-reload)
+     ("L" "List" hermes-transient--skills-list)
+     ("/" "Search" hermes-transient--skills-search)
+     ("I" "Install" hermes-transient--skills-install)
+     ("U" "Uninstall" hermes-skills-uninstall :if hermes-transient--in-session-p)]
 
-  ["Misc"
-   ("v" "View log" hermes-view-log)])
+    ["Misc"
+     ("v" "View log" hermes-view-log)])
 
-;;;###autoload
-(with-eval-after-load 'hermes-mode
-  (define-key hermes-mode-map (kbd "C-c C-t") #'hermes-transient))
+  ;;;###autoload
+  (with-eval-after-load 'hermes-mode
+    (define-key hermes-mode-map (kbd "C-c C-t") #'hermes-transient)))
 
 (provide 'hermes-transient)
 ;;; hermes-transient.el ends here

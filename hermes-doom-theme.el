@@ -1,4 +1,4 @@
-;;; doom-hermes-theme.el --- Hermes-inspired dark theme -*- lexical-binding: t; -*-
+;;; hermes-doom-theme.el --- Hermes-inspired dark theme -*- lexical-binding: t; -*-
 
 ;; Author: Giovanni Crisalfi <opencode@s.gr晨曦>
 ;; Keywords: themes
@@ -18,12 +18,12 @@
 ;;   Cornsilk   #FFF8DC — body text (foreground)
 ;;   Dark teal  #041c1c — background (from Hermes web dashboard)
 ;;
-;; Load in Doom with (setq doom-theme 'doom-hermes-theme).
-;; In vanilla: M-x load-theme RET doom-hermes RET
+;; Load in Doom with (setq doom-theme 'hermes-doom).
+;; In vanilla: M-x load-theme RET hermes-doom RET
 
 ;;; Code:
 
-(deftheme doom-hermes
+(deftheme hermes-doom
   "Hermes-inspired dark theme — deep teal with gold accents.")
 
 
@@ -48,7 +48,7 @@
       (cursor   "#FFD700"))
 
   (custom-theme-set-faces
-   'doom-hermes
+   'hermes-doom
 
    ;; --- Base ---
    `(default ((t (:foreground ,fg :background ,bg))))
@@ -148,7 +148,7 @@
    `(powerline-active2 ((t (:background ,bg-hl :foreground ,fg)))))
 
   (custom-theme-set-variables
-   'doom-hermes
+   'hermes-doom
    `(ansi-color-names-vector
      [,bg ,red ,green ,yellow ,blue ,magenta ,cyan ,fg])))
 
@@ -157,5 +157,5 @@
   (add-to-list 'custom-theme-load-path
                (file-name-as-directory (file-name-directory load-file-name))))
 
-(provide 'doom-hermes-theme)
-;;; doom-hermes-theme.el ends here
+(provide 'hermes-doom-theme)
+;;; hermes-doom-theme.el ends here

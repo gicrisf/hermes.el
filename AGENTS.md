@@ -40,8 +40,9 @@ the bench (header-line only).
 **Doom Emacs integration (separate files, optional):**
 
 ```
-doom-hermes.el            Evil C-c normal-state bindings + SPC h leader prefix
-doom-hermes-theme.el      Hermes-branded dark theme (gold/teal)
+hermes-evil.el            Normal-state Evil C-c bindings (any Emacs with Evil)
+hermes-doom.el            Doom SPC h leader prefix; pulls in evil/transient/notifications
+hermes-doom-theme.el      Hermes-branded dark theme (gold/teal)
 ```
 
 ## Documentation
@@ -111,6 +112,11 @@ The included `.envrc` enters the Nix shell and applies the same
 ```elisp
 (add-to-list 'load-path "~/Projects/hermes.el")
 (require 'hermes-mode)
+
+;; Optional extras — require individually:
+(require 'hermes-transient)        ; C-c C-t popup
+(require 'hermes-notifications)    ; desktop alerts
+
 M-x hermes
 ```
 
@@ -121,41 +127,44 @@ bench appears at the bottom showing a splash banner + status; cursor lands
 in the bench input area. The splash is replaced by normal ephemeral content
 on the first `RET`.
 
+### Optional modules
+
+The core package stays dependency-free.  `require` each satellite you
+want — order does not matter, and each file is safe to load even when
+its optional dependency (Evil, Transient) is absent.
+
+| Module | Adds |
+|--------|------|
+| `hermes-evil` | Normal-state Evil `C-c` bindings (works in any Emacs with Evil) |
+| `hermes-transient` | `C-c C-t` Transient popup (also bound under `SPC h .` in Doom) |
+| `hermes-notifications` | Desktop notifications on turn completion / blocking prompts |
+| `hermes-doom` | Doom `SPC h` leader prefix; also pulls in `hermes-evil`, `hermes-transient`, `hermes-notifications` |
+
 ### Doom Emacs
 
-Add to `~/.config/doom/config.el`:
+In `~/.config/doom/config.el`:
 
 ```elisp
-(load-file "~/Projects/hermes.el/doom-hermes.el")
+(require 'hermes-mode)
+(require 'hermes-doom)   ; pulls in hermes-evil, hermes-transient, hermes-notifications
 ```
 
-Restart or `M-x load-file` the file.
-
-### Transient popup (optional)
-
-For users with Transient installed (Doom, Spacemacs, or Magit users):
+To use the bundled theme:
 
 ```elisp
-(require 'hermes-transient)
+(setq doom-theme 'hermes-doom)
 ```
 
-This binds `C-c C-t` in `hermes-mode` buffers to a grouped popup menu.
-The popup is context-sensitive: session-level commands (send, config,
-steer, skills uninstall) are hidden when no Hermes session is active.
-Skills reload/list/search/install are always available and will auto-start
-the gateway if needed.
+The transient popup is context-sensitive: session-level commands
+(send, config, steer, skills uninstall) are hidden when no Hermes
+session is active.  Skills reload/list/search/install are always
+available and will auto-start the gateway if needed.
 
-### Desktop notifications (optional)
-
-```elisp
-(require 'hermes-notifications)
-```
-
-Fires a desktop notification (via the built-in `notifications` library —
-DBus on Linux, Notification Center on macOS) when a turn finishes or a
-blocking prompt (approval/clarify/sudo/secret) appears while the Hermes
-buffer is hidden.  Disable at runtime by setting
-`hermes-notifications-enabled' to nil.
+Notifications fire via the built-in `notifications' library — DBus on
+Linux, Notification Center on macOS — when a turn finishes or a
+blocking prompt (approval/clarify/sudo/secret) appears while the
+Hermes buffer is hidden.  Disable at runtime with
+`(setq hermes-notifications-enabled nil)`.
 
 ### Debugging
 

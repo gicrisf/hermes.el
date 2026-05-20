@@ -35,5 +35,5 @@
 
 ## Doom Emacs Integration
 
-- [Doom Hermes Theme Spec](doom-hermes-theme-spec.md) — brand colors, faces, and theme design
+- [Hermes Doom Theme Spec](hermes-doom-theme-spec.md) — brand colors, faces, and theme design
 - [Dashboard Spec](hermes-dashboard-spec.md) — dashboard layout and component spec

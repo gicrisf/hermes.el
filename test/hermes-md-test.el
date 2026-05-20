@@ -70,6 +70,52 @@
    "| a | b |\n|---|---|\n| 1 | 2 |\n"
    "| a | b |\n|---+---|\n| 1 | 2 |\n"))
 
+;;;; Fences — hardening (tick counting, nesting, whitespace, auto-close)
+
+(ert-deftest hermes-md-test/nested-fences ()
+  ;; 4-tick outer fence contains a 3-tick block as body text.
+  (hermes-md-test--should=
+   "````markdown\n```python\nprint(1)\n```\n````\n"
+   "#+begin_src markdown\n```python\nprint(1)\n```\n#+end_src\n"))
+
+(ert-deftest hermes-md-test/fence-with-leading-whitespace ()
+  (hermes-md-test--should=
+   "  ```python\n  print(1)\n  ```\n"
+   "#+begin_src python\n  print(1)\n#+end_src\n"))
+
+(ert-deftest hermes-md-test/unmatched-fence-auto-closed ()
+  (hermes-md-test--should=
+   "```python\nprint(1)\n"
+   "#+begin_src python\nprint(1)\n#+end_src\n"))
+
+;;;; Bullets
+
+(ert-deftest hermes-md-test/bullet-star-to-dash ()
+  (hermes-md-test--should= "* first\n* second\n" "- first\n- second\n"))
+
+(ert-deftest hermes-md-test/bullet-plus-to-dash ()
+  (hermes-md-test--should= "+ first\n+ second\n" "- first\n- second\n"))
+
+(ert-deftest hermes-md-test/bullets-inside-fence-untouched ()
+  (hermes-md-test--should=
+   "```\n* inside\n```\n"
+   "#+begin_example\n* inside\n#+end_example\n"))
+
+;;;; Guardrail (accidental Org heading escape)
+
+(ert-deftest hermes-md-test/double-star-accidental-escaped ()
+  (hermes-md-test--should= "** Also not\n" " ** Also not\n"))
+
+(ert-deftest hermes-md-test/triple-star-accidental-escaped ()
+  (hermes-md-test--should= "*** Three stars\n" " *** Three stars\n"))
+
+(ert-deftest hermes-md-test/our-headings-untouched ()
+  ;; # demotes to 4 stars; guardrail's 1-3 star filter must skip it.
+  (hermes-md-test--should= "# Title\n" "**** Title\n"))
+
+(ert-deftest hermes-md-test/numbered-list-passthrough ()
+  (hermes-md-test--should= "1. first\n2. second\n" "1. first\n2. second\n"))
+
 ;;;; Empty / passthrough
 
 (ert-deftest hermes-md-test/empty-string ()

@@ -36,6 +36,7 @@
     (with-temp-buffer
       (insert s)
       (hermes-md--convert-fences)
+      (hermes-md--convert-bullets)
       (hermes-md--convert-tables)
       (hermes-md--convert-headings)
       (hermes-md--inline-bold)
@@ -43,6 +44,7 @@
       (hermes-md--inline-links)
       (hermes-md--inline-italics-star)
       (hermes-md--inline-italics-underscore)
+      (hermes-md--guardrail-escape-headings)
       (remove-text-properties (point-min) (point-max)
                               '(hermes-md-protected nil))
       (buffer-string))))
@@ -66,21 +68,27 @@ bold-protected interior asterisks shield single-`*' italic patterns."
 ;;;; Fences
 
 (defun hermes-md--convert-fences ()
-  "Replace ```lang…``` blocks with Org src/example blocks; mark bodies protected."
+  "Replace fenced code blocks with Org src/example blocks; mark bodies protected.
+Tick-counting opener (≥3 ticks, tolerant of leading whitespace), closer
+requiring at least the same tick count (CommonMark rule, enables nesting),
+and auto-close on EOF for unmatched openers.  Tick-counting pattern adapted
+from `gptel--stream-convert-markdown->org' in gptel-org.el (karthink/gptel)."
   (goto-char (point-min))
-  (while (re-search-forward "^```\\([^\n]*\\)$" nil t)
-    (let* ((lang (string-trim (or (match-string 1) "")))
+  (while (re-search-forward "^[ \t]*\\(`\\{3,\\}\\)\\([^\n]*\\)$" nil t)
+    (let* ((tick-count (length (match-string 1)))
+           (lang (string-trim (or (match-string 2) "")))
            (open-beg (match-beginning 0))
            (open-end (match-end 0))
            (header (if (string-empty-p lang)
                        "#+begin_example"
                      (format "#+begin_src %s" lang)))
-           (footer (if (string-empty-p lang) "#+end_example" "#+end_src")))
+           (footer (if (string-empty-p lang) "#+end_example" "#+end_src"))
+           (close-regexp (format "^[ \t]*`\\{%d,\\}[ \t]*$" tick-count)))
       (delete-region open-beg open-end)
       (goto-char open-beg)
       (insert header)
       (let ((body-start (point)))
-        (if (re-search-forward "^```[ \t]*$" nil t)
+        (if (re-search-forward close-regexp nil t)
             (let ((close-beg (match-beginning 0))
                   (close-end (match-end 0)))
               (delete-region close-beg close-end)
@@ -88,8 +96,25 @@ bold-protected interior asterisks shield single-`*' italic patterns."
               (insert footer)
               (put-text-property body-start (point)
                                  'hermes-md-protected t))
-          ;; No closing fence — leave header in place and stop.
-          (goto-char (point-max)))))))
+          ;; No closing fence — auto-close at EOF so the Org buffer
+          ;; structure is never left dangling.
+          (goto-char (point-max))
+          (unless (bolp) (insert "\n"))
+          (insert footer "\n")
+          (put-text-property body-start (point)
+                             'hermes-md-protected t))))))
+
+;;;; Bullets
+
+(defun hermes-md--convert-bullets ()
+  "Convert markdown bullet markers (`*' or `+' followed by whitespace) to `-'.
+Single-star bullets only; `**' is not a bullet.  Skips protected (fenced)
+regions.  Pattern adapted from `gptel--stream-convert-markdown->org' in
+gptel-org.el (karthink/gptel)."
+  (goto-char (point-min))
+  (while (re-search-forward "^\\([ \t]*\\)\\([*+]\\)\\([ \t]\\)" nil t)
+    (unless (hermes-md--protected-p (match-beginning 0))
+      (replace-match "\\1-\\3" t nil))))
 
 ;;;; Tables
 
@@ -161,6 +186,19 @@ remaining `*…*' should be italic."
   (hermes-md--inline-replace
    "\\(^\\|[^[:alnum:]_]\\)_\\([^_\n]+?\\)_\\($\\|[^[:alnum:]_]\\)"
    "\\1/\\2/\\3"))
+
+;;;; Guardrail
+
+(defun hermes-md--guardrail-escape-headings ()
+  "Escape accidental 1–3 star Org headings produced by raw LLM output.
+Single-star bullets have already been rewritten to `-' by
+`hermes-md--convert-bullets'; intentional headings from `#' demotion are
+4+ stars.  Anything left at 1–3 stars + space at BOL is accidental — prefix
+with a leading space so Org renders it as literal text instead of a heading."
+  (goto-char (point-min))
+  (while (re-search-forward "^\\(\\*\\{1,3\\}\\)\\([ \t]\\)" nil t)
+    (unless (hermes-md--protected-p (match-beginning 0))
+      (replace-match " \\1\\2" t nil))))
 
 (provide 'hermes-md)
 ;;; hermes-md.el ends here

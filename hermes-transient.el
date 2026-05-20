@@ -94,6 +94,11 @@ skills commands only when a Hermes session is reachable."
    ("s" "Skin" hermes-set-skin)
    ("t" "Toolsets" hermes-toolsets-toggle)]
 
+  ["Project" :if hermes-transient--in-session-p
+   ("d" "Set cwd" hermes-project-set-cwd)
+   ("C" "Toggle auto-context" hermes-project-toggle-auto-context)
+   ("a" "Attach project file" hermes-project-attach-file)]
+
   ["Skills"
    ("R" "Reload" hermes-transient--skills-reload)
    ("L" "List" hermes-transient--skills-list)

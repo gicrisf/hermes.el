@@ -196,8 +196,15 @@ drawers, so there's nothing to seed.  Mirroring to `hermes--state'
 keeps single-session readers coherent.  Also ensures `hermes-minor-mode'
 is on and the bench is visible so the user can interact with the
 resumed session.  Returns the new state."
-  (let ((state (make-hermes-state :session-id sid
-                                  :connection 'connected)))
+  (let* ((cwd-prop (save-excursion
+                     (goto-char (marker-position marker))
+                     (when (org-at-heading-p)
+                       (let ((v (org-entry-get (point) "HERMES_CWD")))
+                         (and v (not (string-empty-p v))
+                              (expand-file-name v))))))
+         (state (make-hermes-state :session-id sid
+                                   :connection 'connected
+                                   :cwd cwd-prop)))
     (hermes--register-session sid state marker)
     (setq hermes--state state)
     (unless (or (derived-mode-p 'hermes-mode)

@@ -113,6 +113,8 @@
   (history nil)
   skin
   busy-mode          ; string from gateway `busy' config: "queue" | "steer" | "interrupt" | nil
+  (cwd nil)          ; string or nil — detected project root (local tracking only;
+                     ; gateway-side cwd is process-global, set at session.create)
   (attachments nil)) ; list of plists (:attach-id :path :name :width :height :token-estimate :status)
                      ; client-side MIRROR of gateway's session["attached_images"] — never authoritative.
                      ; :attach-id is a client-generated identifier used to match RPC callbacks back to
@@ -656,6 +658,9 @@ which case dispatch routes to the correct typed reconstructor."
       (:slash-catalog
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-slash-catalog s) (plist-get p :catalog))))
+      (:set-cwd
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-cwd s) (plist-get p :cwd))))
       (:pending-turns-clear
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-pending-turns s) [])))

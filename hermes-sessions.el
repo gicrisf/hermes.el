@@ -35,13 +35,29 @@
       (substring sid 0 8)
     (or sid "?")))
 
+(defun hermes-sessions--project-cell (state info)
+  "Return a propertized cell describing the project for STATE/INFO."
+  (let* ((local-cwd (and state (hermes-state-cwd state)))
+         (info-cwd  (and (hash-table-p info) (gethash "cwd" info)))
+         (full      (or local-cwd info-cwd))
+         (display
+          (cond
+           ((and full (not (string-empty-p full)))
+            (let ((trimmed (directory-file-name full)))
+              (if local-cwd
+                  (file-name-nondirectory trimmed)
+                (abbreviate-file-name trimmed))))
+           (t "—"))))
+    (if full
+        (propertize display 'help-echo (abbreviate-file-name full))
+      display)))
+
 (defun hermes-sessions--row (sid buf)
   "Build a tabulated-list entry (ID VECTOR) for SID/BUF."
   (with-current-buffer buf
     (let* ((st    hermes--state)
            (info  (and st (hermes-state-session-info st)))
            (model (or (and (hash-table-p info) (gethash "model" info)) "?"))
-           (cwd   (or (and (hash-table-p info) (gethash "cwd"   info)) ""))
            (msgs  (hermes--buffer-message-count))
            (q     (length (and st (hermes-state-queue st))))
            (status (cond ((and st (eq (hermes-state-connection st)
@@ -55,7 +71,7 @@
                     (format "%s" model)
                     status+q
                     (number-to-string msgs)
-                    (abbreviate-file-name (or cwd "")))))))
+                    (hermes-sessions--project-cell st info))))))
 
 (defun hermes-sessions--entries ()
   "Collect entries for every live session buffer."
@@ -103,7 +119,7 @@
          ("Msgs"    5 (lambda (a b)
                         (< (string-to-number (aref (cadr a) 3))
                            (string-to-number (aref (cadr b) 3)))))
-         ("CWD"     0 t)])
+         ("Project" 0 t)])
   (setq tabulated-list-padding 1)
   (setq tabulated-list-entries #'hermes-sessions--entries)
   (tabulated-list-init-header))

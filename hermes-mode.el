@@ -30,6 +30,7 @@
 (require 'hermes-bench)
 (require 'hermes-config)
 (require 'hermes-image)
+(require 'hermes-project)
 
 ;;;; Routing: filter event → buffer
 
@@ -276,24 +277,33 @@ the session container heading."
 
 (defun hermes--do-session-create (callback)
   "Internal: send `session.create' and wire its response to CALLBACK."
-  (hermes-rpc-request
-   "session.create" '(:cols 100)
-   (lambda (result error)
-     (cond
-      (error
-       (message "hermes: session.create failed: %S" error)
-       (when callback (funcall callback nil)))
-      (result
-       (let* ((sid (gethash "session_id" result))
-              (buf (generate-new-buffer (format "*hermes:%s*" sid))))
-         (puthash sid buf hermes--session-buffers)
-         (with-current-buffer buf
-           (hermes-mode)
-            (setf (hermes-state-session-id hermes--state) sid)
-            (save-excursion
-              (goto-char (point-min))
-              (when (org-at-heading-p)
-                (org-set-property "HERMES_SESSION" sid)))
+  ;; Capture the project root from the caller's buffer *before* the
+  ;; async response, when `default-directory' still points at whatever
+  ;; the user was visiting.
+  (let ((detected-cwd (ignore-errors (hermes-project-detect-cwd))))
+    (hermes-rpc-request
+     "session.create" '(:cols 100)
+     (lambda (result error)
+       (cond
+        (error
+         (message "hermes: session.create failed: %S" error)
+         (when callback (funcall callback nil)))
+        (result
+         (let* ((sid (gethash "session_id" result))
+                (buf (generate-new-buffer (format "*hermes:%s*" sid))))
+           (puthash sid buf hermes--session-buffers)
+           (with-current-buffer buf
+             (hermes-mode)
+              (setf (hermes-state-session-id hermes--state) sid)
+              (when detected-cwd
+                (setf (hermes-state-cwd hermes--state) detected-cwd))
+              (save-excursion
+                (goto-char (point-min))
+                (when (org-at-heading-p)
+                  (org-set-property "HERMES_SESSION" sid)
+                  (when detected-cwd
+                    (org-set-property "HERMES_CWD"
+                                      (abbreviate-file-name detected-cwd)))))
            ;; Register the session in the buffer-local registry so the
            ;; slice-B dispatcher can resolve `session-id' → state.  The
            ;; marker tracks the container heading at point-min.
@@ -304,7 +314,7 @@ the session container heading."
              (hermes-dispatch
               (cons "gateway.ready" hermes--last-gateway-ready)))
            (hermes-input-fetch-catalog))
-         (when callback (funcall callback buf))))))))
+         (when callback (funcall callback buf)))))))))
 
 (defun hermes-new-session (&optional callback)
   "Start the gateway (if needed), create a session, and prepare its buffer.

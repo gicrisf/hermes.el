@@ -124,6 +124,28 @@ the user knows extra tokens are being consumed."
      ;; the buffer on every send for the lifetime of this session.
      (t (setq hermes--seeded-session-id sid) text))))
 
+(declare-function hermes-project--build-context "hermes-project" (&optional state))
+(defvar hermes-project-auto-context)
+
+(defun hermes-input--wire-prefix (text)
+  "Return TEXT prepared for the wire.
+Prepends the history seed (once per session, via
+`hermes-input--seed-prefix') and the project context (always on the
+first prompt; on later prompts only when `hermes-project-auto-context'
+is non-nil).
+
+\"First prompt\" is detected by inspecting `hermes--seeded-session-id'
+*before* calling `hermes-input--seed-prefix' (which stamps it as a side
+effect).  Safe to call from any session buffer."
+  (let* ((sid (hermes-state-session-id hermes--state))
+         (first-prompt (and sid (not (equal sid hermes--seeded-session-id))))
+         (seeded (hermes-input--seed-prefix text))
+         (ctx (when (and (or first-prompt
+                             (bound-and-true-p hermes-project-auto-context))
+                         (fboundp 'hermes-project--build-context))
+                (hermes-project--build-context))))
+    (if ctx (concat ctx seeded) seeded)))
+
 ;;;; Post-reconnect drain
 
 (defun hermes-input--drain-after-reconnect ()
@@ -133,7 +155,7 @@ Subsequent items keep draining via the normal `message.complete' hook."
         (sid (hermes-state-session-id hermes--state)))
     (when (and q sid)
       (let* ((head (car q))
-             (wire (hermes-input--seed-prefix head)))
+             (wire (hermes-input--wire-prefix head)))
         (hermes-dispatch '(:dequeue))
         (hermes-rpc-request
          "prompt.submit"
@@ -158,7 +180,7 @@ deferred user-submit."
       (hermes-dispatch '(:dequeue))
       (hermes-dispatch (cons :user-submit (list :text head)))
       (when sid
-        (let ((wire (hermes-input--seed-prefix head)))
+        (let ((wire (hermes-input--wire-prefix head)))
           (hermes-rpc-request
            "prompt.submit"
            (list :session_id sid :text wire)
@@ -479,7 +501,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
       ;; Display the user's actual input — the seed prefix is for the
       ;; gateway only, not the transcript.
       (hermes-dispatch (cons :user-submit (list :text text)))
-      (let ((wire-text (hermes-input--seed-prefix text)))
+      (let ((wire-text (hermes-input--wire-prefix text)))
         (hermes-rpc-request
          "prompt.submit"
          (list :session_id sid :text wire-text)

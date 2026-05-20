@@ -18,6 +18,7 @@
         "hermes-config.el"
         "hermes-bench.el"
         "hermes-image.el"
+        "hermes-project.el"
         "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"
@@ -25,4 +26,5 @@
                            "test/hermes-md-test.el"
                            "test/hermes-input-test.el"
                            "test/hermes-org-test.el"
-                           "test/hermes-bench-test.el"))
+                           "test/hermes-bench-test.el"
+                           "test/hermes-project-test.el"))

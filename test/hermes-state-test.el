@@ -1115,5 +1115,22 @@ and writes the error text to the log."
     (should (null (plist-get (hermes-segment-content rt) :path)))
     (should (equal "ghost.png" (plist-get (hermes-segment-content rt) :name)))))
 
+;;;; :set-cwd reducer
+
+(ert-deftest hermes-state-test/initial-cwd-is-nil ()
+  (let ((s (hermes--reduce nil '(:noop))))
+    (should (null (hermes-state-cwd s)))))
+
+(ert-deftest hermes-state-test/set-cwd-updates-field ()
+  (let* ((s0 (hermes--reduce nil '(:noop)))
+         (s1 (hermes--reduce s0 (cons :set-cwd (list :cwd "/tmp/project/")))))
+    (should (equal "/tmp/project/" (hermes-state-cwd s1)))))
+
+(ert-deftest hermes-state-test/set-cwd-nil-clears ()
+  (let* ((s0 (hermes--reduce nil (cons :set-cwd (list :cwd "/x/"))))
+         (s1 (hermes--reduce s0 (cons :set-cwd (list :cwd nil)))))
+    (should (equal "/x/" (hermes-state-cwd s0)))
+    (should (null (hermes-state-cwd s1)))))
+
 (provide 'hermes-state-test)
 ;;; hermes-state-test.el ends here

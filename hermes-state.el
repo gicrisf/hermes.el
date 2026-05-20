@@ -112,7 +112,11 @@
   (queue nil)
   (history nil)
   skin
-  busy-mode)         ; string from gateway `busy' config: "queue" | "steer" | "interrupt" | nil
+  busy-mode          ; string from gateway `busy' config: "queue" | "steer" | "interrupt" | nil
+  (attachments nil)) ; list of plists (:attach-id :path :name :width :height :token-estimate :status)
+                     ; client-side MIRROR of gateway's session["attached_images"] — never authoritative.
+                     ; :attach-id is a client-generated identifier used to match RPC callbacks back to
+                     ; their optimistic placeholder entry.  :status is 'pending | 'attached | 'error.
 
 ;;;; Ephemeral UI state — never persisted to the buffer
 
@@ -392,19 +396,33 @@ containment so truncated echoes are caught."
   (let ((type (hermes-segment-type seg))
         (content (hermes-segment-content seg)))
     (list :type type
-          :content (if (eq type 'tool)
-                       (and (hermes-tool-p content)
-                            (hermes--tool-to-plist content))
-                     content)
+          :content (cond
+                    ((eq type 'tool)
+                     (and (hermes-tool-p content)
+                          (hermes--tool-to-plist content)))
+                    ((eq type 'image)
+                     ;; Persist only the small, file-system-derivable fields.
+                     ;; No base64 payload, no token estimate (model-specific).
+                     (list :path  (plist-get content :path)
+                           :name  (plist-get content :name)
+                           :width (plist-get content :width)
+                           :height (plist-get content :height)))
+                    (t content))
           :id (hermes-segment-id seg))))
 
 (defun hermes--plist-to-segment (p)
   "Reconstruct a `hermes-segment' from plist P."
   (let* ((type (plist-get p :type))
          (raw (plist-get p :content))
-         (content (if (and (eq type 'tool) (listp raw) raw)
-                      (hermes--plist-to-tool raw)
-                    raw)))
+         (content (cond
+                   ((and (eq type 'tool) (listp raw) raw)
+                    (hermes--plist-to-tool raw))
+                   ((eq type 'image)
+                    ;; Image content stays a plist — no struct wrapper.
+                    ;; A nil :path means the referenced file is gone; the
+                    ;; renderer shows a placeholder in that case.
+                    raw)
+                   (t raw))))
     (make-hermes-segment :type type :content content :id (plist-get p :id))))
 
 (defun hermes--subagent-to-plist (sa)
@@ -552,12 +570,30 @@ which case dispatch routes to the correct typed reconstructor."
          (setf (hermes-state-connection s) 'disconnected)))
       (:user-submit
        (let* ((text (plist-get p :text))
+              ;; Pull successfully-attached images from the state mirror;
+              ;; drop any still-pending or errored entries (we don't know
+              ;; whether the gateway received them in time).
+              (attached (cl-remove-if-not
+                         (lambda (a) (eq 'attached (plist-get a :status)))
+                         (hermes-state-attachments state)))
+              (image-segs (mapcar
+                           (lambda (a)
+                             (make-hermes-segment
+                              :type 'image
+                              :content (list :path  (plist-get a :path)
+                                             :name  (plist-get a :name)
+                                             :width (plist-get a :width)
+                                             :height (plist-get a :height)
+                                             :token-estimate (plist-get a :token-estimate))
+                              :id (hermes--next-segment-id)))
+                           attached))
+              (text-seg (make-hermes-segment
+                         :type 'text :content text
+                         :id (hermes--next-segment-id)))
+              (segs (apply #'vector (append image-segs (list text-seg))))
               (msg (make-hermes-message
                     :kind 'user
-                    :segments (vector
-                               (make-hermes-segment
-                                :type 'text :content text
-                                :id (hermes--next-segment-id)))
+                    :segments segs
                     :timestamp (current-time)))
               (s1 (hermes--push-pending state msg)))
          (hermes--with-copy s1 hermes-state-copy s
@@ -565,7 +601,11 @@ which case dispatch routes to the correct typed reconstructor."
                  (let ((h (cons text (hermes-state-history state))))
                    (if (> (length h) hermes-history-max)
                        (cl-subseq h 0 hermes-history-max)
-                     h))))))
+                     h)))
+           ;; Clear the whole attachments slot — including pending/errored
+           ;; entries.  Pending attachments that race past the send are the
+           ;; documented divergence trade-off (see PLAN.md §6.5).
+           (setf (hermes-state-attachments s) nil))))
       (:enqueue
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-queue s)
@@ -577,6 +617,42 @@ which case dispatch routes to the correct typed reconstructor."
              state
            (hermes--with-copy state hermes-state-copy s
              (setf (hermes-state-queue s) (cdr q))))))
+      (:attachment-add
+       ;; PAYLOAD plist contains :attach-id and any of :path :name :width
+       ;; :height :token-estimate :status.  Pushes a new entry (oldest-first
+       ;; ordering preserved by appending at the tail).
+       (hermes--with-copy state hermes-state-copy s
+         (setf (hermes-state-attachments s)
+               (append (hermes-state-attachments state) (list p)))))
+      (:attachment-update
+       ;; Merge PAYLOAD into the entry whose :attach-id matches.
+       (let* ((aid (plist-get p :attach-id))
+              (atts (hermes-state-attachments state))
+              (updated
+               (mapcar
+                (lambda (a)
+                  (if (equal aid (plist-get a :attach-id))
+                      (let ((merged (copy-sequence a))
+                            (kv p))
+                        (while kv
+                          (setq merged (plist-put merged (car kv) (cadr kv))
+                                kv (cddr kv)))
+                        merged)
+                    a))
+                atts)))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-attachments s) updated))))
+      (:attachment-remove
+       (let* ((aid (plist-get p :attach-id))
+              (filtered (cl-remove-if (lambda (a) (equal aid (plist-get a :attach-id)))
+                                      (hermes-state-attachments state))))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-attachments s) filtered))))
+      (:attachments-clear
+       (if (null (hermes-state-attachments state))
+           state
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-attachments s) nil))))
       (:slash-catalog
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-slash-catalog s) (plist-get p :catalog))))

@@ -99,7 +99,11 @@
     "tools.configure"        ; {session_id?, action, names}  → {changed, enabled_toolsets, ...}
     ;; Skills
     "skills.reload"          ; {}                            → {output, result:{added, removed, total}}
-    "skills.manage")         ; {action, query?, page?, page_size?} (long handler, async)
+    "skills.manage"          ; {action, query?, page?, page_size?} (long handler, async)
+    ;; Multimodal attachments
+    "image.attach"           ; {session_id, path}            → {attached, path, name, width, height, token_estimate}
+    "clipboard.paste"        ; {session_id}                  → {attached, path, name, width, height, token_estimate}
+    "input.detect_drop")     ; {session_id, text}            → {matched, is_image?, path?, text?, name?, width?, height?}
   "All JSON-RPC methods the Emacs client may invoke.")
 
 ;;;; Methods that the gateway dispatches to a worker pool.

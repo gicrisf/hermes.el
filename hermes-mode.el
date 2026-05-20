@@ -456,7 +456,9 @@ it resolves to the `:hermes:' container containing point."
     (hermes-rpc-request "session.interrupt"
                         (list :session_id sid)
                         (lambda (_r e)
-                          (when e (message "hermes: interrupt error: %S" e))))))
+                          (when e (message "hermes: interrupt error: %S" e))))
+    ;; Drop any pending attachments — they were tied to the cancelled turn.
+    (hermes-dispatch '(:attachments-clear) sid)))
 
 (defun hermes--create-session-under-heading ()
   "Insert a Hermes session heading as a child of the heading at/above point.

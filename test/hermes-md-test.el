@@ -129,5 +129,18 @@
    "Just plain prose with no markdown.\n"
    "Just plain prose with no markdown.\n"))
 
+;;;; ANSI escape stripping inside fenced code
+
+(ert-deftest hermes-md-test/fence-diff-ansi-stripped ()
+  (let ((out (hermes-md-to-org "```diff\n\e[32m+ x\e[0m\n```\n")))
+    (should (equal out "#+begin_src diff\n+ x\n#+end_src\n"))
+    (should-not (string-match-p "\e\\[" out))))
+
+(ert-deftest hermes-md-test/fence-ansi-stripped-eof-autoclose ()
+  ;; Missing close fence — body still gets ANSI-stripped.
+  (let ((out (hermes-md-to-org "```diff\n\e[31m- gone\e[0m\n")))
+    (should (string-match-p "^- gone$" out))
+    (should-not (string-match-p "\e\\[" out))))
+
 (provide 'hermes-md-test)
 ;;; hermes-md-test.el ends here

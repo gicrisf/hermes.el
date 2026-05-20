@@ -28,6 +28,7 @@
 ;;; Code:
 
 (require 'subr-x)
+(require 'ansi-color)
 
 (defun hermes-md-to-org (s)
   "Return Org-syntax version of markdown string S.  Best-effort, single-pass."
@@ -93,6 +94,7 @@ from `gptel--stream-convert-markdown->org' in gptel-org.el (karthink/gptel)."
                   (close-end (match-end 0)))
               (delete-region close-beg close-end)
               (goto-char close-beg)
+              (ansi-color-filter-region body-start (point))
               (insert footer)
               (put-text-property body-start (point)
                                  'hermes-md-protected t))
@@ -100,6 +102,7 @@ from `gptel--stream-convert-markdown->org' in gptel-org.el (karthink/gptel)."
           ;; structure is never left dangling.
           (goto-char (point-max))
           (unless (bolp) (insert "\n"))
+          (ansi-color-filter-region body-start (point))
           (insert footer "\n")
           (put-text-property body-start (point)
                              'hermes-md-protected t))))))

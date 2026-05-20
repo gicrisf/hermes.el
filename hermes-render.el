@@ -327,7 +327,16 @@ has a chance to repopulate cleanly."
                (fboundp 'org-indent-add-properties))
       (ignore-errors
         (org-indent-add-properties start end)))
-    (hermes--hide-drawers start end)))
+    (hermes--hide-drawers start end)
+    ;; Render inline images for any `[[file:...]]' links in the region.
+    ;; Bound `org-image-actual-width' to the window width so oversized
+    ;; images scale down rather than blowing the buffer geometry.
+    (when (and (derived-mode-p 'org-mode)
+               (fboundp 'org-display-inline-images)
+               (display-graphic-p))
+      (let ((org-image-actual-width (window-width nil t)))
+        (ignore-errors
+          (org-display-inline-images nil t start end))))))
 
 (defun hermes--render-ui (_old new)
   "Update the right-hand status snippet from the ephemeral UI state NEW.
@@ -878,7 +887,24 @@ from `hermes-tool-formatters' and only inserted when non-empty."
       ('reasoning (hermes--format-cot-block "Reasoning" content sid))
       ('tool (hermes--format-tool content))
       ('system (format "#+begin_comment\n%s\n#+end_comment\n" content))
+      ('image (hermes--format-image-segment content))
       (_ ""))))
+
+(defun hermes--format-image-segment (content)
+  "Return an Org `file:' link (or placeholder) for image segment CONTENT.
+CONTENT is a plist with at least :path; :name is used in the missing-file
+placeholder.  The path is used verbatim — no expansion or canonicalization."
+  (let* ((path (and (listp content) (plist-get content :path)))
+         (name (or (and (listp content) (plist-get content :name))
+                   (and path (file-name-nondirectory path))
+                   "image")))
+    (cond
+     ((and path (file-readable-p path))
+      ;; Inline image link.  `org-display-inline-images' (triggered by
+      ;; the post-commit refresh) renders these into actual images.
+      (format "[[file:%s]]\n" path))
+     (t
+      (format "[image: %s (not found)]\n" name)))))
 
 (defun hermes--segment-block (seg)
   "Return the buffer bytes for SEG: formatted text + trailing newline.

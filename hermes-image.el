@@ -197,6 +197,48 @@ selection support).  Callers should treat `unknown' as \"send the RPC\"."
            (t 'unknown)))
       (error 'unknown)))))
 
+(defun hermes-image--clipboard-fallback-yank (parent error result)
+  "Fallback path when `clipboard.paste' reports no image.
+Yanks clipboard text into the bench input area; otherwise shows an
+error status in the bench paired with PARENT."
+  (let ((bench (and (fboundp 'hermes-bench-active-p)
+                    (hermes-bench-active-p parent)))
+        (yanked nil))
+    (if (buffer-live-p bench)
+        (with-current-buffer bench
+          (setq yanked (hermes-image--insert-clipboard-text-locally)))
+      (setq yanked (hermes-image--insert-clipboard-text-locally)))
+    (unless yanked
+      (let ((msg (or (and (hash-table-p error) (gethash "message" error))
+                     (and result (hermes-image--get result "message"))
+                     "no image or text on clipboard")))
+        (when (fboundp 'hermes-bench-show-status)
+          (hermes-bench-show-status parent msg t))))))
+
+(defun hermes-image--clipboard-paste-callback (parent attach-id result error)
+  "RPC callback for `clipboard.paste' against PARENT and ATTACH-ID."
+  (when (buffer-live-p parent)
+    (with-current-buffer parent
+      (cond
+       ((and (not error)
+             result
+             (eq t (hermes-image--get result "attached")))
+        (hermes-dispatch
+         (cons :attachment-update
+               (list :attach-id attach-id
+                     :path (hermes-image--get result "path")
+                     :name (or (hermes-image--get result "name") "clipboard")
+                     :width (hermes-image--get result "width")
+                     :height (hermes-image--get result "height")
+                     :token-estimate (hermes-image--get result "token_estimate")
+                     :status 'attached)))
+        (hermes-image--repaint-bench parent))
+       (t
+        (hermes-dispatch
+         (cons :attachment-remove (list :attach-id attach-id)))
+        (hermes-image--repaint-bench parent)
+        (hermes-image--clipboard-fallback-yank parent error result))))))
+
 ;;;###autoload
 (defun hermes-image-clipboard-paste ()
   "Paste from the system clipboard into the current Hermes session.
@@ -216,11 +258,9 @@ local text yank."
       (user-error "No live Hermes buffer"))
     (let ((probe (hermes-image--clipboard-has-image-p)))
       (cond
-       ;; Definite text — yank locally, skip the RPC.
        ((null probe)
         (unless (hermes-image--insert-clipboard-text-locally)
           (message "hermes: clipboard is empty")))
-       ;; Image or unknown — ask the gateway.
        (t
         (let ((sid (with-current-buffer parent (hermes-image--current-session-id))))
           (unless sid
@@ -236,44 +276,8 @@ local text yank."
             (hermes-image--rpc-clipboard-paste
              sid
              (lambda (result error)
-               (when (buffer-live-p parent)
-                 (with-current-buffer parent
-                   (cond
-                    ;; Success — image attached.
-                    ((and (not error)
-                          result
-                          (eq t (hermes-image--get result "attached")))
-                     (hermes-dispatch
-                      (cons :attachment-update
-                            (list :attach-id attach-id
-                                  :path (hermes-image--get result "path")
-                                  :name (or (hermes-image--get result "name")
-                                            "clipboard")
-                                  :width (hermes-image--get result "width")
-                                  :height (hermes-image--get result "height")
-                                  :token-estimate (hermes-image--get result "token_estimate")
-                                  :status 'attached)))
-                     (hermes-image--repaint-bench parent))
-                    ;; No image on clipboard — fall back to text yank.
-                    (t
-                     (hermes-dispatch
-                      (cons :attachment-remove (list :attach-id attach-id)))
-                     (hermes-image--repaint-bench parent)
-                     (let ((bench (and (fboundp 'hermes-bench-active-p)
-                                       (hermes-bench-active-p parent))))
-                       (cond
-                        ((buffer-live-p bench)
-                         (with-current-buffer bench
-                           (unless (hermes-image--insert-clipboard-text-locally)
-                             (let ((msg (or (and (hash-table-p error)
-                                                 (gethash "message" error))
-                                            (and result
-                                                 (hermes-image--get result "message"))
-                                            "no image or text on clipboard")))
-                               (when (fboundp 'hermes-bench-show-status)
-                                 (hermes-bench-show-status parent msg t))))))
-                        (t
-                         (hermes-image--insert-clipboard-text-locally)))))))))))))))))))
+               (hermes-image--clipboard-paste-callback
+                parent attach-id result error))))))))))
 
 (provide 'hermes-image)
 ;;; hermes-image.el ends here

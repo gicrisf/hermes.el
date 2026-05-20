@@ -29,6 +29,7 @@
 (require 'hermes-org)
 (require 'hermes-bench)
 (require 'hermes-config)
+(require 'hermes-image)
 
 ;;;; Routing: filter event → buffer
 
@@ -142,6 +143,7 @@ without this cache, the very first buffer would never see the skin.")
     (define-key m (kbd "C-c C-v") #'hermes-view-log)
     (define-key m (kbd "C-c C-m") #'hermes-set-model)
     (define-key m (kbd "C-c C-f") #'hermes-toggle-fast)
+    (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
     m)
   "Keymap for `hermes-mode'.")
 
@@ -153,7 +155,8 @@ without this cache, the very first buffer would never see the skin.")
       "C-c C-k" "Interrupt session"
       "C-c C-v" "View log"
       "C-c C-m" "Set model"
-      "C-c C-f" "Toggle fast mode")))
+      "C-c C-f" "Toggle fast mode"
+      "C-c C-a" "Attach image file")))
 
 (defun hermes-minor-mode--on ()
   "Setup for `hermes-minor-mode': org-local config, hooks, header-line.

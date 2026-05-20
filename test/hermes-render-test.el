@@ -1070,5 +1070,37 @@ rewritten heading and leaving the drawer body visible."
               (should (= (window-point win) parked)))))
       (kill-buffer buf))))
 
+;;;; Image segment formatting
+
+(ert-deftest hermes-render-test/format-image-segment-existing-file ()
+  "Existing file → Org `[[file:...]]' link."
+  (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
+         (seg (make-hermes-segment
+               :type 'image
+               :content (list :path tmp :name (file-name-nondirectory tmp))
+               :id "s1")))
+    (unwind-protect
+        (let ((out (hermes--format-segment seg)))
+          (should (string-match-p (regexp-quote (format "[[file:%s]]" tmp)) out)))
+      (delete-file tmp))))
+
+(ert-deftest hermes-render-test/format-image-segment-missing-file ()
+  "Missing path → placeholder including the file name."
+  (let* ((seg (make-hermes-segment
+               :type 'image
+               :content (list :path "/nonexistent/cat.png" :name "cat.png")
+               :id "s1"))
+         (out (hermes--format-segment seg)))
+    (should (string-match-p "image: cat.png (not found)" out))))
+
+(ert-deftest hermes-render-test/format-image-segment-nil-path ()
+  "Nil path (deserialised after file vanished) → placeholder uses :name."
+  (let* ((seg (make-hermes-segment
+               :type 'image
+               :content (list :path nil :name "ghost.png")
+               :id "s1"))
+         (out (hermes--format-segment seg)))
+    (should (string-match-p "image: ghost.png (not found)" out))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

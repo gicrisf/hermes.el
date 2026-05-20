@@ -25,6 +25,9 @@
 (declare-function hermes-input-send "hermes-input" (text))
 (declare-function hermes-interrupt "hermes-mode" ())
 (declare-function hermes-compose "hermes-compose" ())
+(declare-function hermes-image-attach-file "hermes-image" (&optional file))
+(declare-function hermes-image-clipboard-paste "hermes-image" ())
+(declare-function hermes-state-attachments "hermes-state" (state))
 (declare-function hermes--insert-committed-turn "hermes-render" (msg))
 (declare-function hermes--message-from-stream "hermes-state" (stream usage))
 
@@ -181,6 +184,11 @@ Cleared by `hermes-bench--stream-commit' when the turn ends.")
   "Transient status plist (:text :error-p) rendered above the separator.
 Cleared after one paint cycle.")
 
+(defface hermes-bench-attachment-face
+  '((t :inherit shadow))
+  "Face for the per-attachment metadata line in the bench."
+  :group 'hermes)
+
 ;;;; Buffer-local state (parent buffer)
 
 (defvar-local hermes-bench--buffer nil
@@ -195,6 +203,8 @@ Cleared after one paint cycle.")
     (define-key m (kbd "C-c C-k") #'hermes-bench-interrupt-parent)
     (define-key m (kbd "C-c C-l") #'hermes-bench-compose)
     (define-key m (kbd "C-c C-s") #'hermes-bench-steer)
+    (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
+    (define-key m (kbd "C-c C-v") #'hermes-image-clipboard-paste)
     m)
   "Keymap for `hermes-bench-mode'.")
 
@@ -204,7 +214,9 @@ Cleared after one paint cycle.")
       "C-c C-c" "Send prompt"
       "C-c C-k" "Interrupt session"
       "C-c C-l" "Compose multi-line"
-      "C-c C-s" "Steer mid-turn")))
+      "C-c C-s" "Steer mid-turn"
+      "C-c C-a" "Attach image file"
+      "C-c C-v" "Paste from clipboard")))
 
 ;; `define-derived-mode' bodies run BEFORE `after-change-major-mode-hook',
 ;; which is where `global-display-line-numbers-mode' enables itself in
@@ -506,6 +518,47 @@ Does nothing if the current command is a motion command."
              (string-empty-p hermes-bench--current-user-prompt))
          (not (and state (hermes-state-stream state))))))
 
+;;;; Attachment helpers
+
+(defun hermes-bench--attachments-from-parent ()
+  "Return the attachments list from the paired parent buffer's state, or nil."
+  (let* ((parent hermes-bench--parent-buffer)
+         (state (and (buffer-live-p parent)
+                     (buffer-local-value 'hermes--state parent))))
+    (and state (hermes-state-attachments state))))
+
+(defun hermes-bench--format-attachment (a)
+  "Return a one-line summary for attachment plist A.
+Statuses render as: pending → trailing ellipsis; attached → dims and
+token estimate; error → error marker."
+  (let* ((name (or (plist-get a :name) "?"))
+         (status (or (plist-get a :status) 'pending))
+         (w (plist-get a :width))
+         (h (plist-get a :height))
+         (tok (plist-get a :token-estimate)))
+    (pcase status
+      ('pending  (format "[img] %s ..." name))
+      ('error    (format "[img] %s [failed]" name))
+      (_
+       (let ((parts (list name)))
+         (when (and w h) (push (format "%dx%d" w h) parts))
+         (when tok (push (format "~%s tok" tok) parts))
+         (concat "[img] " (string-join (nreverse parts) " | ")))))))
+
+(defun hermes-bench--repaint-preserving-stream ()
+  "Repaint the bench, preserving any in-flight stream content.
+Used by `hermes-image' callbacks to refresh the attachment line(s)."
+  (let* ((parent hermes-bench--parent-buffer)
+         (state  (and (buffer-live-p parent)
+                      (buffer-local-value 'hermes--state parent)))
+         (stream (and state (hermes-state-stream state))))
+    (if (hermes-stream-p stream)
+        (pcase-let ((`(,reasoning . ,answer)
+                     (hermes-bench--segments-by-zone
+                      (hermes-stream-segments stream))))
+          (hermes-bench--paint-ephemeral nil reasoning answer))
+      (hermes-bench--paint-ephemeral nil nil nil))))
+
 ;;;; The single renderer
 
 (defun hermes-bench--paint-ephemeral (&optional user-text reasoning answer)
@@ -530,11 +583,23 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
     (goto-char (point-min))
     ;; 2. Splash, or normal ephemeral zones.
     (if (and (string-empty-p effective-user)
+             (null (hermes-bench--attachments-from-parent))
              (hermes-bench--should-show-splash-p))
         (hermes-bench--insert-splash)
       (unless (string-empty-p effective-user)
         (insert (propertize (concat "** U: " effective-user "\n\n")
                             'face 'hermes-bench-user-face)))
+      ;; Pending image/clipboard attachments — one metadata line each.
+      ;; Shown above any reasoning/answer so the user can see what will be
+      ;; sent with the next prompt.  No inline thumbnails (bench is 20
+      ;; lines tall; thumbnails would blow the layout).
+      (let ((atts (hermes-bench--attachments-from-parent)))
+        (when atts
+          (dolist (a atts)
+            (insert (propertize (hermes-bench--format-attachment a)
+                                'face 'hermes-bench-attachment-face)
+                    "\n"))
+          (insert "\n")))
       ;; Steer messages — shown between user prompt and reasoning so the
       ;; user can see what was injected into the running turn.
       (when hermes-bench--steer-messages

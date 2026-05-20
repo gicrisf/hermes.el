@@ -1012,5 +1012,108 @@ and writes the error text to the log."
     (should (eq 'running (plist-get plist :status)))
     (should (equal "t" (plist-get plist :id)))))
 
+;;;; Image attachments (PLAN.md: image.attach / clipboard.paste)
+
+(ert-deftest hermes-state-test/attachment-add-appends-entry ()
+  (let* ((s0 (hermes--reduce nil '(:noop)))
+         (s1 (hermes--reduce s0 (cons :attachment-add
+                                      (list :attach-id "a1" :name "cat.png"
+                                            :status 'pending)))))
+    (should (equal 1 (length (hermes-state-attachments s1))))
+    (let ((a (car (hermes-state-attachments s1))))
+      (should (equal "a1" (plist-get a :attach-id)))
+      (should (equal "cat.png" (plist-get a :name)))
+      (should (eq 'pending (plist-get a :status))))))
+
+(ert-deftest hermes-state-test/attachment-update-merges-fields ()
+  (let* ((s0 (hermes--reduce nil '(:noop)))
+         (s1 (hermes--reduce s0 (cons :attachment-add
+                                      (list :attach-id "a1" :name "cat.png"
+                                            :status 'pending))))
+         (s2 (hermes--reduce s1 (cons :attachment-update
+                                      (list :attach-id "a1"
+                                            :width 100 :height 200
+                                            :status 'attached)))))
+    (let ((a (car (hermes-state-attachments s2))))
+      (should (eq 'attached (plist-get a :status)))
+      (should (= 100 (plist-get a :width)))
+      (should (= 200 (plist-get a :height)))
+      (should (equal "cat.png" (plist-get a :name))))))
+
+(ert-deftest hermes-state-test/attachment-remove-drops-entry ()
+  (let* ((s0 (hermes--reduce nil '(:noop)))
+         (s1 (hermes-test--reduce* s0
+              (cons :attachment-add (list :attach-id "a1" :name "x"))
+              (cons :attachment-add (list :attach-id "a2" :name "y"))))
+         (s2 (hermes--reduce s1 (cons :attachment-remove
+                                      (list :attach-id "a1")))))
+    (should (= 1 (length (hermes-state-attachments s2))))
+    (should (equal "a2" (plist-get (car (hermes-state-attachments s2))
+                                    :attach-id)))))
+
+(ert-deftest hermes-state-test/attachments-clear-empties-slot ()
+  (let* ((s0 (hermes--reduce nil '(:noop)))
+         (s1 (hermes--reduce s0 (cons :attachment-add
+                                      (list :attach-id "a1" :name "x"))))
+         (s2 (hermes--reduce s1 '(:attachments-clear))))
+    (should (null (hermes-state-attachments s2)))))
+
+(ert-deftest hermes-state-test/user-submit-consumes-attached-images ()
+  "An `attached' attachment becomes a leading image segment; pending dropped."
+  (let* ((s0 (hermes--reduce nil '(:noop)))
+         (s1 (hermes-test--reduce* s0
+              (cons :attachment-add (list :attach-id "a1"
+                                          :path "/tmp/cat.png" :name "cat.png"
+                                          :width 100 :height 200
+                                          :token-estimate 50
+                                          :status 'attached))
+              (cons :attachment-add (list :attach-id "a2"
+                                          :path "/tmp/dog.png" :name "dog.png"
+                                          :status 'pending))
+              (cons :user-submit (list :text "look"))))
+         (msg (hermes-test--last-pending s1))
+         (segs (hermes-message-segments msg)))
+    (should (= 2 (length segs)))
+    (should (eq 'image (hermes-segment-type (aref segs 0))))
+    (should (eq 'text  (hermes-segment-type (aref segs 1))))
+    (let ((img (hermes-segment-content (aref segs 0))))
+      (should (equal "/tmp/cat.png" (plist-get img :path)))
+      (should (= 100 (plist-get img :width)))
+      (should (= 50  (plist-get img :token-estimate))))
+    (should (null (hermes-state-attachments s1)))))
+
+(ert-deftest hermes-state-test/user-submit-without-attachments-text-only ()
+  (let* ((s0 (hermes--reduce nil '(:noop)))
+         (s1 (hermes--reduce s0 (cons :user-submit (list :text "hi"))))
+         (msg (hermes-test--last-pending s1))
+         (segs (hermes-message-segments msg)))
+    (should (= 1 (length segs)))
+    (should (eq 'text (hermes-segment-type (aref segs 0))))
+    (should (equal "hi" (hermes-segment-content (aref segs 0))))))
+
+(ert-deftest hermes-state-test/image-segment-roundtrips-via-plist ()
+  (let* ((content (list :path "/tmp/cat.png" :name "cat.png"
+                        :width 100 :height 200 :token-estimate 50))
+         (seg (make-hermes-segment :type 'image :content content :id "s1"))
+         (plist (hermes--segment-to-plist seg))
+         (rt (hermes--plist-to-segment plist)))
+    (should (eq 'image (hermes-segment-type rt)))
+    (let ((rc (hermes-segment-content rt)))
+      (should (equal "/tmp/cat.png" (plist-get rc :path)))
+      (should (equal "cat.png" (plist-get rc :name)))
+      (should (= 100 (plist-get rc :width)))
+      (should (= 200 (plist-get rc :height)))
+      ;; Token estimate is intentionally NOT persisted — model-specific.
+      (should (null (plist-get rc :token-estimate))))))
+
+(ert-deftest hermes-state-test/image-segment-with-missing-path-survives ()
+  (let* ((seg (make-hermes-segment :type 'image
+                                   :content (list :path nil :name "ghost.png")
+                                   :id "s1"))
+         (rt (hermes--plist-to-segment (hermes--segment-to-plist seg))))
+    (should (eq 'image (hermes-segment-type rt)))
+    (should (null (plist-get (hermes-segment-content rt) :path)))
+    (should (equal "ghost.png" (plist-get (hermes-segment-content rt) :name)))))
+
 (provide 'hermes-state-test)
 ;;; hermes-state-test.el ends here

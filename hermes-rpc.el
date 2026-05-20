@@ -34,8 +34,11 @@
   :group 'tools
   :prefix "hermes-")
 
-(defcustom hermes-rpc-python "python3"
-  "Python executable used to launch the gateway."
+(defcustom hermes-rpc-python
+  (or (getenv "HERMES_DEV_PYTHON") "python3")
+  "Python executable used to launch the gateway.
+During development the Nix shell sets `HERMES_DEV_PYTHON' to the
+project-local venv interpreter; that value is picked up automatically."
   :type 'string :group 'hermes)
 
 (defcustom hermes-rpc-gateway-module "tui_gateway.entry"
@@ -142,6 +145,7 @@ Each element is the JSON-RPC frame plist as produced by
          ;; `:stderr BUFFER' creates an internal pipe-process; attach a
          ;; filter to surface lines in real time.
          (stderr-pipe (get-buffer-process stderr-buf)))
+    (message "hermes-rpc: spawning %S" cmd)
     (when stderr-pipe
       (set-process-filter stderr-pipe #'hermes-rpc--stderr-filter))
     (setq hermes-rpc--stderr-buffer stderr-buf
@@ -273,12 +277,16 @@ lost."
   "Pending stderr bytes that have not yet been split on newline.")
 
 (defun hermes-rpc--stderr-filter (_proc chunk)
-  "Stderr filter: split CHUNK on newline, run each line through the hook."
+  "Stderr filter: split CHUNK on newline, store in buffer and run hook."
   (setq hermes-rpc--stderr-tail (concat hermes-rpc--stderr-tail chunk))
   (let ((lines (split-string hermes-rpc--stderr-tail "\n")))
     (setq hermes-rpc--stderr-tail (car (last lines)))
     (dolist (line (butlast lines))
       (unless (string-empty-p line)
+        (when (buffer-live-p hermes-rpc--stderr-buffer)
+          (with-current-buffer hermes-rpc--stderr-buffer
+            (goto-char (point-max))
+            (insert line "\n")))
         (run-hook-with-args 'hermes-rpc-stderr-functions line)))))
 
 (defun hermes-rpc--sentinel (proc event)
@@ -287,7 +295,11 @@ lost."
     ;; If the gateway never reached `ready', treat it as a start timeout.
     (when (eq hermes-rpc--state 'starting)
       (let ((tail-lines nil)
-            (count 0))
+            (count 0)
+            (ev (string-trim event)))
+        ;; Give the stderr filter a moment to catch up (fast-failing
+        ;; processes often emit stderr after the sentinel fires).
+        (sit-for 0 100)
         (when (buffer-live-p hermes-rpc--stderr-buffer)
           (with-current-buffer hermes-rpc--stderr-buffer
             (goto-char (point-max))
@@ -300,16 +312,24 @@ lost."
                     (push line tail-lines)
                     (setq count (1+ count)))))
               (forward-line -1))))
+        ;; Include any trailing bytes the filter hasn't flushed yet.
+        (unless (string-empty-p hermes-rpc--stderr-tail)
+          (push hermes-rpc--stderr-tail tail-lines)
+          (setq hermes-rpc--stderr-tail ""))
+        (message "hermes-rpc: gateway failed to start (%s)" ev)
+        (if tail-lines
+            (progn
+              (message "stderr:")
+              (dolist (l tail-lines) (message "  %s" l))
+              (when (cl-some (lambda (l) (string-match-p "ModuleNotFoundError" l))
+                             tail-lines)
+                (message "→ Is the Hermes agent installed?")))
+          (message "stderr: (empty)"))
         (run-hook-with-args 'hermes-rpc-start-timeout-functions tail-lines)))
-    (unless (string-empty-p hermes-rpc--stderr-tail)
-      (run-hook-with-args 'hermes-rpc-stderr-functions
-                          hermes-rpc--stderr-tail)
-      (setq hermes-rpc--stderr-tail ""))
     (setq hermes-rpc--process nil
           hermes-rpc--state 'down
           hermes-rpc--pending-frames nil)
-    (run-hook-with-args 'hermes-rpc-connection-functions 'disconnected)
-    (message "hermes-rpc: gateway %s" (string-trim event))))
+    (run-hook-with-args 'hermes-rpc-connection-functions 'disconnected)))
 
 ;;;; Smoke test
 

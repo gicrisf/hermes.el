@@ -19,9 +19,21 @@ let
   };
 in
 pkgs.mkShell {
-  buildInputs = [ pkgs.emacs eldev ];
+  buildInputs = [
+    pkgs.emacs
+    eldev
+    pkgs.python313
+    pkgs.uv
+  ];
   shellHook = ''
     echo "hermes.el development shell"
     echo "Run 'eldev test' to run tests"
+
+    # If a local venv exists, expose it via HERMES_DEV_PYTHON so Emacs
+    # picks it up automatically (see `hermes-rpc-python').
+    if [ -x ".venv/bin/python" ]; then
+      export HERMES_DEV_PYTHON="$PWD/.venv/bin/python"
+      echo "Using venv python at $HERMES_DEV_PYTHON"
+    fi
   '';
 }

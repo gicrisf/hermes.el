@@ -65,10 +65,9 @@ All reference docs are in [`docs/`](docs/):
 
 - Emacs 27.1+ (27+ for `json-parse-string` / `json-serialize`)
 - Python 3.11+ (for the Hermes agent gateway)
-- A working Hermes agent installation or checkout
+- A working Hermes agent installation — see the
+  [Hermes installation docs](https://github.com/NousResearch/hermes-agent)
 
-Install the Hermes agent first — see the
-[Hermes installation docs](https://github.com/NousResearch/hermes-agent).
 Once the gateway module (`tui_gateway.entry`) is available in your Python
 environment, `hermes.el` will use the system `python3` by default.
 
@@ -83,6 +82,29 @@ For finer control you can override the entire spawn command:
 ```elisp
 (setq hermes-rpc-command '("hermes-gateway"))
 ```
+
+### Nix development shell
+
+Both a classic `shell.nix` and a modern `flake.nix` are provided.
+
+```sh
+nix-shell           # classic
+nix develop         # flake
+```
+
+The shell provides Emacs, Eldev, Python 3.13, and `uv`.  If a `.venv/`
+exists at the project root, the shell exports `HERMES_DEV_PYTHON`
+pointing to its interpreter.  `hermes-rpc-python` picks this up
+automatically, so `M-x hermes` works out of the box.
+
+For automatic activation, use [direnv](https://direnv.net/):
+
+```sh
+direnv allow        # once
+```
+
+The included `.envrc` enters the Nix shell and applies the same
+`HERMES_DEV_PYTHON` logic.
 
 ### Vanilla Emacs
 

@@ -54,6 +54,28 @@
          (out (hermes--stored-rows-from-result wrap)))
     (should (equal (list row) out))))
 
+;;;; Background-task filter (bg_*)
+
+(ert-deftest hermes-sessions-test/background-row-detected ()
+  (should (hermes--stored-row-background-p
+           (hermes-sessions-test--ht "id" "bg_20260521_abcd")))
+  (should-not (hermes--stored-row-background-p
+               (hermes-sessions-test--ht "id" "20260521_HHMMSS_xxx")))
+  (should-not (hermes--stored-row-background-p
+               (hermes-sessions-test--ht "id" nil))))
+
+(ert-deftest hermes-sessions-test/rows-filter-out-bg ()
+  (let* ((user-row (hermes-sessions-test--ht "id" "20260521_a"))
+         (bg-row   (hermes-sessions-test--ht "id" "bg_20260521_b"))
+         (out (hermes--stored-rows-from-result (list user-row bg-row))))
+    (should (equal (list user-row) out))))
+
+(ert-deftest hermes-sessions-test/resume-from-db-refuses-bg ()
+  (should-error (hermes-resume-from-db "bg_20260521_c") :type 'user-error))
+
+(ert-deftest hermes-sessions-test/branch-from-db-refuses-bg ()
+  (should-error (hermes-branch-from-db "bg_20260521_c") :type 'user-error))
+
 ;;;; Annotations
 
 (ert-deftest hermes-sessions-test/stored-annot-uses-title ()

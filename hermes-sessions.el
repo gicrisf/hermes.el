@@ -135,17 +135,28 @@ Annotations show model, status, message count, and project."
             source msgs
             (hermes--sessions-format-time started))))
 
+(defun hermes--stored-row-background-p (row)
+  "Return non-nil when ROW is a background-task session.
+Background tasks use SIDs of the form `bg_<timestamp><random>'.  The
+gateway's `session.list' filter only excludes `source=\"tool\"', which
+does not catch these — so we filter client-side as well."
+  (let ((id (hermes--sessions-field row "id")))
+    (and (stringp id) (string-prefix-p "bg_" id))))
+
 (defun hermes--stored-rows-from-result (result)
-  "Coerce RESULT into a list of session row hashtables."
-  (cond
-   ((vectorp result) (append result nil))
-   ((listp result) result)
-   ((hash-table-p result)
-    (let ((s (gethash "sessions" result)))
-      (cond ((vectorp s) (append s nil))
-            ((listp s) s)
-            (t nil))))
-   (t nil)))
+  "Coerce RESULT into a list of user-facing session row hashtables.
+Filters out background-task sessions (`bg_*' SIDs) — see
+`hermes--stored-row-background-p'."
+  (let ((rows (cond
+               ((vectorp result) (append result nil))
+               ((listp result) result)
+               ((hash-table-p result)
+                (let ((s (gethash "sessions" result)))
+                  (cond ((vectorp s) (append s nil))
+                        ((listp s) s)
+                        (t nil))))
+               (t nil))))
+    (cl-remove-if #'hermes--stored-row-background-p rows)))
 
 (defun hermes--stored-fetch (with-cwd then)
   "Call `session.list' (optionally CWD-filtered) and invoke THEN.
@@ -404,6 +415,8 @@ the gateway already has full context."
   (interactive (list (read-string "Session id to resume: ")))
   (unless (and sid (not (string-empty-p sid)))
     (user-error "No session id given"))
+  (when (string-prefix-p "bg_" sid)
+    (user-error "Refusing to resume a background-task session: %s" sid))
   (unless (hermes-rpc-live-p)
     (hermes--install-hooks)
     (hermes-rpc-start))
@@ -420,6 +433,8 @@ to receive prompts."
   (interactive (list (read-string "Session id to branch: ")))
   (unless (and sid (not (string-empty-p sid)))
     (user-error "No session id given"))
+  (when (string-prefix-p "bg_" sid)
+    (user-error "Refusing to branch a background-task session: %s" sid))
   (unless (hermes-rpc-live-p)
     (hermes--install-hooks)
     (hermes-rpc-start))

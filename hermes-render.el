@@ -494,8 +494,23 @@ Compactness rules:
           ('tool
            (let ((tool (hermes-segment-content seg)))
              (when (hermes-tool-p tool)
-               (push (hermes--plist-drop-nils (hermes--tool-to-plist tool))
-                     tool-calls))))
+               ;; Slim meta entry: heading properties carry name/status/
+               ;; duration; the heading body is formatter-generated
+               ;; *display* only and is NOT round-tripped.  :output is
+               ;; the canonical raw tool output and lives in meta so
+               ;; re-renders are byte-stable.
+               (let ((slim (hermes--plist-drop-nils
+                            (list :id          (hermes-tool-id tool)
+                                  :output      (hermes-tool-output tool)
+                                  :context     (hermes-tool-context tool)
+                                  :summary     (hermes-tool-summary tool)
+                                  :error       (hermes-tool-error tool)
+                                  :inline-diff (hermes-tool-inline-diff tool)
+                                  :todos       (hermes-tool-todos tool)))))
+                 ;; Skip the entry entirely when only :id would remain —
+                 ;; a "simple" tool fully described by its heading.
+                 (when (cddr slim)
+                   (push slim tool-calls))))))
           ('image
            (let ((img (hermes-segment-content seg)))
              (when (listp img)
@@ -900,13 +915,20 @@ them on insertion."
     (_           "DONE")))
 
 (defun hermes--tool-properties (tool)
-  "Return an alist of org PROPERTY entries for TOOL."
-  (let ((dur (hermes-tool-duration tool))
-        (tid (hermes-tool-id tool))
+  "Return an alist of org PROPERTY entries for TOOL.
+Includes HERMES_KIND, TOOL_ID, TOOL_NAME, TOOL_STATUS, TOOL_DURATION.
+Duration is stored at full float precision; the human-readable (0.1s)
+in the heading text is rounded for display only."
+  (let ((dur    (hermes-tool-duration tool))
+        (tid    (hermes-tool-id tool))
+        (name   (hermes-tool-name tool))
+        (status (hermes-tool-status tool))
         (acc nil))
     (push (cons "HERMES_KIND" "TOOL") acc)
-    (when tid  (push (cons "TOOL_ID" (format "%s" tid)) acc))
-    (when dur  (push (cons "DURATION" (format "%.1fs" dur)) acc))
+    (when tid    (push (cons "TOOL_ID"       (format "%s" tid))    acc))
+    (when name   (push (cons "TOOL_NAME"     (format "%s" name))   acc))
+    (when status (push (cons "TOOL_STATUS"   (format "%s" status)) acc))
+    (when dur    (push (cons "TOOL_DURATION" (format "%s" dur))    acc))
     (nreverse acc)))
 
 (defun hermes--format-property-drawer (props)

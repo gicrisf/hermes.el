@@ -448,11 +448,14 @@ property drawer — just heading + drawer."
 ;;;; Meta drawer I/O
 
 (ert-deftest hermes-render-test/meta-drawer-insert-and-extract ()
-  "Insert a :HERMES_META: drawer for a turn with metadata and read it back."
+  "Insert a :HERMES_META: drawer for a turn with metadata and read it back.
+The slim meta carries :id, :output, and extended fields only;
+:name/:status/:duration live in heading properties."
   (with-temp-buffer
     (org-mode)
     (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                   :output "a\nb" :duration 0.5))
+                                   :output "a\nb" :duration 0.5
+                                   :context "ls -la"))
            (msg (make-hermes-message
                  :kind 'assistant
                  :segments (vector (make-hermes-segment
@@ -468,29 +471,71 @@ property drawer — just heading + drawer."
       (let ((tcs (plist-get plist :tool-calls)))
         (should (and (vectorp tcs) (= 1 (length tcs))))
         (should (equal "t1" (plist-get (aref tcs 0) :id)))
-        (should (equal "ls" (plist-get (aref tcs 0) :name)))))))
+        (should (equal "ls -la" (plist-get (aref tcs 0) :context)))
+        (should (equal "a\nb" (plist-get (aref tcs 0) :output)))
+        ;; Scalars are still excluded from meta.
+        (should-not (plist-member (aref tcs 0) :name))
+        (should-not (plist-member (aref tcs 0) :status))
+        (should-not (plist-member (aref tcs 0) :duration))))))
 
-(ert-deftest hermes-render-test/meta-drawer-drops-nil-tool-fields ()
-  "Tool plist in :tool-calls omits nil-valued slots."
-  (with-temp-buffer
-    (org-mode)
-    (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                   :duration 0.1))   ; output / context / etc. nil
-           (msg (make-hermes-message
-                 :kind 'assistant
-                 :segments (vector (make-hermes-segment
-                                    :type 'tool :content tool :id "s1")))))
-      (insert "* assistant\n")
-      (hermes--insert-meta-drawer msg))
-    (goto-char (point-min))
-    (let* ((plist (hermes--extract-meta-drawer))
-           (tc (aref (plist-get plist :tool-calls) 0)))
-      (should-not (plist-member tc :output))
-      (should-not (plist-member tc :context))
-      (should-not (plist-member tc :error))
-      (should-not (plist-member tc :preview))
-      (should (equal "t1" (plist-get tc :id)))
-      (should (equal 'complete (plist-get tc :status))))))
+(ert-deftest hermes-render-test/meta-tool-calls-omit-name-status-duration ()
+  "hermes--message-to-meta-plist strips :name/:status/:duration from
+tool-calls — those live in heading properties.  :output stays in meta
+as the canonical raw output."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.5 :output "a\nb" :context "-la"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (plist (hermes--message-to-meta-plist msg))
+         (tc (aref (plist-get plist :tool-calls) 0)))
+    (should-not (plist-member tc :name))
+    (should-not (plist-member tc :status))
+    (should-not (plist-member tc :duration))
+    (should (equal "t1" (plist-get tc :id)))
+    (should (equal "a\nb" (plist-get tc :output)))
+    (should (equal "-la" (plist-get tc :context)))))
+
+(ert-deftest hermes-render-test/meta-omitted-when-tool-has-no-data ()
+  "A turn whose tool carries only :id (no output/context/summary/etc.)
+produces no meta plist at all."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.1))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1")))))
+    (should-not (hermes--message-to-meta-plist msg))))
+
+(ert-deftest hermes-render-test/meta-present-when-tool-has-context ()
+  "A turn whose tool carries :context produces a meta plist with a slim
+tool-calls entry."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.1 :context "--cached"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (plist (hermes--message-to-meta-plist msg)))
+    (should plist)
+    (let ((tcs (plist-get plist :tool-calls)))
+      (should (and (vectorp tcs) (= 1 (length tcs))))
+      (should (equal "--cached" (plist-get (aref tcs 0) :context))))))
+
+(ert-deftest hermes-render-test/tool-properties-include-name-status-duration ()
+  "hermes--tool-properties returns the four scalar fields plus HERMES_KIND.
+Duration is full-precision."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.08558511734008789))
+         (props (hermes--tool-properties tool)))
+    (should (equal "TOOL"     (cdr (assoc "HERMES_KIND"   props))))
+    (should (equal "t1"       (cdr (assoc "TOOL_ID"       props))))
+    (should (equal "ls"       (cdr (assoc "TOOL_NAME"     props))))
+    (should (equal "complete" (cdr (assoc "TOOL_STATUS"   props))))
+    (should (equal "0.08558511734008789"
+                   (cdr (assoc "TOOL_DURATION" props))))
+    (should-not (assoc "DURATION" props))))
 
 (ert-deftest hermes-render-test/meta-drawer-drops-zeroed-usage ()
   "Usage with all-zero counters is dropped; meta drawer omitted if it's
@@ -625,7 +670,8 @@ contains a :HERMES_META: drawer with the tool-calls."
   (with-temp-buffer
     (hermes-mode)
     (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                   :output "out" :duration 0.1))
+                                   :output "out" :duration 0.1
+                                   :context "-la"))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
                                        :type 'text :content "Hi" :id "s1")
@@ -654,7 +700,8 @@ contains a :HERMES_META: drawer with the tool-calls."
   (with-temp-buffer
     (org-mode)
     (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                   :output "x" :duration 0.1))
+                                   :output "x" :duration 0.1
+                                   :context "-la"))
            (msg (make-hermes-message
                  :kind 'assistant
                  :segments (vector (make-hermes-segment
@@ -1170,7 +1217,8 @@ omit the drawer entirely under v2)."
     ;; Stage 1: stream begins with text + a tool segment so we get a meta drawer.
     (let* ((old hermes--state)
            (tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                   :output "out" :duration 0.1))
+                                   :output "out" :duration 0.1
+                                   :context "-la"))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
                                        :type 'text :content "Hello" :id "s1")

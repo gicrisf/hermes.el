@@ -12,7 +12,6 @@ hermes-state.el      TEA-style ephemeral state atoms + pure reducers (in-flight 
 hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling, :HERMES_META: drawers)
 hermes-mode.el       Org-mode derived major mode, event routing, entry point, buffer parser
 hermes-org.el        Heading-scoped session helpers + v2 buffer-canonical turn parser
-hermes-migrate.el    v1 (:HERMES_RAW:) → v2 (:HERMES_META:) file format migration
 hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
@@ -35,10 +34,7 @@ buffer, so user edits to prose are preserved across resume.
 
 A `:HERMES_META:` drawer at the end of each turn subtree carries only the
 irreplaceable structured data: tool-call records, image metadata, usage,
-and subagent state. Text-only turns omit the drawer entirely. Files
-written in the legacy v1 format (`:HERMES_RAW:` drawers, pre-v2.0) remain
-readable as plain Org but can no longer be resumed directly; run
-`M-x hermes-migrate-v1-to-v2` to upgrade them in place.
+and subagent state. Text-only turns omit the drawer entirely.
 
 **Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
 bench (`*hermes-bench:<sid>*`) — a 20-line side-window with structured zones
@@ -182,8 +178,6 @@ Disable at runtime with `(setq hermes-notifications-enabled nil)`.
 
 - `M-x hermes-inspect-turn` — pretty-print the parsed `hermes-message'
   and its `:HERMES_META:` drawer at point into a temporary buffer.
-- `M-x hermes-migrate-v1-to-v2` — one-shot upgrade of a v1 buffer
-  (`:HERMES_RAW:` drawers) to the v2 format.
 - `M-x hermes-debug-state` — inspect the live state atom for the
   current session.
 
@@ -285,7 +279,7 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 | `test/hermes-render-test.el` | 33 | Segmented renderer + subagent blocks + meta drawer I/O + throttling + incremental diff + post-commit refresh + background task rendering |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
 | `test/hermes-input-test.el` | 7 | History seed: builder truncation, sid-based guard, slash-command exemption, all three prompt.submit paths |
-| `test/hermes-org-test.el` | 36 | Session lookup + heading containers + v2 turn parser + v1→v2 migration |
+| `test/hermes-org-test.el` | 31 | Session lookup + heading containers + v2 turn parser |
 | `test/hermes-bg-test.el` | 4 | Background task buffers, list mode, kill-all |
 
 **271/271 green, 0 unexpected** — all tests pass.

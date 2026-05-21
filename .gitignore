@@ -3,4 +3,3 @@ Eldev-local
 *.elc
 .venv/
 .claude/
-pi-coding-agent/

@@ -445,8 +445,8 @@ gateway connection lost
                      (aref (hermes-message-segments msg) 0)))))))
 
 (ert-deftest hermes-org-test/parse-turn-assistant ()
-  "ASSISTANT turn: Response + Reasoning body text + Tool from meta drawer,
-preserving buffer order."
+  "ASSISTANT turn: Response + Reasoning body text + Tool from heading
+properties + body, preserving buffer order."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: here
@@ -463,6 +463,9 @@ thinking it through
 :PROPERTIES:
 :HERMES_KIND: TOOL
 :TOOL_ID: t1
+:TOOL_NAME: ls
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.5
 :END:
 listing display
 *** Response
@@ -471,7 +474,7 @@ listing display
 :END:
 the answer
 :HERMES_META:
-(:usage nil :tool-calls [(:id \"t1\" :name \"ls\" :status complete :output \"a\\nb\" :duration 0.5)] :images [] :subagents [])
+(:tool-calls [(:id \"t1\" :output \"a\\nb\")])
 :END:
 "
    (hermes-org-test--at-first-turn)
@@ -490,9 +493,146 @@ the answer
          (should (hermes-tool-p tool))
          (should (equal "t1" (hermes-tool-id tool)))
          (should (equal "ls" (hermes-tool-name tool)))
+         (should (eq 'complete (hermes-tool-status tool)))
+         (should (equal 0.5 (hermes-tool-duration tool)))
          (should (equal "a\nb" (hermes-tool-output tool))))
        (should (equal "the answer"
                       (hermes-segment-content (aref segs 2))))))))
+
+(ert-deftest hermes-org-test/parse-tool-from-properties-not-meta ()
+  "Parser reads name/status/duration from heading properties, not meta."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: out
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE terminal (0.1s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: terminal
+:TOOL_NAME: terminal
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.08558511734008789
+:END:
+formatter-display
+:HERMES_META:
+(:tool-calls [(:id \"terminal\" :output \"2 days, 22 hours.\")])
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (segs (hermes-message-segments msg)))
+     (should (= 1 (length segs)))
+     (let ((tool (hermes-segment-content (aref segs 0))))
+       (should (hermes-tool-p tool))
+       (should (equal "terminal" (hermes-tool-id tool)))
+       (should (equal "terminal" (hermes-tool-name tool)))
+       (should (eq 'complete (hermes-tool-status tool)))
+       (should (equal 0.08558511734008789 (hermes-tool-duration tool)))
+       ;; :output is read from meta (canonical), not the body.
+       (should (equal "2 days, 22 hours." (hermes-tool-output tool)))))))
+
+(ert-deftest hermes-org-test/parse-tool-extended-data-from-meta ()
+  "Parser reads context/summary/error/inline-diff/todos from meta."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: diff
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE git-diff (1.2s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: gd1
+:TOOL_NAME: git-diff
+:TOOL_STATUS: complete
+:TOOL_DURATION: 1.2
+:END:
+diff body
+:HERMES_META:
+(:tool-calls [(:id \"gd1\" :context \"--cached\" :summary \"sum\" :error \"err\" :inline-diff \"D\" :todos nil)])
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (equal "--cached" (hermes-tool-context tool)))
+     (should (equal "sum" (hermes-tool-summary tool)))
+     (should (equal "err" (hermes-tool-error tool)))
+     (should (equal "D" (hermes-tool-inline-diff tool)))
+     (should (null (hermes-tool-todos tool))))))
+
+(ert-deftest hermes-org-test/parse-tool-render-parse-roundtrip-stable ()
+  "Render a turn containing a tool, parse it, re-render — the result
+must be byte-identical.  Under v2.1 the canonical :output lives in the
+meta drawer, so the formatter-generated display body is regenerated
+faithfully on re-render."
+  (let* ((tool (make-hermes-tool
+                :id "t1" :name "terminal" :status 'complete
+                :duration 0.1
+                :output "2 days, 22 hours."))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (render-msg
+          (lambda (m)
+            (with-temp-buffer
+              (org-mode)
+              (insert "* chat :hermes:\n** A: x\n:PROPERTIES:\n:HERMES_KIND: ASSISTANT\n:END:\n")
+              (let ((segs (hermes-message-segments m)))
+                (dotimes (i (length segs))
+                  (insert (hermes--format-segment (aref segs i)))))
+              (hermes--insert-meta-drawer m)
+              (buffer-substring-no-properties (point-min) (point-max))))))
+    (let* ((rendered1 (funcall render-msg msg)))
+      (with-temp-buffer
+        (org-mode)
+        (insert rendered1)
+        (goto-char (point-min))
+        (re-search-forward "^\\*\\* A:" nil t)
+        (beginning-of-line)
+        (let* ((parsed (hermes--parse-turn-at-point))
+               (rendered2 (funcall render-msg parsed)))
+          (should (equal rendered1 rendered2)))))))
+
+(ert-deftest hermes-org-test/parse-tool-missing-meta-still-works ()
+  "Tool with no meta drawer: segment is still created from heading
+properties alone; output and other meta-only fields are nil."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: ok
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE terminal (0.1s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: t1
+:TOOL_NAME: terminal
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.1
+:END:
+formatter-display
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (segs (hermes-message-segments msg)))
+     (should (= 1 (length segs)))
+     (let ((tool (hermes-segment-content (aref segs 0))))
+       (should (hermes-tool-p tool))
+       (should (equal "t1" (hermes-tool-id tool)))
+       (should (equal "terminal" (hermes-tool-name tool)))
+       (should (eq 'complete (hermes-tool-status tool)))
+       (should (equal 0.1 (hermes-tool-duration tool)))
+       (should (null (hermes-tool-output tool)))
+       (should (null (hermes-tool-context tool)))
+       (should (null (hermes-tool-summary tool)))
+       (should (null (hermes-tool-error tool)))
+       (should (null (hermes-tool-inline-diff tool)))
+       (should (null (hermes-tool-todos tool)))))))
 
 (ert-deftest hermes-org-test/parse-turn-images ()
   "USER turn with images: meta drawer carries the images array."
@@ -601,105 +741,6 @@ back via `hermes--parse-turn-at-point' and verify kind + text."
       (should (equal "ping"
                      (hermes-segment-content
                       (aref (hermes-message-segments parsed) 0)))))))
-
-;;;; v1→v2 migration
-
-(require 'hermes-migrate)
-
-(defvar hermes--container-level)
-
-(defun hermes-org-test--seed-v1-buffer (raw-body)
-  "Insert a container + one v1 USER turn with RAW-BODY in its drawer.
-Returns nothing; leaves point at point-min."
-  (let ((hermes--container-level 1))
-    (erase-buffer)
-    (org-mode)
-    (insert "* old chat :hermes:
-:PROPERTIES:
-:HERMES_SESSION: s1
-:END:
-** U: legacy
-" raw-body "
-")
-    (goto-char (point-min))))
-
-(ert-deftest hermes-org-test/migrate-v1-to-v2-text-only ()
-  "Text-only USER turn → properties set, no meta drawer (empty meta)."
-  (with-temp-buffer
-    (hermes-org-test--seed-v1-buffer
-     ":HERMES_RAW:
-(:kind user :text \"hi\" :segments [(:type text :content \"hi\" :id \"s1\")] :subagents [] :usage nil :timestamp \"2024-01-15T10:00:00+0000\")
-:END:")
-    (let ((hermes--container-level 1))
-      (hermes-migrate-v1-to-v2))
-    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should-not (string-match-p ":HERMES_RAW:" body))
-      (should-not (string-match-p ":HERMES_META:" body))
-      (should (string-match-p ":HERMES_KIND: USER" body))
-      (should (string-match-p ":HERMES_TIMESTAMP: 2024-01-15T10:00:00\\+0000" body)))))
-
-(ert-deftest hermes-org-test/migrate-v1-to-v2-with-tools ()
-  "Tool segments → meta drawer carries tool-calls."
-  (with-temp-buffer
-    (hermes-org-test--seed-v1-buffer
-     ":HERMES_RAW:
-(:kind assistant :segments [(:type tool :content (:id \"t1\" :name \"ls\" :status complete :output \"a\\nb\" :duration 0.5) :id \"sg1\")] :subagents [] :usage nil :timestamp nil)
-:END:")
-    (let ((hermes--container-level 1))
-      (hermes-migrate-v1-to-v2))
-    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should-not (string-match-p ":HERMES_RAW:" body))
-      (should (string-match-p ":HERMES_META:" body))
-      (should (string-match-p ":HERMES_KIND: ASSISTANT" body))
-      (should (string-match-p ":tool-calls" body))
-      (should (string-match-p "\"t1\"" body)))))
-
-(ert-deftest hermes-org-test/migrate-v1-to-v2-with-images ()
-  "Image segments → meta drawer carries images array."
-  (with-temp-buffer
-    (hermes-org-test--seed-v1-buffer
-     ":HERMES_RAW:
-(:kind user :segments [(:type image :content (:path \"/tmp/x.png\" :name \"x.png\" :width 100 :height 50) :id \"img1\")] :subagents [] :usage nil :timestamp nil)
-:END:")
-    (let ((hermes--container-level 1))
-      (hermes-migrate-v1-to-v2))
-    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should-not (string-match-p ":HERMES_RAW:" body))
-      (should (string-match-p ":HERMES_META:" body))
-      (should (string-match-p ":images" body))
-      (should (string-match-p "/tmp/x.png" body)))))
-
-(ert-deftest hermes-org-test/migrate-v1-to-v2-with-subagents ()
-  "Subagents → meta drawer carries subagents array."
-  (with-temp-buffer
-    (hermes-org-test--seed-v1-buffer
-     ":HERMES_RAW:
-(:kind assistant :segments [] :subagents [(:id \"sa1\" :goal \"analyze\" :status complete :thinking nil :tools [] :notes [] :summary \"done\" :duration 1.0)] :usage nil :timestamp nil)
-:END:")
-    (let ((hermes--container-level 1))
-      (hermes-migrate-v1-to-v2))
-    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should-not (string-match-p ":HERMES_RAW:" body))
-      (should (string-match-p ":HERMES_META:" body))
-      (should (string-match-p ":subagents" body))
-      (should (string-match-p "\"sa1\"" body)))))
-
-(ert-deftest hermes-org-test/migrate-v1-to-v2-idempotent ()
-  "Running the migration on an already-migrated buffer is a no-op."
-  (with-temp-buffer
-    (hermes-org-test--seed-v1-buffer
-     ":HERMES_RAW:
-(:kind assistant :segments [(:type tool :content (:id \"t1\" :name \"ls\" :status complete :output \"x\" :duration 0.1) :id \"sg1\")] :subagents [] :usage nil :timestamp nil)
-:END:")
-    (let ((hermes--container-level 1))
-      (let ((n1 (hermes-migrate-v1-to-v2)))
-        (should (= 1 n1)))
-      (let ((after-first (buffer-substring-no-properties (point-min) (point-max)))
-            (n2 (hermes-migrate-v1-to-v2)))
-        (should (= 0 n2))
-        ;; Buffer unchanged on second pass.
-        (should (equal after-first
-                       (buffer-substring-no-properties (point-min) (point-max))))))))
 
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

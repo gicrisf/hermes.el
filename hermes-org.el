@@ -268,29 +268,41 @@ nil if point is not on a recognized turn heading."
                                     segs))))
                          ((equal child-kind "TOOL")
                           (let* ((tool-id (org-entry-get (point) "TOOL_ID"))
+                                 (name (or (org-entry-get (point) "TOOL_NAME")
+                                           "tool"))
+                                 (status-str (or (org-entry-get (point) "TOOL_STATUS")
+                                                 "complete"))
+                                 (status (intern status-str))
+                                 (dur-str (org-entry-get (point) "TOOL_DURATION"))
+                                 (duration (and dur-str
+                                                (ignore-errors (read dur-str))))
+                                 ;; Meta is optional enrichment; the heading
+                                 ;; alone is sufficient for a tool segment.
+                                 ;; :output is canonical in meta — the body
+                                 ;; is formatter-generated display only and
+                                 ;; is NOT used for round-trip.
                                  (tcs (plist-get meta :tool-calls))
                                  (tc (and tcs tool-id
                                           (cl-find-if
                                            (lambda (x)
                                              (equal tool-id (plist-get x :id)))
                                            (append tcs nil)))))
-                            (when tc
-                              (push (make-hermes-segment
-                                     :type 'tool
-                                     :content (make-hermes-tool
-                                               :id (plist-get tc :id)
-                                               :name (plist-get tc :name)
-                                               :status (plist-get tc :status)
-                                               :context (plist-get tc :context)
-                                               :preview (plist-get tc :preview)
-                                               :inline-diff (plist-get tc :inline-diff)
-                                               :todos (plist-get tc :todos)
-                                               :output (plist-get tc :output)
-                                               :summary (plist-get tc :summary)
-                                               :error (plist-get tc :error)
-                                               :duration (plist-get tc :duration))
-                                     :id (hermes--next-segment-id))
-                                    segs))))
+                            (push (make-hermes-segment
+                                   :type 'tool
+                                   :content (make-hermes-tool
+                                             :id tool-id
+                                             :name name
+                                             :status status
+                                             :duration duration
+                                             :output (plist-get tc :output)
+                                             :context (plist-get tc :context)
+                                             :preview (plist-get tc :preview)
+                                             :inline-diff (plist-get tc :inline-diff)
+                                             :todos (plist-get tc :todos)
+                                             :summary (plist-get tc :summary)
+                                             :error (plist-get tc :error))
+                                   :id (hermes--next-segment-id))
+                                  segs)))
                          (t nil))))
                     (unless (and (outline-next-heading)
                                  (< (point) turn-end))

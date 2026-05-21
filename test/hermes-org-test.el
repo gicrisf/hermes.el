@@ -293,8 +293,8 @@ Returns a marker at the container heading."
     (copy-marker (point) nil)))
 
 (ert-deftest hermes-org-test/parse-subtree-messages-collects-drawer-content ()
-  "`hermes--parse-subtree-messages' returns one message per `:HERMES_RAW:'
-drawer in the current heading's subtree."
+  "`hermes--parse-subtree-messages' returns one message per turn heading
+\(recognized via `:HERMES_KIND:`) in the current heading's subtree."
   (with-temp-buffer
     (org-mode)
     (let ((marker (hermes-org-test--seed-subtree-with-drawer "hi there")))

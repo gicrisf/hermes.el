@@ -544,6 +544,43 @@ framing keys (:model, :cost_status, :context_max) are stripped."
       (should-not (plist-member u :model))
       (should-not (plist-member u :context_max)))))
 
+(ert-deftest hermes-render-test/stream-commit-uses-per-turn-usage-not-cumulative ()
+  "Regression: the META drawer must carry the just-completed turn's
+token deltas, not `hermes-state-usage' (the running session total)."
+  (with-temp-buffer
+    (hermes-mode)
+    ;; Pre-seed session-cumulative usage as if a prior turn ran.
+    (setq hermes--state
+          (hermes--with-copy hermes--state hermes-state-copy s
+            (let ((acc (make-hash-table :test 'equal)))
+              (puthash "tokens_sent" 999 acc)
+              (puthash "tokens_received" 999 acc)
+              (setf (hermes-state-usage s) acc))))
+    ;; Stream begins.
+    (let* ((old hermes--state)
+           (stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content "Hi" :id "s1"))))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-stream s) stream))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    ;; message.complete with per-turn deltas of 7/3.
+    (hermes-dispatch (cons "message.complete"
+                           (let ((h (make-hash-table :test 'equal)))
+                             (puthash "tokens_sent" 7 h)
+                             (puthash "tokens_received" 3 h)
+                             h)))
+    (let* ((plist (save-excursion
+                    (goto-char (point-min))
+                    (hermes--extract-meta-drawer)))
+           (u (and plist (plist-get plist :usage))))
+      (should u)
+      (should (= 7 (plist-get u :tokens_sent)))
+      (should (= 3 (plist-get u :tokens_received)))
+      ;; Session-cumulative is still tracked separately and not in the drawer.
+      (should (= 1006 (gethash "tokens_sent" (hermes-state-usage hermes--state)))))))
+
 (ert-deftest hermes-render-test/meta-drawer-drops-framing-only-usage ()
   "Usage carrying only framing (model, context_max, cost_status) and
 zero counters is treated as empty; meta drawer is omitted entirely."

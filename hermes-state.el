@@ -805,8 +805,14 @@ which case dispatch routes to the correct typed reconstructor."
              state
            (let* ((sent (hermes--get p "tokens_sent"))
                   (received (hermes--get p "tokens_received"))
+                  ;; Per-turn usage attached to the message itself.  Carries
+                  ;; only the deltas from this turn, not the session total.
                   (msg-usage (make-hash-table :test 'equal))
+                  (_ (progn
+                       (when sent     (puthash "tokens_sent" sent msg-usage))
+                       (when received (puthash "tokens_received" received msg-usage))))
                   (msg (hermes--message-from-stream str msg-usage))
+                  ;; Cumulative session-wide counter lives in state.
                   (acc-usage (or (hermes-state-usage state)
                                  (make-hash-table :test 'equal))))
              (when sent

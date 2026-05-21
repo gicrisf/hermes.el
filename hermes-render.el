@@ -1319,11 +1319,18 @@ refresh by the caller, or nil if no bench was active."
              (hermes-stream-p old-stream)
              (markerp hermes--bench-end)
              (marker-position hermes--bench-end))
-    (let* ((msg (hermes--message-from-stream
-                 old-stream
-                 (and (boundp 'hermes--state)
-                      hermes--state
-                      (hermes-state-usage hermes--state)))))
+    (let* ((per-turn-usage
+            ;; Per-turn token deltas live on the assistant message the
+            ;; reducer just pushed to pending-turns (message.complete).
+            ;; Session-cumulative `hermes-state-usage' would leak the
+            ;; running total into every drawer; avoid that.
+            (let ((tt (and (boundp 'hermes--state) hermes--state
+                           (hermes-state-pending-turns hermes--state))))
+              (when (and (vectorp tt) (> (length tt) 0))
+                (let ((last (aref tt (1- (length tt)))))
+                  (when (eq 'assistant (hermes-message-kind last))
+                    (hermes-message-usage last))))))
+           (msg (hermes--message-from-stream old-stream per-turn-usage)))
       (save-excursion
         (goto-char (marker-position hermes--bench-end))
         (unless (bolp) (insert "\n"))

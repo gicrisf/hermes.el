@@ -280,6 +280,35 @@ should still suppress the reasoning segment."
     (should (= 15 (gethash "tokens_sent" usage)))
     (should (= 35 (gethash "tokens_received" usage)))))
 
+(ert-deftest hermes-state-test/message-complete-attaches-per-turn-usage ()
+  "Each pending assistant message carries the per-turn token counts from
+the `message.complete' event, NOT the running session total.  Regression
+guard: previously msg-usage was an empty hash table, leaking the
+session-cumulative `hermes-state-usage' into every drawer."
+  (let* ((s1 (hermes-test--reduce*
+              nil
+              (cons "message.start" nil)
+              (cons "message.delta" (hermes-test--ht "text" "one"))
+              (cons "message.complete" (hermes-test--ht "tokens_sent" 10
+                                                        "tokens_received" 20))))
+         (s2 (hermes-test--reduce*
+              s1
+              (cons "message.start" nil)
+              (cons "message.delta" (hermes-test--ht "text" "two"))
+              (cons "message.complete" (hermes-test--ht "tokens_sent" 5
+                                                        "tokens_received" 15))))
+         (p1 (hermes-state-pending-turns s1))
+         (p2 (hermes-state-pending-turns s2))
+         (m1-usage (hermes-message-usage (aref p1 (1- (length p1)))))
+         (m2-usage (hermes-message-usage (aref p2 (1- (length p2))))))
+    (should (= 10 (gethash "tokens_sent" m1-usage)))
+    (should (= 20 (gethash "tokens_received" m1-usage)))
+    (should (= 5 (gethash "tokens_sent" m2-usage)))
+    (should (= 15 (gethash "tokens_received" m2-usage)))
+    ;; Session-wide cumulative still accumulates as before.
+    (should (= 15 (gethash "tokens_sent" (hermes-state-usage s2))))
+    (should (= 35 (gethash "tokens_received" (hermes-state-usage s2))))))
+
 (ert-deftest hermes-state-test/message-complete-without-stream-is-noop ()
   (let* ((s0 (hermes--reduce nil '(:connected)))
          (s1 (hermes--reduce s0 (cons "message.complete" nil))))

@@ -24,6 +24,7 @@
 
 (defvar hermes--session-buffers)        ; defined in hermes-mode.el
 (declare-function hermes--buffer-message-count "hermes-mode" ())
+(declare-function hermes-sessions-db "hermes-sessions-db" ())
 
 (defconst hermes-sessions-buffer-name "*Hermes Sessions*")
 
@@ -107,6 +108,7 @@
     (define-key m (kbd "o")   #'hermes-sessions-switch-other-window)
     (define-key m (kbd "k")   #'hermes-sessions-close)
     (define-key m (kbd "+")   #'hermes-sessions-new)
+    (define-key m (kbd "d")   #'hermes-sessions-jump-to-db)
     m)
   "Keymap for `hermes-sessions-mode'.")
 
@@ -173,6 +175,12 @@
   (interactive)
   ;; `hermes' is defined in hermes-mode.el; this file is loaded after it.
   (call-interactively (intern-soft "hermes")))
+
+(defun hermes-sessions-jump-to-db ()
+  "Open the gateway DB session browser."
+  (interactive)
+  (require 'hermes-sessions-db)
+  (call-interactively #'hermes-sessions-db))
 
 ;;;###autoload
 (defun hermes-sessions ()

@@ -749,8 +749,8 @@ when the user cancels.  Default (RET) is `load-org' — the snapshot path."
       (?3 'branch-db)
       (?q nil))))
 
-(declare-function hermes-resume-from-db "hermes-sessions-db" (sid))
-(declare-function hermes-branch-from-db "hermes-sessions-db" (sid))
+(declare-function hermes-resume-from-db "hermes-sessions" (sid))
+(declare-function hermes-branch-from-db "hermes-sessions" (sid))
 
 (defun hermes--handle-stale-heading (sid marker)
   "Dispatch the user's choice for the stale SID heading at MARKER.
@@ -764,9 +764,9 @@ options:
                  the branched copy in a new buffer)."
   (pcase (hermes--prompt-stale-heading sid)
     ('load-org   (hermes--create-fresh-session sid marker))
-    ('resume-db  (require 'hermes-sessions-db)
+    ('resume-db  (require 'hermes-sessions)
                  (hermes-resume-from-db sid))
-    ('branch-db  (require 'hermes-sessions-db)
+    ('branch-db  (require 'hermes-sessions)
                  (hermes-branch-from-db sid))
     (_           (message "Cancelled"))))
 

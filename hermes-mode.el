@@ -115,16 +115,12 @@ without this cache, the very first buffer would never see the skin.")
 (defun hermes--install-hooks ()
   "Wire RPC hooks once.  Truly idempotent — removes before adding."
   (remove-hook 'hermes-rpc-event-functions #'hermes--route-event)
-  (remove-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
   (remove-hook 'hermes-rpc-connection-functions #'hermes--route-connection)
-  (remove-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open)
   (remove-hook 'hermes-rpc-stderr-functions #'hermes--route-stderr)
   (remove-hook 'hermes-rpc-protocol-error-functions #'hermes--route-protocol-error)
   (remove-hook 'hermes-rpc-start-timeout-functions #'hermes--route-start-timeout)
   (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
-  (add-hook 'hermes-rpc-event-functions #'hermes-sessions--refresh-if-open)
   (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection)
-  (add-hook 'hermes-rpc-connection-functions #'hermes-sessions--refresh-if-open)
   (add-hook 'hermes-rpc-stderr-functions #'hermes--route-stderr)
   (add-hook 'hermes-rpc-protocol-error-functions #'hermes--route-protocol-error)
   (add-hook 'hermes-rpc-start-timeout-functions #'hermes--route-start-timeout))
@@ -380,8 +376,9 @@ background; for the user-facing entry that also pops the buffer, see
     ;; canonical history.  To resume a DB session, open its `.org' file and
     ;; run `M-x hermes' inside the `:hermes:' subtree — the stale-heading
     ;; prompt (`hermes--handle-stale-heading') offers load-from-org,
-    ;; resume-from-DB, and branch-from-DB.  Or use the DB browser:
-    ;; `M-x hermes-sessions-db'.
+    ;; resume-from-DB, and branch-from-DB.  To browse DB sessions
+    ;; directly, use `M-x hermes-stored-resume' (and friends), or
+    ;; `M-x hermes-current-sessions' to switch among live sessions.
     (let ((buf (hermes--primary-session-buffer)))
       (if buf
           (progn

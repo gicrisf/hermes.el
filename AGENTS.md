@@ -9,15 +9,14 @@ Communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway`.
 hermes-rpc.el        JSON-RPC 2.0 transport (make-process, NDJSON, pending callback map)
 hermes-events.el     Event/method name registry (single source of truth)
 hermes-state.el      TEA-style ephemeral state atoms + pure reducers (in-flight stream, queue, pending)
-hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling, :HERMES_META: drawers)
+hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling)
 hermes-mode.el       Org-mode derived major mode, event routing, entry point, buffer parser
 hermes-org.el        Heading-scoped session helpers + v2 buffer-canonical turn parser
 hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
 hermes-bench.el      Persistent bottom bench for hermes-mode (user prompt, reasoning, answer, input)
-hermes-sessions.el   tabulated-list-mode sidebar of live sessions
-hermes-sessions-db.el  tabulated-list-mode browser of gateway-DB sessions (resume/branch/delete/save)
+hermes-sessions.el   Minibuffer selectors: hermes-current-sessions (live), hermes-stored-{resume,branch,delete,save} (DB); also hosts the DB→Org renderer + install helper for hermes-resume-from-db / hermes-branch-from-db
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
 hermes-config.el     Wrappers for config.get/set, toolsets.list, tools.configure (model/fast/reasoning/yolo/personality/skin/toolsets commands)
@@ -51,11 +50,9 @@ across machines, sync the `.org` file rather than the DB.
 functions, stale docstrings, and misleading feature names are removed
 rather than deprecated or kept as aliases.
 
-A `:HERMES_META:` drawer at the end of each turn subtree carries only the
-irreplaceable structured data: image metadata and usage.  Tool segments
-are body-canonical in `#+name:'d blocks and heading properties; subagents
-are body-canonical in child `HERMES_KIND: SUBAGENT` headings.  Text-only
-turns omit the drawer entirely.
+Usage counters are body-canonical in `HERMES_USAGE_*` heading properties.
+Tool segments are body-canonical in `#+name:'d blocks and heading properties;
+subagents are body-canonical in child `HERMES_KIND: SUBAGENT` headings.
 
 **Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
 bench (`*hermes-bench:<sid>*`) — a 20-line side-window with structured zones
@@ -198,7 +195,7 @@ Disable at runtime with `(setq hermes-notifications-enabled nil)`.
 ### Debugging
 
 - `M-x hermes-inspect-turn` — pretty-print the parsed `hermes-message'
-  and its `:HERMES_META:` drawer at point into a temporary buffer.
+  at point into a temporary buffer.
 - `M-x hermes-debug-state` — inspect the live state atom for the
   current session.
 
@@ -279,7 +276,7 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (271/271 green)
+eldev test                           # run all ERT tests (361/361 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
@@ -297,13 +294,14 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 | File | Tests | Scope |
 |------|-------|-------|
 | `test/hermes-state-test.el` | 79 | Reducers (persistent + UI) + serialization round-trip + background tasks |
-| `test/hermes-render-test.el` | 33 | Segmented renderer + subagent blocks + meta drawer I/O + throttling + incremental diff + post-commit refresh + background task rendering |
+| `test/hermes-render-test.el` | 33 | Segmented renderer + subagent blocks + throttling + incremental diff + post-commit refresh + background task rendering |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
 | `test/hermes-input-test.el` | 7 | History seed: builder truncation, sid-based guard, slash-command exemption, all three prompt.submit paths |
-| `test/hermes-org-test.el` | 31 | Session lookup + heading containers + v2 turn parser |
+| `test/hermes-org-test.el` | 31 | Session lookup + heading containers + v2 turn parser + stale-heading prompt |
 | `test/hermes-bg-test.el` | 4 | Background task buffers, list mode, kill-all |
+| `test/hermes-sessions-test.el` | 15 | Field accessors, row coercion, annotations, DB→Org renderer, public-command surface |
 
-**271/271 green, 0 unexpected** — all tests pass.
+**361/361 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

@@ -33,8 +33,8 @@
 (declare-function hermes--buffer-message-count "hermes-mode" ())
 (declare-function hermes--message-text-for-display "hermes-render" (msg))
 (declare-function hermes-interrupt "hermes-mode" ())
-(declare-function hermes-resume-from-db "hermes-sessions-db" (sid))
-(declare-function hermes-branch-from-db "hermes-sessions-db" (sid))
+(declare-function hermes-resume-from-db "hermes-sessions" (sid))
+(declare-function hermes-branch-from-db "hermes-sessions" (sid))
 (declare-function hermes-bench-add-steer "hermes-bench" (parent text))
 
 (defvar-local hermes-input--history nil
@@ -367,11 +367,11 @@ ends."
            (hermes--create-fresh-session target-sid marker)
            (message "Hermes: loading fresh session from org…"))
           ('resume-db
-           (require 'hermes-sessions-db)
+           (require 'hermes-sessions)
            (hermes-resume-from-db target-sid)
            (message "Hermes: resumed into new buffer — resend prompt there"))
           ('branch-db
-           (require 'hermes-sessions-db)
+           (require 'hermes-sessions)
            (hermes-branch-from-db target-sid)
            (message "Hermes: branched into new buffer — resend prompt there"))
           (_ (message "Cancelled")))))

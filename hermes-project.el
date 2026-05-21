@@ -183,9 +183,7 @@ The gateway is intentionally not notified; runtime cwd changes are not
 supported by the gateway.  CWD may be nil (clears the local cwd)."
   (when (boundp 'hermes--state)
     (hermes-dispatch (cons :set-cwd (list :cwd cwd))))
-  (hermes-project--write-org-property cwd)
-  (when (fboundp 'hermes-sessions--refresh-if-open)
-    (hermes-sessions--refresh-if-open)))
+  (hermes-project--write-org-property cwd))
 
 ;;;; Interactive commands
 

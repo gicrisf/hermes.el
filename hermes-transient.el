@@ -80,7 +80,7 @@ skills commands only when a Hermes session is reachable."
     ["Session"
      ("o" "Open / create session" hermes)
      ("n" "New session" hermes-transient--new-session)
-     ("l" "Session list" hermes-sessions)]
+     ("l" "Session list" hermes-current-sessions)]
 
     ["Input" :if hermes-transient--in-session-p
      ("i" "Send / focus bench" hermes-send-or-focus-bench)

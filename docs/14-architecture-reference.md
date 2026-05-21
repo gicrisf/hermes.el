@@ -65,7 +65,7 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-input.el` | 209 | Input queue, slash commands, history |
 | `hermes-prompts.el` | 116 | Minibuffer prompt handlers (approval, clarify, secret, sudo) |
 | `hermes-compose.el` | 81 | Multi-line org-mode composer |
-| `hermes-sessions.el` | 174 | tabulated-list-mode sessions sidebar |
+| `hermes-sessions.el` | ~420 | Minibuffer selectors (`hermes-current-sessions`, `hermes-stored-{resume,branch,delete,save}`); also hosts the DB→Org renderer and the resume/branch install path |
 | `hermes-skin.el` | 83 | Gateway skin → face-remap |
 | `hermes-md.el` | 164 | Markdown → Org syntax converter |
 | `hermes-dashboard.el` | 393 | Vanilla Emacs dashboard (`*Hermes*`) |
@@ -74,7 +74,7 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-doom.el` | 66 | Doom `SPC h` leader prefix; pulls in Evil, Transient, Notifications |
 | `hermes-evil.el` | 28 | Normal-state Evil C-c bindings (works in any Evil-equipped Emacs) |
 | `hermes-doom-theme.el` | 161 | Hermes-branded dark theme |
-| **Total** | **~3,342** | |
+| **Total** | **~3,853** | |
 
 ---
 
@@ -270,20 +270,19 @@ not suppressed by `with-silent-modifications`:
    properties so new sub-headlines get correct virtual indentation.
 3. `hermes--hide-drawers` — collapses `:PROPERTIES:` drawers with plain overlays.
 
-### Meta drawer I/O
+### Body-canonical structured data
 
-Every committed turn that carries irreplaceable structured data gets a `:HERMES_META:` drawer at the end of its subtree. Text-only turns omit the drawer entirely.
+All structured data is body-canonical in the visible Org buffer — no hidden drawers:
 
-```elisp
-(defun hermes--insert-meta-drawer (msg)
-  "Serialize irreplaceable metadata from MSG, insert :HERMES_META:...:END:, auto-fold.")
+- **Usage counters** → `HERMES_USAGE_*` properties on turn headings
+- **Image metadata** → `#+attr_org:` / `#+attr_hermes:` lines above `[[file:…]]` links
+- **Tool fields** → `#+name: hermes-tool-<id>-{output,context,inline-diff,error}` blocks;
+  `TOOL_STATUS`, `TOOL_NAME`, `TOOL_DURATION`, `TOOL_SUMMARY` heading properties
+- **Subagents** → child `HERMES_KIND: SUBAGENT` headings
+- **Timestamps** → `:HERMES_TIMESTAMP:` heading properties
 
-(defun hermes--extract-meta-drawer (&optional pos)
-  "Find :HERMES_META: drawer at POS and return its plist.")
-```
-
-The drawer is auto-folded after insertion so it stays out of the user's way.
-It is only visible when the user explicitly expands it.
+Text-only turns have no extra structure. Everything is parsed back from the
+visible buffer on resume, so user edits are preserved.
 
 ---
 
@@ -375,21 +374,26 @@ polluting the conversation buffer's state.
 
 ---
 
-## Sessions Sidebar (`hermes-sessions.el`)
+## Session selectors (`hermes-sessions.el`)
 
-`*Hermes Sessions*` is a `tabulated-list-mode` buffer listing all sessions
-in `hermes--session-buffers`:
+All session management is minibuffer-driven — no dedicated buffers, no
+tabulated-list modes.  Each command runs a `completing-read` with
+`:annotation-function` metadata, so vertico/marginalia/consult users get
+rich annotations for free and vanilla `completing-read` users still see
+inline metadata.
 
-| Column | Content |
-|--------|---------|
-| Session ID | short (8 chars) |
-| Model | from session-info |
-| Status | from connection state |
+| Command | Picks from | Action |
+|---------|------------|--------|
+| `hermes-current-sessions` | `hermes--session-buffers` (live) | switch to selected buffer |
+| `hermes-stored-resume` | `session.list` (gateway DB) | `hermes-resume-from-db` |
+| `hermes-stored-branch` | `session.list` | `hermes-branch-from-db` |
+| `hermes-stored-delete` | `session.list` | `session.delete` (confirm) |
+| `hermes-stored-save` | `session.list` | `session.save` (JSON export) |
 
-Keybindings: `RET` to switch, `k` to close session, `+` to create new, `g` refresh.
-
-Auto-refreshes on every incoming event (cheap because short-circuits when
-the sidebar isn't open).
+The `hermes-stored-*` commands accept a prefix argument to restrict the
+candidate list to the current project's CWD (`hermes-project-detect-cwd`).
+Annotations show: model / status / msg count / project for live rows,
+title / source / msg count / started-time for stored rows.
 
 ---
 
@@ -465,6 +469,8 @@ what is 2+2?
 :HERMES_SESSION:  a1b2c3d4
 :HERMES_MODEL:    nvidia/nemotron-3
 :HERMES_TIMESTAMP: 2026-05-14T03:56:12+0200
+:HERMES_USAGE_TOKENS_SENT: 1450
+:HERMES_USAGE_TOKENS_RECEIVED: 892
 :ID:              def456
 :END:
 *** Response
@@ -485,11 +491,6 @@ Sure, 2+2 is 4.
 #+begin_example
 4
 #+end_example
-
-:HERMES_META:
-(:usage (:tokens_sent 1450 :tokens_received 892)
- :images [])
-:END:
 
 ** U: now 3+3?
 :PROPERTIES:
@@ -578,7 +579,7 @@ context is restored on the first outgoing prompt via the history seed
 ### `hermes-resume-from-db` / `hermes-branch-from-db`
 
 Programmatic entry points for options (2) and (3).  Also reachable from
-the DB browser (`M-x hermes-sessions-db`, keys `r` and `b`).  Both call
+the minibuffer commands (`M-x hermes-stored-resume`, `M-x hermes-stored-branch`).  Both call
 `session.resume` and install the response via `hermes--db-install-into-buffer`,
 which activates `hermes-mode`, writes `HERMES_SESSION` / `HERMES_CWD`
 properties, appends the rendered body, and stamps `hermes--seeded-session-id`
@@ -598,13 +599,13 @@ must save and reopen the `.org` snapshot rather than relying on the DB.
 
 ### Manual editing safety
 
-`:HERMES_META:` drawers are human-readable Elisp plists carrying only
-irreplaceable structured data. A user can manually edit the rendered body
-(e.g. fix a typo in the assistant's response) and the edit is preserved on
-resume because text is parsed from the visible buffer, not the drawer. If the
-drawer is corrupted (unreadable plist), `hermes--extract-meta-drawer` returns
-`nil` and that turn's structured data is simply absent on resume — the buffer
-remains valid and the text still round-trips.
+All data is body-canonical in heading properties, Org blocks, and child
+headings.  A user can manually edit the rendered body (e.g. fix a typo in
+the assistant's response) and the edit is preserved on resume because text
+and properties are parsed back from the visible buffer, not from a hidden
+drawer.  Corrupting a property value or Org block may cause that data to
+be absent on resume, but the buffer remains valid and the text still
+round-trips.
 
 ## Doom Integration
 
@@ -668,20 +669,17 @@ conversations.
 All `org-id-get-create` calls are guarded with `(when (derived-mode-p 'org-mode) ...)`
 to prevent Org warnings on fundamental-mode temp buffers in tests.
 
-### Buffer as canonical source of truth
+### The Org file as a portable snapshot
 
-The state atom no longer stores committed messages. Instead, every turn heading
-carries `:HERMES_KIND:` and `:HERMES_TIMESTAMP:` properties; text content is
-parsed back from the visible buffer on resume. A `:HERMES_META:` drawer at the
-end of each turn subtree carries only irreplaceable structured data: image
-metadata and usage.  Tool segments and subagents are body-canonical (heading
-properties, `#+name:'d blocks, child SUBAGENT headings).  Text-only turns omit the
-drawer entirely. Benefits:
+The state atom stores only ephemeral data.  Every committed turn carries
+`:HERMES_KIND:` and `:HERMES_TIMESTAMP:` properties; text content, tool
+blocks, subagent trees, image references, and usage counters are all
+body-canonical — parsed back from the visible buffer on resume.  Benefits:
 - No split-brain — user edits to visible text are preserved on resume.
 - No duplication — conversation text exists only once (in the buffer).
-- Natural persistence — save the `.org` file, close Emacs, reopen it.
-- Load org — `hermes-load-org` parses visible headings, reconstructs
-  `hermes-message` structs, and seeds history into a fresh gateway session.
+- Natural snapshot — save the `.org` file, close Emacs, reopen it.
+- Load org — `hermes-load-org` parses visible headings and seeds
+  history into a fresh gateway session via the first-prompt seed.
 
 Trade-off: `hermes-md-to-org` is one-way (markdown→Org). The gateway receives
 Org-formatted text in the history payload. This drift is acceptable for v1

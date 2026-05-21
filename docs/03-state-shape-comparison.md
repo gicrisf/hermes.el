@@ -105,7 +105,7 @@ The TUI splits state across **three nanostore atoms** plus local React state.
   subagents)  ; vector of hermes-subagent — delegation tree
 ```
 
-The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. Irreplaceable structured data (image metadata, usage) is serialized to a `:HERMES_META:` Elisp plist drawer at the end of each turn's Org subtree.  Tool segments and subagents are body-canonical: parsed back from visible buffer structure (heading properties, `#+name:'d blocks, child SUBAGENT headings).  Text-only turns omit the drawer entirely.
+The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. All structured data is body-canonical: usage counters live in `HERMES_USAGE_*` heading properties; tool segments in `#+name:'d blocks and heading properties; subagents in child `HERMES_KIND: SUBAGENT` headings; image metadata in `#+attr_org:`/`#+attr_hermes:` lines above `[[file:…]]` links.  Text-only turns carry no extra structure.
 
 #### Stream State (`hermes-stream`)
 ```elisp
@@ -149,7 +149,7 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
 
 | Aspect | TUI | Emacs |
 |--------|-----|-------|
-| **Canonical history** | `messages` array in TUI state | **Org buffer** — text parsed from visible headings; `:HERMES_META:` drawer carries irreplaceable structured data |
+| **Canonical history** | `messages` array in TUI state | **Org buffer** — every field parsed back from visible structure (heading properties, body text, blocks, child headings); no hidden drawers |
 | **Busy flag** | `uiState.busy` — explicit boolean | Implicit: `(hermes-state-stream state)` |
 | **Activity feed** | `turnState.activity` — array of items, capped at 8 | Not present |
 | **Tool active list** | `turnState.tools` — active tools with context, tokens | `segments` — all tools in stream as typed tool segments |

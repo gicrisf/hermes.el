@@ -32,7 +32,7 @@
   (define-key hermes-leader-map (kbd "i") #'hermes)
   (define-key hermes-leader-map (kbd "n") #'hermes-new-session)
   (define-key hermes-leader-map (kbd "c") #'hermes-compose)
-  (define-key hermes-leader-map (kbd "l") #'hermes-sessions)
+  (define-key hermes-leader-map (kbd "l") #'hermes-current-sessions)
   (define-key hermes-leader-map (kbd "g") #'hermes)
   (define-key hermes-leader-map (kbd "k") #'hermes-interrupt-everywhere)
   (define-key hermes-leader-map (kbd "m") #'hermes-set-model)

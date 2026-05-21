@@ -6,14 +6,14 @@
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).
 >
 > **Recent changes reflected in this version:**
-> - **Org buffer is now the canonical source of truth** — committed history lives in the buffer, not in `hermes-state-messages`. Each turn stores a `:HERMES_META:` drawer containing only irreplaceable structured data (image metadata, usage). Tool segments and subagents are body-canonical: parsed back from visible headings and `#+name:`d blocks, not from the drawer. Text content is parsed back from the visible buffer, so user edits are preserved across resume.
+> - **Org buffer is the canonical source of truth** — committed history lives in the visible buffer, not in a state atom or hidden drawer. Every field (text, tool blocks, subagent trees, usage counters, image references) is body-canonical: parsed back from visible headings, properties, and `#+name:`d blocks. User edits to prose are preserved across resume.
 > - State atom is ephemeral only: connection, in-flight stream, queue, pending prompts, history. No committed message duplication.
 > - Segmented stream rendering: stream state uses typed `segments` vector; renderer uses incremental diffing (only changed tail is replaced, O(delta) cost)
 > - Stream paint throttling with adaptive backoff: 25 Hz for short text, decaying to 0.5 Hz for very long responses
 > - Tool rendering moved into segments (tool blocks are interleaved in arrival order, not appended after text)
 > - Reasoning rendered as typed segments (not separate marker-managed blocks); thinking is UI-only via header-line status
 > - Approval choices fixed to canonical `once`/`session`/`always`/`deny`
-> - Body-canonical tool fields: `:inline-diff`, `:output`, `:error`, `:context` via `#+name`d blocks; `:todos` via `#+name`d Org table. `:HERMES_META:` now carries only `:usage` and `:images`.
+> - Usage counters in `HERMES_USAGE_*` heading properties. Tool fields via `#+name`d blocks and TOOL_* properties.
 
 ## Sections
 

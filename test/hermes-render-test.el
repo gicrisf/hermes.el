@@ -198,6 +198,44 @@ position right after the heading line."
   (should (equal "" (hermes--format-subagents-block [])))
   (should (equal "" (hermes--format-subagents-block nil))))
 
+(ert-deftest hermes-render-test/segment-block-ends-with-blank-line ()
+  "Segment-block ensures a trailing blank line between adjacent blocks."
+  (let* ((seg (make-hermes-segment :type 'reasoning :content "x" :id "s1"))
+         (out (hermes--segment-block seg)))
+    (should (string-suffix-p "\n\n" out))
+    (should-not (string-suffix-p "\n\n\n" out))))
+
+(ert-deftest hermes-render-test/cot-block-no-trailing-blank-line ()
+  "Reasoning block ends with exactly one newline (no trailing blank line)."
+  (let ((out (hermes--format-cot-block "Reasoning" "thinking..." "seg1")))
+    (should (string-suffix-p "\n" out))
+    (should-not (string-suffix-p "\n\n" out))))
+
+(ert-deftest hermes-render-test/cot-block-no-blank-before-properties ()
+  "Reasoning block has no blank line between heading and properties drawer."
+  (let ((out (hermes--format-cot-block "Reasoning" "x" "seg1")))
+    (should-not (string-match-p "Reasoning\n\n:PROPERTIES:" out))))
+
+(ert-deftest hermes-render-test/subagent-no-blank-lines-between-parts ()
+  "Subagent subtree has no blank lines between properties, thinking, tools."
+  (let* ((sa (make-hermes-subagent
+              :id "sa1" :goal "fix" :status 'complete
+              :thinking "looking"
+              :tools (vector (list :name "bash" :args "ls"))
+              :notes ["a"]
+              :summary "done" :duration 1.0))
+         (out (hermes--format-subagent sa)))
+    (should-not (string-match-p "\n\n" out))
+    (should (string-suffix-p "\n" out))))
+
+(ert-deftest hermes-render-test/subagents-block-no-blank-between-subagents ()
+  "Adjacent subagents separated by one newline, no blank line."
+  (let* ((sa1 (make-hermes-subagent :id "sa1" :goal "a" :status 'running))
+         (sa2 (make-hermes-subagent :id "sa2" :goal "b" :status 'running))
+         (out (hermes--format-subagents-block (vector sa1 sa2))))
+    (should-not (string-match-p "\n\n" out))
+    (should (string-suffix-p "\n" out))))
+
 (ert-deftest hermes-render-test/subagent-blocks-insert-after-tools ()
   "In stream, subagents appear after segment blocks."
   (with-temp-buffer

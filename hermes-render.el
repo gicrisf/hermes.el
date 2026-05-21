@@ -695,10 +695,12 @@ folded `*** Reasoning' subtree."
   (if (or (null content) (string-empty-p content))
       ""
     (let ((body (hermes-md-to-org content)))
-      (concat (hermes--stars 2) " Response\n"
-              ":PROPERTIES:\n:HERMES_KIND: RESPONSE\n:END:\n"
-              body
-              (if (string-suffix-p "\n" body) "" "\n")))))
+      (if (string-empty-p body)
+          ""
+        (concat (hermes--stars 2) " Response\n"
+                ":PROPERTIES:\n:HERMES_KIND: RESPONSE\n:END:\n"
+                body
+                (if (string-suffix-p "\n" body) "" "\n"))))))
 
 (defun hermes--format-cot-block (label content fold-id)
   "Return an Org level-3 heading for chain-of-thought CONTENT.
@@ -715,9 +717,31 @@ them on insertion."
                                 'hermes-fold-id fold-id)
                     "\n"))
            (props ":PROPERTIES:\n:HERMES_KIND: REASONING\n:END:\n")
-           (body (if (string-suffix-p "\n" content) content
-                   (concat content "\n"))))
-      (concat heading-line props body "\n"))))
+           (body content))
+      (if (or (null body) (string-empty-p body))
+          ""
+        (concat heading-line props body
+                (if (string-suffix-p "\n" body) "" "\n"))))))
+
+(defun hermes--strip-trailing-newlines (s)
+  "Return S with all trailing newlines removed."
+  (if (string-match "\n+\\'" s)
+      (substring s 0 (match-beginning 0))
+    s))
+
+(defun hermes--join-blocks (parts)
+  "Join PARTS with exactly one newline between each, terminated by one newline.
+Empty parts are skipped.  Trailing newlines on each part are normalized
+so callers can mix part strings that do and do not already end in \\n
+without producing blank-line gaps."
+  (let ((trimmed (delq nil
+                       (mapcar (lambda (p)
+                                 (let ((s (hermes--strip-trailing-newlines (or p ""))))
+                                   (and (> (length s) 0) s)))
+                               parts))))
+    (if (null trimmed)
+        ""
+      (concat (mapconcat #'identity trimmed "\n") "\n"))))
 
 (defun hermes--format-subagent (sa)
   "Return an Org subtree string for subagent SA."
@@ -758,7 +782,7 @@ them on insertion."
                     (or summary "")
                     (if duration (format "%.1f" duration) "?"))
             parts))
-    (mapconcat #'identity (nreverse parts) "\n")))
+    (hermes--join-blocks (nreverse parts))))
 
 (defun hermes--format-subagents-block (subagents)
   "Return an Org block string for all SUBAGENTS, or empty string if none."
@@ -769,10 +793,7 @@ them on insertion."
         (let ((formatted (hermes--format-subagent (aref subagents i))))
           (when (> (length formatted) 0)
             (push formatted parts))))
-      (let ((result (mapconcat #'identity (nreverse parts) "\n")))
-        (if (> (length result) 0)
-            (concat result "\n")
-          "")))))
+      (hermes--join-blocks (nreverse parts)))))
 
 (defun hermes--update-subagent-views (subagents)
   "Replace the subagent block region in the stream buffer."
@@ -990,13 +1011,16 @@ expansion or canonicalization."
      (t (format "[image: %s (not found)]\n" label)))))
 
 (defun hermes--segment-block (seg)
-  "Return the buffer bytes for SEG: formatted text + trailing newline.
-Empty-format segments (e.g. `thinking') return the empty string and
-contribute zero bytes to the bench."
+  "Return the buffer bytes for SEG: formatted text + trailing blank line.
+Each block ends with exactly two newlines so adjacent blocks are
+separated by one blank line in the rendered Org buffer.  Empty-format
+segments (e.g. `thinking') return the empty string and contribute
+zero bytes."
   (let ((s (hermes--format-segment seg)))
     (cond ((string-empty-p s) "")
-          ((string-suffix-p "\n" s) s)
-          (t (concat s "\n")))))
+          ((string-suffix-p "\n\n" s) s)
+          ((string-suffix-p "\n" s) (concat s "\n"))
+          (t (concat s "\n\n")))))
 
 (defun hermes--snapshot-total-length (snapshot)
   "Sum the :length fields of SNAPSHOT (a vector of plists)."

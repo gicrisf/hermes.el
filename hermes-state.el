@@ -564,11 +564,44 @@ which case dispatch routes to the correct typed reconstructor."
 
 ;;;; Build a hermes-message from an in-flight stream
 
+(defun hermes--strip-surrounding-blank-lines (s)
+  "Return S with leading and trailing whitespace-only newlines removed.
+Internal blank lines (paragraph breaks) are preserved."
+  (let ((s (or s "")))
+    (when (string-match "\\`\\(?:[ \t]*\n\\)+" s)
+      (setq s (substring s (match-end 0))))
+    (when (string-match "\\(?:\n[ \t]*\\)+\\'" s)
+      (setq s (substring s 0 (match-beginning 0))))
+    s))
+
+(defun hermes--normalize-segments (segs)
+  "Return a copy of SEGS with text/reasoning content blank-line-normalized.
+Strips leading and trailing whitespace-only newlines on `text' and
+`reasoning' segments so committed buffer rendering does not get blank
+lines between a heading's `:END:' and the body or between body and the
+next heading.  Other segment types (`tool', `image', `system') are
+untouched — their bodies are structured."
+  (if (not (vectorp segs))
+      segs
+    (let* ((n (length segs))
+           (out (make-vector n nil)))
+      (dotimes (i n)
+        (let ((seg (aref segs i)))
+          (aset out i
+                (if (memq (hermes-segment-type seg) '(text reasoning))
+                    (hermes--with-copy seg hermes-segment-copy ns
+                      (setf (hermes-segment-content ns)
+                            (hermes--strip-surrounding-blank-lines
+                             (hermes-segment-content seg))))
+                  seg))))
+      out)))
+
 (defun hermes--message-from-stream (stream usage)
   "Build an assistant `hermes-message' from STREAM and USAGE."
   (make-hermes-message
    :kind 'assistant
-   :segments (or (hermes-stream-segments stream) [])
+   :segments (hermes--normalize-segments
+              (or (hermes-stream-segments stream) []))
    :subagents (or (hermes-stream-subagents stream) [])
    :usage usage
    :timestamp (current-time)))

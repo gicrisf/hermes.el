@@ -263,6 +263,28 @@ should still suppress the reasoning segment."
     (should (eq 'assistant (hermes-message-kind m)))
     (should (equal "Hi" (hermes-test--seg-text m)))))
 
+(ert-deftest hermes-state-test/message-complete-strips-surrounding-blank-lines ()
+  "Committed text/reasoning segments have leading/trailing blank lines stripped."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "\n\nHello\n\n"))
+             (cons "message.complete" nil)))
+         (m (hermes-test--last-pending s))
+         (seg (aref (hermes-message-segments m) 0)))
+    (should (equal "Hello" (hermes-segment-content seg)))))
+
+(ert-deftest hermes-state-test/message-complete-preserves-internal-blank-lines ()
+  "Internal blank lines (paragraph breaks) survive normalization."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "message.delta" (hermes-test--ht "text" "para1\n\npara2"))
+             (cons "message.complete" nil)))
+         (m (hermes-test--last-pending s))
+         (seg (aref (hermes-message-segments m) 0)))
+    (should (equal "para1\n\npara2" (hermes-segment-content seg)))))
+
 (ert-deftest hermes-state-test/message-complete-accumulates-usage ()
   (let* ((s1 (hermes-test--reduce*
               nil

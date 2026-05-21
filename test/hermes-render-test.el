@@ -390,6 +390,7 @@ this test asserts the writer doesn't add escapes back."
                                    :summary "wrote 1 file"))
            (msg (make-hermes-message
                  :kind 'assistant
+                 :usage '(:tokens_sent 10 :tokens_received 20)
                  :segments (vector (make-hermes-segment
                                     :type 'tool :content tool :id "s1")))))
       (insert "* assistant\n")
@@ -478,9 +479,10 @@ property drawer — just heading + drawer."
 
 (ert-deftest hermes-render-test/meta-drawer-insert-and-extract ()
   "Insert a :HERMES_META: drawer for a turn with metadata and read it back.
-The slim meta carries :id and structured fields only; :name/:status/
-:duration live in heading properties, and :output/:error/:inline-diff/
-:context are body-canonical (read from the heading body, not meta)."
+All per-tool fields are body-canonical (name/status/duration/summary
+live in heading properties; output/error/inline-diff/context/todos live
+in #+name'd blocks), so the drawer carries no :tool-calls vector even
+when tool segments are present.  Usage forces the drawer to be emitted."
   (with-temp-buffer
     (org-mode)
     (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
@@ -489,6 +491,7 @@ The slim meta carries :id and structured fields only; :name/:status/
                                    :summary "ls"))
            (msg (make-hermes-message
                  :kind 'assistant
+                 :usage '(:tokens_sent 10 :tokens_received 20)
                  :segments (vector (make-hermes-segment
                                     :type 'text :content "Hello" :id "s1")
                                    (make-hermes-segment
@@ -499,22 +502,15 @@ The slim meta carries :id and structured fields only; :name/:status/
     (goto-char (point-min))
     (let ((plist (hermes--extract-meta-drawer)))
       (should plist)
-      (let ((tcs (plist-get plist :tool-calls)))
-        (should (and (vectorp tcs) (= 1 (length tcs))))
-        (should (equal "t1" (plist-get (aref tcs 0) :id)))
-        ;; :context is body-canonical, no longer in meta.
-        (should-not (plist-member (aref tcs 0) :context))
-        ;; :output is body-canonical, no longer in meta.
-        (should-not (plist-member (aref tcs 0) :output))
-        ;; Scalars are still excluded from meta.
-        (should-not (plist-member (aref tcs 0) :name))
-        (should-not (plist-member (aref tcs 0) :status))
-        (should-not (plist-member (aref tcs 0) :duration))))))
+      (should (plist-get plist :usage))
+      ;; No :tool-calls entry: all per-tool fields are body-canonical.
+      (should-not (plist-member plist :tool-calls)))))
 
 (ert-deftest hermes-render-test/meta-tool-calls-omit-name-status-duration ()
-  "hermes--message-to-meta-plist strips :name/:status/:duration from
-tool-calls — those live in heading properties.  :output/:error/
-:inline-diff/:context are body-canonical and also excluded from meta."
+  "All per-tool fields are body-canonical: name/status/duration/summary
+live in heading PROPERTIES; output/error/inline-diff/context/todos live
+in #+name'd blocks.  The slim meta entry collapses to just :id and is
+skipped, so no :tool-calls vector is written for tool-only turns."
   (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
                                  :duration 0.5 :output "a\nb" :context "-la"
                                  :summary "ls"))
@@ -522,16 +518,9 @@ tool-calls — those live in heading properties.  :output/:error/
                :kind 'assistant
                :segments (vector (make-hermes-segment
                                   :type 'tool :content tool :id "s1"))))
-         (plist (hermes--message-to-meta-plist msg))
-         (tc (aref (plist-get plist :tool-calls) 0)))
-    (should-not (plist-member tc :name))
-    (should-not (plist-member tc :status))
-    (should-not (plist-member tc :duration))
-    (should-not (plist-member tc :output))
-    (should-not (plist-member tc :error))
-    (should-not (plist-member tc :inline-diff))
-    (should-not (plist-member tc :context))
-    (should (equal "t1" (plist-get tc :id)))))
+         (plist (hermes--message-to-meta-plist msg)))
+    ;; Tool-only turn with no usage/images/subagents produces no meta.
+    (should (null plist))))
 
 (ert-deftest hermes-render-test/meta-omitted-when-tool-has-no-data ()
   "A turn whose tool carries only :id (no output/context/summary/etc.)
@@ -559,6 +548,36 @@ in a `#+name'd #+begin_example block."
     ;; body-canonical), or a slim entry with no :context key.
     (should (or (null tcs)
                 (let ((e (aref tcs 0))) (null (plist-get e :context)))))))
+
+(ert-deftest hermes-render-test/meta-drawer-omits-summary ()
+  "Meta drawer no longer carries :summary — it is body-canonical
+in the heading PROPERTIES drawer as :TOOL_SUMMARY:."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.1 :summary "listed files"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (meta (hermes--message-to-meta-plist msg))
+         (tcs (plist-get meta :tool-calls)))
+    (should (or (null tcs)
+                (let ((e (aref tcs 0))) (null (plist-get e :summary)))))))
+
+(ert-deftest hermes-render-test/tool-properties-include-summary ()
+  "hermes--tool-properties emits :TOOL_SUMMARY: when summary is set."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.1
+                                 :summary "listed system uptime"))
+         (props (hermes--tool-properties tool)))
+    (should (equal "listed system uptime"
+                   (cdr (assoc "TOOL_SUMMARY" props))))))
+
+(ert-deftest hermes-render-test/tool-properties-omit-summary-when-nil ()
+  "hermes--tool-properties drops :TOOL_SUMMARY: when summary is nil."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.1))
+         (props (hermes--tool-properties tool)))
+    (should-not (assoc "TOOL_SUMMARY" props))))
 
 (ert-deftest hermes-render-test/tool-properties-include-name-status-duration ()
   "hermes--tool-properties returns the four scalar fields plus HERMES_KIND.
@@ -721,7 +740,8 @@ contains a :HERMES_META: drawer with the tool-calls."
       (hermes--render old new))
     (let* ((old hermes--state)
            (stream (hermes-state-stream old))
-           (msg (hermes--message-from-stream stream nil))
+           (msg (hermes--message-from-stream
+                 stream '(:tokens_sent 10 :tokens_received 20)))
            (new (hermes--with-copy hermes--state hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)
                         (hermes-state-stream s) nil))))
@@ -729,8 +749,9 @@ contains a :HERMES_META: drawer with the tool-calls."
       (hermes--render old new))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       (should (string-match-p "^:HERMES_META:" body))
-      (should (string-match-p ":tool-calls" body))
-      (should (string-match-p "\"t1\"" body)))))
+      (should (string-match-p ":usage" body))
+      ;; Tool fields are all body-canonical now — no :tool-calls in meta.
+      (should-not (string-match-p ":tool-calls" body)))))
 
 (ert-deftest hermes-render-test/meta-drawer-auto-folded ()
   "After insertion, the meta drawer body is hidden by org folding/overlays."
@@ -741,6 +762,7 @@ contains a :HERMES_META: drawer with the tool-calls."
                                     :duration 0.1 :context "-la"))
            (msg (make-hermes-message
                  :kind 'assistant
+                 :usage '(:tokens_sent 10 :tokens_received 20)
                  :segments (vector (make-hermes-segment
                                     :type 'tool :content tool :id "s1")))))
       (insert "* assistant\n")
@@ -1268,7 +1290,8 @@ omit the drawer entirely under v2)."
     ;; Stage 2: commit (message.complete).
     (let* ((old hermes--state)
            (stream (hermes-state-stream old))
-           (msg (hermes--message-from-stream stream nil))
+           (msg (hermes--message-from-stream
+                 stream '(:tokens_sent 10 :tokens_received 20)))
            (new (hermes--with-copy hermes--state hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)
                         (hermes-state-stream s) nil))))

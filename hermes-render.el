@@ -513,22 +513,15 @@ Compactness rules:
           ('tool
            (let ((tool (hermes-segment-content seg)))
              (when (hermes-tool-p tool)
-               ;; Slim meta entry: heading properties carry name/status/
-               ;; duration; the heading body is formatter-generated
-               ;; *display* only and is NOT round-tripped.  :output is
-               ;; the canonical raw tool output and lives in meta so
-               ;; re-renders are byte-stable.
-               ;; Body-canonical fields are omitted from meta to avoid
-               ;; duplication: :inline-diff / :output / :error live in
-               ;; #+name'd blocks (parser: `hermes--extract-named-block'),
-                ;; and :todos lives in a `#+name'd Org table (parser:
-                ;; `hermes--extract-named-table' + `hermes--parse-todos-table').
-                ;; Meta only carries
-               ;; structured fields the body cannot represent natively.
+               ;; Meta carries no per-tool fields: heading properties
+               ;; hold name/status/duration/summary (TOOL_SUMMARY), and
+               ;; #+name'd blocks/tables in the heading body hold
+               ;; :inline-diff / :output / :error / :context / :todos.
+               ;; The slim entry collapses to just :id and is skipped by
+               ;; the `(cddr slim)` guard, so simple tool turns emit no
+               ;; :tool-calls vector at all.
                (let ((slim (hermes--plist-drop-nils
-                            (list :id      (hermes-tool-id tool)
-                                  :context (hermes-tool-context tool)
-                                  :summary (hermes-tool-summary tool)))))
+                            (list :id (hermes-tool-id tool)))))
                  ;; Skip the entry entirely when only :id would remain —
                  ;; a "simple" tool fully described by its heading.
                  (when (cddr slim)
@@ -938,19 +931,22 @@ them on insertion."
 
 (defun hermes--tool-properties (tool)
   "Return an alist of org PROPERTY entries for TOOL.
-Includes HERMES_KIND, TOOL_ID, TOOL_NAME, TOOL_STATUS, TOOL_DURATION.
+Includes HERMES_KIND, TOOL_ID, TOOL_NAME, TOOL_STATUS, TOOL_DURATION,
+and TOOL_SUMMARY (gateway-provided human summary).
 Duration is stored at full float precision; the human-readable (0.1s)
 in the heading text is rounded for display only."
-  (let ((dur    (hermes-tool-duration tool))
-        (tid    (hermes-tool-id tool))
-        (name   (hermes-tool-name tool))
-        (status (hermes-tool-status tool))
+  (let ((dur     (hermes-tool-duration tool))
+        (tid     (hermes-tool-id tool))
+        (name    (hermes-tool-name tool))
+        (status  (hermes-tool-status tool))
+        (summary (hermes-tool-summary tool))
         (acc nil))
     (push (cons "HERMES_KIND" "TOOL") acc)
-    (when tid    (push (cons "TOOL_ID"       (format "%s" tid))    acc))
-    (when name   (push (cons "TOOL_NAME"     (format "%s" name))   acc))
-    (when status (push (cons "TOOL_STATUS"   (format "%s" status)) acc))
-    (when dur    (push (cons "TOOL_DURATION" (format "%s" dur))    acc))
+    (when tid     (push (cons "TOOL_ID"       (format "%s" tid))    acc))
+    (when name    (push (cons "TOOL_NAME"     (format "%s" name))   acc))
+    (when status  (push (cons "TOOL_STATUS"   (format "%s" status)) acc))
+    (when dur     (push (cons "TOOL_DURATION" (format "%s" dur))    acc))
+    (when summary (push (cons "TOOL_SUMMARY"  summary)              acc))
     (nreverse acc)))
 
 (defun hermes--format-property-drawer (props)

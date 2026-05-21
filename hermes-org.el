@@ -403,7 +403,8 @@ nil if point is not on a recognized turn heading."
                                                                         body
                                                                         (format "hermes-tool-%s-todos" slug)))))
                                                       (and table (hermes--parse-todos-table table)))
-                                             :summary (hermes--strip-ansi (plist-get tc :summary))
+                                             :summary (let ((s (org-entry-get (point) "TOOL_SUMMARY")))
+                                                        (and s (hermes--strip-ansi s)))
                                              :error (and (eq status 'error) slug
                                                          (hermes--extract-named-block
                                                           body

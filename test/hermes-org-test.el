@@ -550,6 +550,7 @@ are body-canonical (read from #+name'd blocks at terminal status)."
 :TOOL_NAME: git-diff
 :TOOL_STATUS: error
 :TOOL_DURATION: 1.2
+:TOOL_SUMMARY: sum
 :END:
 #+name: hermes-tool-gd1-context
 #+begin_example
@@ -564,7 +565,7 @@ D
 err
 #+end_example
 :HERMES_META:
-(:tool-calls [(:id \"gd1\" :summary \"sum\" :todos nil)])
+(:tool-calls [(:id \"gd1\" :todos nil)])
 :END:
 "
    (hermes-org-test--at-first-turn)
@@ -576,6 +577,89 @@ err
      (should (equal "err" (hermes-tool-error tool)))
      (should (equal "D" (hermes-tool-inline-diff tool)))
      (should (null (hermes-tool-todos tool))))))
+
+(ert-deftest hermes-org-test/parse-tool-summary-from-properties ()
+  "Parser reads :summary from the heading PROPERTIES drawer's
+:TOOL_SUMMARY: entry (body-canonical), not from :HERMES_META:."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: list
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE bash (0.2s) — listed system uptime
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: bash-1
+:TOOL_NAME: bash
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.2
+:TOOL_SUMMARY: listed system uptime
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (equal "listed system uptime"
+                    (hermes-tool-summary tool))))))
+
+(ert-deftest hermes-org-test/parse-tool-summary-missing-property-is-nil ()
+  "Old buffers without :TOOL_SUMMARY: parse :summary as nil (clean break).
+Heading text still shows the summary for human reading."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: list
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE bash (0.2s) — listed system uptime
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: bash-1
+:TOOL_NAME: bash
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.2
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (null (hermes-tool-summary tool))))))
+
+(ert-deftest hermes-org-test/roundtrip-tool-summary-properties ()
+  "Render → parse → render of a tool with :summary is byte-identical
+and the rendered buffer contains :TOOL_SUMMARY: in the properties drawer."
+  (let* ((tool (make-hermes-tool
+                :id "t1" :name "bash" :status 'complete
+                :duration 0.2
+                :summary "listed system uptime"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (render-msg
+          (lambda (m)
+            (with-temp-buffer
+              (org-mode)
+              (insert "* chat :hermes:\n** A: x\n:PROPERTIES:\n:HERMES_KIND: ASSISTANT\n:END:\n")
+              (let ((segs (hermes-message-segments m)))
+                (dotimes (i (length segs))
+                  (insert (hermes--format-segment (aref segs i)))))
+              (hermes--insert-meta-drawer m)
+              (buffer-substring-no-properties (point-min) (point-max))))))
+    (let ((rendered1 (funcall render-msg msg)))
+      (should (string-match-p ":TOOL_SUMMARY: listed system uptime" rendered1))
+      (with-temp-buffer
+        (org-mode)
+        (insert rendered1)
+        (goto-char (point-min))
+        (re-search-forward "^\\*\\* A:" nil t)
+        (beginning-of-line)
+        (let* ((parsed (hermes--parse-turn-at-point))
+               (rendered2 (funcall render-msg parsed)))
+          (should (equal rendered1 rendered2)))))))
 
 (ert-deftest hermes-org-test/parse-tool-render-parse-roundtrip-stable ()
   "Render a turn containing a tool, parse it, re-render — the result

@@ -33,8 +33,10 @@ child headings (Response / Reasoning / Tool / Subagent) carry their own
 buffer, so user edits to prose are preserved across resume.
 
 A `:HERMES_META:` drawer at the end of each turn subtree carries only the
-irreplaceable structured data: tool-call records, image metadata, usage,
-and subagent state. Text-only turns omit the drawer entirely.
+irreplaceable structured data: image metadata and usage.  Tool segments
+are body-canonical in `#+name:'d blocks and heading properties; subagents
+are body-canonical in child `HERMES_KIND: SUBAGENT` headings.  Text-only
+turns omit the drawer entirely.
 
 **Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
 bench (`*hermes-bench:<sid>*`) — a 20-line side-window with structured zones

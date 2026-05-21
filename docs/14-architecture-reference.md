@@ -488,8 +488,7 @@ Sure, 2+2 is 4.
 
 :HERMES_META:
 (:usage (:tokens_sent 1450 :tokens_received 892)
- :images []
- :subagents [])
+ :images [])
 :END:
 
 ** U: now 3+3?
@@ -547,7 +546,7 @@ is just `(write-region (point-min) (point-max) "chat.org")`.
 
 `M-x hermes-resume-buffer` (in a `hermes-mode` buffer) parses all turn
 headings, derives text from the visible buffer structure (Response / Reasoning
-bodies), reads `:HERMES_META:` drawers for irreplaceable structured data, and
+bodies), reads `:HERMES_META:` drawers for usage, derives subagents from child headings, and
 reconstructs `hermes-message` structs for the `:history` field in `session.create`:
 
 ```elisp
@@ -641,8 +640,9 @@ to prevent Org warnings on fundamental-mode temp buffers in tests.
 The state atom no longer stores committed messages. Instead, every turn heading
 carries `:HERMES_KIND:` and `:HERMES_TIMESTAMP:` properties; text content is
 parsed back from the visible buffer on resume. A `:HERMES_META:` drawer at the
-end of each turn subtree carries only irreplaceable structured data: tool-call
-records, image metadata, usage, and subagent state. Text-only turns omit the
+end of each turn subtree carries only irreplaceable structured data: image
+metadata and usage.  Tool segments and subagents are body-canonical (heading
+properties, `#+name:'d blocks, child SUBAGENT headings).  Text-only turns omit the
 drawer entirely. Benefits:
 - No split-brain — user edits to visible text are preserved on resume.
 - No duplication — conversation text exists only once (in the buffer).

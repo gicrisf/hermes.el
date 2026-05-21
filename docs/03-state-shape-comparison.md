@@ -105,7 +105,7 @@ The TUI splits state across **three nanostore atoms** plus local React state.
   subagents)  ; vector of hermes-subagent — delegation tree
 ```
 
-The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. Irreplaceable structured data (tool calls, image metadata, usage, subagents) is serialized to a `:HERMES_META:` Elisp plist drawer at the end of each turn's Org subtree. Text-only turns omit the drawer entirely.
+The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. Irreplaceable structured data (image metadata, usage) is serialized to a `:HERMES_META:` Elisp plist drawer at the end of each turn's Org subtree.  Tool segments and subagents are body-canonical: parsed back from visible buffer structure (heading properties, `#+name:'d blocks, child SUBAGENT headings).  Text-only turns omit the drawer entirely.
 
 #### Stream State (`hermes-stream`)
 ```elisp

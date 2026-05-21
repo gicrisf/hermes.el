@@ -80,6 +80,13 @@
     "session.branch"         ; {session_id, name?}           (long handler, async) → {session_id, title, parent}
     "session.delete"         ; {session_id}                  → bool
     "session.save"           ; {session_id}                  → {file}
+    "session.title"          ; {session_id, title?}          → {session_id, title}
+    "session.compress"       ; {session_id, focus_topic?}    (long handler, async)
+    "session.undo"           ; {session_id}                  → {status}
+    "session.status"         ; {session_id}                  → {id, path, model, created_at, last_active, running, usage}
+    "session.usage"          ; {session_id}                  → {tokens_sent, tokens_received, cost, ...}
+    "session.history"        ; {session_id}                  → [{role, text, ...}]
+    "session.most_recent"    ; {}                            → {session_id}
     ;; Conversation
     "prompt.submit"          ; {session_id, text}
     "prompt.background"      ; {session_id, text}            → {task_id}

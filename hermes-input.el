@@ -53,6 +53,37 @@ and stripping; keeping them on a single source avoids drift.")
   "Return non-nil if TEXT begins with a background-task command prefix."
   (and text (string-match-p hermes-input--bg-re text)))
 
+;;;; Session-management slash interception
+;;
+;; `/resume', `/sessions', `/delete' need an Emacs minibuffer picker —
+;; the gateway implements server-side equivalents, but they open a
+;; TUI-flavored selector that doesn't apply here.  Intercept those three
+;; client-side before falling through to `slash.exec'.  Everything else
+;; (`/title', `/branch', `/compress', `/undo', `/usage', `/save', …)
+;; routes server-side as usual.
+
+(defconst hermes-input--session-slash-re
+  "\\`\\s-*/\\(resume\\|sessions\\|delete\\)\\(?:\\s-+\\(.*\\)\\)?\\s-*\\'"
+  "Regex matching the session-management slashes handled in Emacs.
+Group 1 is the bare command name; group 2 is the optional argument
+text (currently unused — the pickers ignore arguments).")
+
+(declare-function hermes-current-sessions "hermes-sessions" ())
+(declare-function hermes-stored-resume "hermes-sessions" (&optional cwd-filter))
+(declare-function hermes-stored-delete "hermes-sessions" (&optional cwd-filter))
+
+(defun hermes-input--try-session-slash (text)
+  "If TEXT is an intercepted session-management slash, dispatch it.
+Return non-nil when handled, nil otherwise.  Side effect: pops the
+appropriate `completing-read' picker.  Any user argument is ignored
+for v1 — the pickers carry the entire selection workflow."
+  (when (string-match hermes-input--session-slash-re text)
+    (pcase (match-string 1 text)
+      ("resume"   (call-interactively #'hermes-stored-resume))
+      ("sessions" (call-interactively #'hermes-current-sessions))
+      ("delete"   (call-interactively #'hermes-stored-delete)))
+    t))
+
 (defun hermes-input--dispatch-background (text sid)
   "Send TEXT as a `prompt.background' RPC for session SID.
 Strips the /bg prefix; on RPC response, dispatches `:background-start'
@@ -502,6 +533,11 @@ Substitutions are applied right-to-left to preserve byte offsets."
      ;; `background.complete' fires.
      ((hermes-input--is-background-p text)
       (hermes-input--dispatch-background text sid))
+     ;; Session-management slashes (`/resume', `/sessions', `/delete')
+     ;; need an Emacs minibuffer picker — intercept before slash.exec.
+     ((and (eq (aref text 0) ?/)
+           (hermes-input--try-session-slash text))
+      nil)
      ;; Slash command — fire immediately, no transcript, no history.
      ((eq (aref text 0) ?/)
       (let ((buf (current-buffer)))

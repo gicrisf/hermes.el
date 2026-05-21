@@ -2,7 +2,7 @@
 
 > **Purpose:** Comprehensive analysis of the official Hermes TUI (`ui-tui` + `tui_gateway`) compared to the Emacs frontend (`hermes.el`). This document captures protocol semantics, state shapes, event handling, and implementation gaps for future development.
 >
-> **Date:** 2026-05-13 (updated 2026-05-21)
+> **Date:** 2026-05-22
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).
 >
 > **Recent changes reflected in this version:**
@@ -14,6 +14,7 @@
 > - Reasoning rendered as typed segments (not separate marker-managed blocks); thinking is UI-only via header-line status
 > - Approval choices fixed to canonical `once`/`session`/`always`/`deny`
 > - Usage counters in `HERMES_USAGE_*` heading properties. Tool fields via `#+name`d blocks and TOOL_* properties.
+> - **Session management (Phase 1):** Three session slash commands intercepted client-side (`/resume`, `/sessions`, `/delete`) — minibuffer pickers, no RPC sent. Remaining session slashes fall through to `slash.exec` (gateway handles them server-side). Gap matrix rewritten to reflect true wiring state across all RPC methods.
 
 ## Sections
 

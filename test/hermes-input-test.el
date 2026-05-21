@@ -284,5 +284,47 @@ when the new session hasn't been stamped yet, and stamps it."
           (should (equal " — Clear conversation history"
                          (funcall ann "/clear"))))))))
 
+;;;; Session-management slash interception
+
+(ert-deftest hermes-input-test/session-slash-regex-matches ()
+  (should (string-match hermes-input--session-slash-re "/resume"))
+  (should (string-match hermes-input--session-slash-re "/sessions"))
+  (should (string-match hermes-input--session-slash-re "/delete"))
+  (should (string-match hermes-input--session-slash-re "/resume my-project"))
+  (should-not (string-match hermes-input--session-slash-re "/title hello"))
+  (should-not (string-match hermes-input--session-slash-re "/save"))
+  (should-not (string-match hermes-input--session-slash-re "/branch"))
+  (should-not (string-match hermes-input--session-slash-re "/clear"))
+  (should-not (string-match hermes-input--session-slash-re "/resumesomething")))
+
+(ert-deftest hermes-input-test/try-session-slash-dispatches ()
+  (let ((called nil))
+    (cl-letf (((symbol-function 'call-interactively)
+               (lambda (cmd) (push cmd called))))
+      (should (hermes-input--try-session-slash "/resume"))
+      (should (hermes-input--try-session-slash "/sessions"))
+      (should (hermes-input--try-session-slash "/delete"))
+      (should-not (hermes-input--try-session-slash "/title hi"))
+      (should (equal '(hermes-stored-delete
+                       hermes-current-sessions
+                       hermes-stored-resume)
+                     called)))))
+
+(ert-deftest hermes-input-test/intercepted-slash-skips-slash-exec ()
+  "`/resume' must NOT reach `slash.exec' — the picker handles it locally."
+  (hermes-input-test--with-buffer
+    (cl-letf (((symbol-function 'call-interactively)
+               (lambda (_cmd) nil)))
+      (hermes-send "/resume"))
+    (should (null hermes-input-test--rpc-calls))))
+
+(ert-deftest hermes-input-test/non-intercepted-slash-still-goes-to-server ()
+  "`/title hello' is server-side — must hit `slash.exec' as usual."
+  (hermes-input-test--with-buffer
+    (hermes-send "/title hello")
+    (let ((call (car hermes-input-test--rpc-calls)))
+      (should (equal "slash.exec" (car call)))
+      (should (equal "title hello" (plist-get (cdr call) :command))))))
+
 (provide 'hermes-input-test)
 ;;; hermes-input-test.el ends here

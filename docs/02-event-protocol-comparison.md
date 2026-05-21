@@ -50,51 +50,71 @@ The gateway emits events via `_emit(event, sid, payload)` in `tui_gateway/server
 
 Defined in `hermes-events.el` and used across the Emacs codebase.
 
-#### Methods the Emacs frontend currently calls
+#### Methods the Emacs frontend currently calls (full list)
 
 | Method | Params | Purpose | Caller |
 |--------|--------|---------|--------|
+| **Session lifecycle** | | | |
 | `session.create` | `{cols?}` | Create new session | `hermes--do-session-create` |
-| `session.resume` | `{session_id}` | Resume prior session | *(not wired in M2-M4)* |
+| `session.resume` | `{session_id}` | Resume prior session (long handler) | `hermes-resume-from-db`, `hermes-stored-resume`, `/resume` slash |
 | `session.close` | `{session_id}` | Close session | `hermes-sessions-close` |
-| `session.interrupt` | `{session_id}` | Interrupt turn | `hermes-interrupt-current-session` |
+| `session.interrupt` | `{session_id}` | Interrupt turn | `hermes-interrupt-current-session`, `C-c C-k` |
+| `session.list` | `{limit?, cwd?}` | List stored sessions | `hermes--stored-fetch` (used by all `hermes-stored-*` commands) |
+| `session.branch` | `{session_id, name?}` | Fork conversation (long handler) | `hermes-branch-from-db`, `hermes-stored-branch` |
+| `session.delete` | `{session_id}` | Delete session from DB | `hermes-stored-delete`, `/delete` slash |
+| `session.save` | `{session_id}` | Export transcript to JSON file | `hermes-stored-export-as-json` |
+| `session.steer` | `{session_id, text}` | Inject message into active turn | `hermes-input--send-1` (busy-mode `"steer"`) |
+| **Conversation** | | | |
 | `prompt.submit` | `{session_id, text}` | Send user message | `hermes-send` |
+| `prompt.background` | `{session_id, text}` | Launch background task | `/bg` slash handler |
+| **Blocking prompt responses** | | | |
 | `approval.respond` | `{session_id, request_id, choice, all?}` | Respond to approval | `hermes--prompt-approval` |
 | `clarify.respond` | `{request_id, answer}` | Respond to clarify | `hermes--prompt-clarify` |
 | `sudo.respond` | `{request_id, password}` | Respond to sudo | `hermes--prompt-sudo` |
 | `secret.respond` | `{request_id, value}` | Respond to secret | `hermes--prompt-secret` |
-| `slash.exec` | `{session_id, command}` | Execute slash command | `hermes-send` |
-| `command.dispatch` | `{session_id?, name, arg}` | Direct command dispatch | *(not wired)* |
-| `commands.catalog` | `{}` | Fetch slash command list | `hermes-input-fetch-catalog` |
+| **Commands** | | | |
+| `slash.exec` | `{session_id, command}` | Execute slash command (long handler) | `hermes-send` (fallthrough for non-intercepted slashes) |
+| `shell.exec` | `{command}` | Run shell command (long handler) | `!cmd` and `$(cmd)` in `hermes-input--send-1` |
+| `commands.catalog` | `{}` | Fetch slash command catalog | `hermes-input-fetch-catalog` |
+| **Configuration** | | | |
+| `config.get` | `{key, session_id?}` | Read config key | `hermes-config.el` |
+| `config.set` | `{key, value, session_id?}` | Write config key | `hermes-config.el` |
+| `toolsets.list` | `{session_id?}` | List available toolsets | `hermes-config.el` |
+| `tools.configure` | `{session_id?, action, names}` | Enable/disable toolsets | `hermes-config.el` |
+| **Skills** | | | |
+| `skills.reload` | `{}` | Reload skills from disk | `hermes-config.el` |
+| `skills.manage` | `{action, query?, page?, page_size?}` | Manage skills (long handler) | `hermes-config.el` — list/search/install/uninstall |
+| **Multimodal** | | | |
+| `image.attach` | `{session_id, path}` | Attach image to session | `hermes-config.el` — `hermes-image-attach` |
+| `clipboard.paste` | `{session_id}` | Paste clipboard image | `hermes-config.el` |
+| `input.detect_drop` | `{session_id, text}` | Detect file drop in input | (registered in events.el) |
 
-#### Methods the TUI calls that Emacs does **not**
+#### Methods registered in `hermes-events.el` but not yet called by client code
+
+| Method | Purpose | Note |
+|--------|---------|------|
+| `command.dispatch` | Direct command dispatch | In `hermes-rpc-methods` but unused |
+| `session.compress` | Compress history with topic focus | In `hermes-rpc-long-handlers`; gateway handles `/compress` via `slash.exec` |
+| `session.most_recent` | Find most recent session | In `hermes-events.el` (method list) but unused client-side |
+| `browser.manage` | Chrome CDP control | In `hermes-rpc-long-handlers`; not applicable to Emacs |
+
+#### Methods the TUI calls that Emacs does **not** (truly absent)
 
 | Method | Purpose | Priority |
 |--------|---------|----------|
-| `session.steer` | Inject message into active turn without interrupting | Medium |
-| `session.branch` | Fork conversation | Low |
-| `session.compress` | Compress history with topic focus | Low |
 | `session.undo` | Rollback last exchange | Low |
-| `session.save` | Export transcript | Low |
-| `session.status` | Get live session status | Low |
+| `session.title` | Set/get session title | Low (gateway handles via `slash.exec`) |
 | `session.usage` | Get token/cost usage | Low |
-| `session.most_recent` | Find most recent session (for auto-resume) | Medium |
-| `prompt.background` | Launch background prompt | Medium |
-| `config.get` / `config.set` | Read/write config keys | Low |
-| `setup.status` | Check if LLM provider configured | Low |
-| `tools.configure` | Enable/disable toolsets | Low |
+| `session.status` | Get live session status | Low |
+| `session.history` | Get message history | Low |
 | `reload.mcp` | Reload MCP servers | Low |
 | `reload.env` | Re-read `.env` | Low |
-| `voice.toggle` / `voice.record` | Voice control | Low |
-| `clipboard.paste` / `image.attach` | Image attachments | Low |
-| `input.detect_drop` | File drop detection | Low |
-| `shell.exec` | `!cmd` and `$()` interpolation | Medium |
-| `browser.manage` | Chrome CDP control | Low |
-| `delegation.status` / `delegation.pause` | Delegation caps | Medium |
+| `setup.status` | Check if LLM provider configured | Low |
+| `voice.toggle` / `voice.record` | Voice control | Low (not applicable) |
+| `delegation.status` / `delegation.pause` | Delegation caps | Low |
 | `spawn_tree.save` / `.list` / `.load` | Subagent tree archive | Low |
 | `rollback.list` / `.diff` / `.restore` | Checkpoints | Low |
-| `skills.reload` / `skills.manage` | Skill management | Low |
-| `terminal.resize` | Notify gateway of new dimensions | Low |
-| `complete.slash` / `complete.path` | Autocomplete | Low |
+| `terminal.resize` | Notify gateway of new dimensions | Low (automatic) |
+| `complete.slash` / `complete.path` | Autocomplete | Low (Emacs has native CAPF) |
 
 ---

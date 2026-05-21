@@ -112,6 +112,50 @@ Returns nil if no such ancestor exists."
           (unless (ignore-errors (org-up-heading-safe))
             (throw 'done nil)))))))
 
+(defun hermes--all-container-markers-in-buffer ()
+  "Return markers for every `:hermes:' container heading in the buffer.
+Order matches buffer order.  Used as a fallback by `M-x hermes' when
+point is outside any container."
+  (when (derived-mode-p 'org-mode)
+    (let (out)
+      (org-map-entries
+       (lambda ()
+         (when (hermes--heading-is-container-p)
+           (push (copy-marker (point) nil) out)))
+       nil nil 'file)
+      (nreverse out))))
+
+(defun hermes--any-container-in-buffer ()
+  "Return a marker to a `:hermes:' container heading anywhere in this buffer.
+If exactly one container exists, return its marker.  If several exist,
+prompt the user via `completing-read' over their heading titles and
+return the chosen one's marker.  Returns nil when no container exists.
+
+This is NOT used for session resolution during input — that path lives
+in `hermes--resolve-session-target' and intentionally requires an
+explicit ancestor relationship to avoid mis-routing prompts in a
+multi-session buffer.  This helper exists only for the `M-x hermes'
+entry point, which can safely ask the user when ambiguous."
+  (let ((markers (hermes--all-container-markers-in-buffer)))
+    (cond
+     ((null markers) nil)
+     ((null (cdr markers)) (car markers))
+     (t
+      (let* ((alist (mapcar
+                     (lambda (m)
+                       (cons
+                        (save-excursion
+                          (goto-char m)
+                          (or (and (org-at-heading-p)
+                                   (org-no-properties
+                                    (org-get-heading t t t t)))
+                              (format "<heading at %d>" (marker-position m))))
+                        m))
+                     markers))
+             (choice (completing-read "Hermes container: "
+                                      (mapcar #'car alist) nil t)))
+        (cdr (assoc choice alist)))))))
+
 ;;;; Registry mutators (used by slice B)
 
 (defun hermes--register-session (session-id state marker)

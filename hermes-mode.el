@@ -359,11 +359,22 @@ background; for the user-facing entry that also pops the buffer, see
         (select-window win)
         (goto-char (point-max)))))
    ((derived-mode-p 'org-mode)
-    (let* ((marker (hermes--container-marker-at-point))
-           (sid    (and marker (hermes--session-at-point)))
+    ;; Ancestor walk wins when point is inside a `:hermes:' subtree so
+    ;; that multi-session buffers route deterministically.  When the
+    ;; walk fails (point above all containers, or in a sibling subtree),
+    ;; fall back to a buffer-wide scan — picks the unique container or
+    ;; prompts when several exist.  See `hermes--any-container-in-buffer'.
+    (let* ((marker (or (hermes--container-marker-at-point)
+                       (hermes--any-container-in-buffer)))
+           (sid    (and marker
+                        (save-excursion
+                          (goto-char marker)
+                          (or (hermes--session-at-point)
+                              (hermes--session-id-at-heading)))))
            (state  (and sid (hermes--lookup-session-state sid))))
       (cond
        (state
+        (when (marker-position marker) (goto-char marker))
         (hermes-bench-ensure (current-buffer))
         (let* ((bench (hermes-bench-active-p))
                (win   (and bench (get-buffer-window bench))))
@@ -371,6 +382,7 @@ background; for the user-facing entry that also pops the buffer, see
             (select-window win)
             (goto-char (point-max)))))
        (sid
+        (when (marker-position marker) (goto-char marker))
         (hermes--handle-stale-heading sid marker))
        (t
         (hermes--create-session-under-heading)))))

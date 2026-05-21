@@ -79,6 +79,70 @@
      (goto-char (point-min))
      ,@rest))
 
+;;;; hermes--any-container-in-buffer (M-x hermes entry-point fallback)
+
+(ert-deftest hermes-org-test/any-container-returns-nil-when-none ()
+  (hermes-org-test--with-buffer
+   "* Just a normal heading\nno hermes here\n"
+   (should (null (hermes--any-container-in-buffer)))))
+
+(ert-deftest hermes-org-test/any-container-returns-unique-when-one ()
+  (hermes-org-test--with-buffer
+   "* Notes
+some prose
+* Chat :hermes:
+:PROPERTIES:
+:HERMES_SESSION: only-one
+:END:
+"
+   ;; Point on the first heading — ancestor walk would fail, but the
+   ;; buffer-wide fallback finds the unique container.
+   (goto-char (point-min))
+   (let ((m (hermes--any-container-in-buffer)))
+     (should (markerp m))
+     (save-excursion
+       (goto-char m)
+       (should (equal "only-one" (hermes--session-id-at-heading)))))))
+
+(ert-deftest hermes-org-test/any-container-prompts-when-multiple ()
+  (hermes-org-test--with-buffer
+   "* Chat A :hermes:
+:PROPERTIES:
+:HERMES_SESSION: sid-a
+:END:
+* Chat B :hermes:
+:PROPERTIES:
+:HERMES_SESSION: sid-b
+:END:
+"
+   (cl-letf (((symbol-function 'completing-read)
+              (lambda (_p cands &rest _) (cadr cands))))
+     (let ((m (hermes--any-container-in-buffer)))
+       (should (markerp m))
+       (save-excursion
+         (goto-char m)
+         (should (equal "sid-b" (hermes--session-id-at-heading))))))))
+
+(ert-deftest hermes-org-test/all-container-markers-orders-by-buffer ()
+  (hermes-org-test--with-buffer
+   "* Chat A :hermes:
+:PROPERTIES:
+:HERMES_SESSION: sid-a
+:END:
+* Mid heading
+* Chat B :hermes:
+:PROPERTIES:
+:HERMES_SESSION: sid-b
+:END:
+"
+   (let* ((ms (hermes--all-container-markers-in-buffer))
+          (sids (mapcar (lambda (m)
+                          (save-excursion
+                            (goto-char m)
+                            (hermes--session-id-at-heading)))
+                        ms)))
+     (should (equal '("sid-a" "sid-b") sids)))))
+
 ;;;; hermes--session-at-point
 
 (ert-deftest hermes-org-test/session-at-point-finds-container ()

@@ -1198,7 +1198,7 @@ cap); attr_hermes preserves the real pixel dimensions."
 
 (ert-deftest hermes-render-test/bg-task-buffer-created-on-complete ()
   "`hermes--render-bg-task' creates a `*hermes-bg:sid:tid*' buffer with
-the expected heading, properties, body, and `:HERMES_META:' drawer."
+  the expected heading, properties, and body."
   (let* ((task (make-hermes-bg-task
                 :task-id "t42" :prompt "analyze logs"
                 :status 'complete :result "found 3 errors"
@@ -1215,9 +1215,7 @@ the expected heading, properties, body, and `:HERMES_META:' drawer."
           (should (string-match-p "^\\* Background: analyze logs" text))
           (should (string-match-p ":HERMES_TASK_ID: t42" text))
           (should (string-match-p ":HERMES_STATUS: complete" text))
-          (should (string-match-p "found 3 errors" text))
-          (should (string-match-p ":HERMES_META:" text))
-          (should (string-match-p ":task-id \"t42\"" text))))
+          (should (string-match-p "found 3 errors" text))))
       (kill-buffer buf))))
 
 (ert-deftest hermes-render-test/bg-task-buffer-error-uses-example-block ()

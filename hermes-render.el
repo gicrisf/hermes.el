@@ -664,17 +664,6 @@ gone by the time the timer fires."
             (insert (format "#+begin_example Error\n%s\n#+end_example\n" err))
           (insert (hermes-md-to-org (or result "")))
           (unless (eq (char-before) ?\n) (insert "\n")))
-        (insert ":HERMES_META:\n")
-        (let ((print-length nil)
-              (print-level nil)
-              (print-quoted t))
-          (insert (prin1-to-string
-                   (list :task-id tid
-                         :prompt prompt
-                         :status (if err 'error 'complete)
-                         :result result
-                         :error err))))
-        (insert "\n:END:\n")
         (goto-char (point-min))))
     (let ((sid-capture sid)
           (tid-capture tid)

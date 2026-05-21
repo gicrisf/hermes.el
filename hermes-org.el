@@ -21,7 +21,6 @@
 (declare-function hermes-state-session-id "hermes-state" (state))
 (declare-function make-hermes-state "hermes-state" (&rest _))
 (declare-function hermes--plist-to-message "hermes-state" (plist))
-(declare-function hermes--extract-meta-drawer "hermes-render" (&optional pos))
 (declare-function hermes--next-segment-id "hermes-state" ())
 (declare-function make-hermes-segment "hermes-state" (&rest _))
 (declare-function make-hermes-message "hermes-state" (&rest _))
@@ -259,8 +258,7 @@ Returns nil for nil input or when no rows match."
 
 (defun hermes--parse-heading-body ()
   "Return the body text of the Org heading at point, excluding child
-headings, the property drawer, and any sibling `:HERMES_META:' drawer.
-Point must be on a heading."
+headings and the property drawer.  Point must be on a heading."
   (save-excursion
     (let ((subtree-end (save-excursion (org-end-of-subtree t t))))
       (forward-line 1)
@@ -273,7 +271,6 @@ Point must be on a heading."
                          (while (< (point) subtree-end)
                            (cond
                             ((org-at-heading-p) (throw 'stop (point)))
-                            ((looking-at "^:HERMES_META:") (throw 'stop (point)))
                             (t (forward-line 1))))
                          subtree-end))
                      subtree-end)))
@@ -283,7 +280,7 @@ Point must be on a heading."
 
 (defun hermes--parse-turn-body-text ()
   "Return the body text under a turn heading at point.
-Excludes child headings, :PROPERTIES:, and :HERMES_META: drawers."
+Excludes child headings and the :PROPERTIES: drawer."
   (save-excursion
     (let ((turn-end (save-excursion (org-end-of-subtree t t))))
       (forward-line 1)
@@ -296,13 +293,38 @@ Excludes child headings, :PROPERTIES:, and :HERMES_META: drawers."
                          (while (< (point) turn-end)
                            (cond
                             ((org-at-heading-p) (throw 'stop (point)))
-                            ((looking-at "^:HERMES_META:") (throw 'stop (point)))
                             (t (forward-line 1))))
                          turn-end))
                      turn-end)))
         (when (> end start)
           (let ((s (string-trim (buffer-substring-no-properties start end))))
             (and (not (string-empty-p s)) s)))))))
+
+(defun hermes--read-usage-properties ()
+  "Read usage counters from the heading at point.
+Returns a keyword plist or nil if no `HERMES_USAGE_*' properties
+are present.  Decodes numeric strings (including scientific
+notation); non-numeric values are kept as strings.  Property
+names lose their `HERMES_USAGE_' prefix and are downcased."
+  (let ((props (org-entry-properties (point) 'standard))
+        (acc nil))
+    (dolist (p props)
+      (let ((name (car p))
+            (val (cdr p)))
+        (when (and (stringp name)
+                   (string-prefix-p "HERMES_USAGE_" name))
+          (let* ((raw-key (downcase (substring name (length "HERMES_USAGE_"))))
+                 (kw (intern (concat ":" raw-key)))
+                 (decoded (cond
+                           ((null val) nil)
+                           ((string-match-p
+                             "\\`-?[0-9]+\\.?[0-9]*\\(?:[eE][-+]?[0-9]+\\)?\\'"
+                             val)
+                            (string-to-number val))
+                           (t val))))
+            (push kw acc)
+            (push decoded acc)))))
+    (when acc (nreverse acc))))
 
 (defun hermes--parse-attr-line (text)
   "Parse a `:key val :key val …' attribute string into a plist.
@@ -469,11 +491,11 @@ reorder into tools-then-notes."
 (defun hermes--parse-turn-at-point ()
   "Parse the turn heading at point into a `hermes-message' struct.
 Derives text segments from visible buffer structure (USER/SYSTEM body,
-or assistant child Response/Reasoning headings).  Reads usage from the
-:HERMES_META: drawer.  Subagents and images are parsed from visible
-buffer structure (child SUBAGENT headings; `#+attr_*:' + `[[file:…]]'
-lines in user/system bodies).  Returns nil if point is not on a
-recognized turn heading."
+or assistant child Response/Reasoning headings).  Reads usage from
+`HERMES_USAGE_*' heading properties.  Subagents and images are parsed
+from visible buffer structure (child SUBAGENT headings; `#+attr_*:' +
+`[[file:…]]' lines in user/system bodies).  Returns nil if point is
+not on a recognized turn heading."
   (when (and (derived-mode-p 'org-mode)
              (org-at-heading-p))
     (let* ((kind-prop (org-entry-get (point) "HERMES_KIND"))
@@ -483,7 +505,6 @@ recognized turn heading."
                    ("SYSTEM" 'system)
                    (_ nil)))
            (timestamp (org-entry-get (point) "HERMES_TIMESTAMP"))
-           (meta (save-excursion (hermes--extract-meta-drawer)))
            (segs ())
            (subagents ()))
       (when kind
@@ -603,16 +624,15 @@ recognized turn heading."
         (make-hermes-message
          :kind kind
          :segments (vconcat (nreverse segs))
-         :usage (plist-get meta :usage)
+         :usage (save-excursion (hermes--read-usage-properties))
          :subagents (vconcat (nreverse subagents))
          :timestamp timestamp)))))
 
 (defun hermes--parse-subtree-messages ()
   "Parse turn headings under the container at point into a vector of
 `hermes-message' structs.  Scope is the current Org subtree only; the
-container heading itself is skipped.  Derives text, subagents, and
-images from visible buffer structure; reads usage from :HERMES_META:
-drawers."
+container heading itself is skipped.  Derives text, subagents, images,
+and usage from visible buffer structure."
   (let (messages)
     (when (derived-mode-p 'org-mode)
       (save-excursion

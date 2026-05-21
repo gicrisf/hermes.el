@@ -647,7 +647,6 @@ and the rendered buffer contains :TOOL_SUMMARY: in the properties drawer."
               (let ((segs (hermes-message-segments m)))
                 (dotimes (i (length segs))
                   (insert (hermes--format-segment (aref segs i)))))
-              (hermes--insert-meta-drawer m)
               (buffer-substring-no-properties (point-min) (point-max))))))
     (let ((rendered1 (funcall render-msg msg)))
       (should (string-match-p ":TOOL_SUMMARY: listed system uptime" rendered1))
@@ -682,7 +681,6 @@ faithfully on re-render."
               (let ((segs (hermes-message-segments m)))
                 (dotimes (i (length segs))
                   (insert (hermes--format-segment (aref segs i)))))
-              (hermes--insert-meta-drawer m)
               (buffer-substring-no-properties (point-min) (point-max))))))
     (let* ((rendered1 (funcall render-msg msg)))
       (with-temp-buffer
@@ -762,25 +760,6 @@ from heading properties + body.  :preview is always nil on resume."
      (should (null (hermes-tool-preview tool)))
      ;; :summary comes from the heading property, not meta.
      (should (equal "from-property" (hermes-tool-summary tool))))))
-
-(ert-deftest hermes-org-test/parse-turn-images ()
-  "USER turn with images: meta drawer carries the images array."
-  (hermes-org-test--with-buffer
-   "* chat :hermes:
-** U: see this
-:PROPERTIES:
-:HERMES_KIND: USER
-:END:
-see this
-:HERMES_META:
-(:usage nil :tool-calls [] :images [(:path \"/tmp/x.png\" :width 100 :height 50)] :subagents [])
-:END:
-"
-   (hermes-org-test--at-first-turn)
-   (let* ((meta (save-excursion (hermes--extract-meta-drawer)))
-          (imgs (plist-get meta :images)))
-     (should (and (vectorp imgs) (= 1 (length imgs))))
-     (should (equal "/tmp/x.png" (plist-get (aref imgs 0) :path))))))
 
 (ert-deftest hermes-org-test/parse-turn-no-meta ()
   "Turn without a :HERMES_META: drawer parses with nil usage and empty subagents."
@@ -1202,7 +1181,6 @@ partial
               (let ((segs (hermes-message-segments m)))
                 (dotimes (i (length segs))
                   (insert (hermes--format-segment (aref segs i)))))
-              (hermes--insert-meta-drawer m)
               (buffer-substring-no-properties (point-min) (point-max)))))
          (roundtrip
           (lambda (msg)
@@ -1349,7 +1327,6 @@ re-render must be byte-identical to the first render."
               (let ((segs (hermes-message-segments m)))
                 (dotimes (i (length segs))
                   (insert (hermes--format-segment (aref segs i)))))
-              (hermes--insert-meta-drawer m)
               (buffer-substring-no-properties (point-min) (point-max))))))
     (let* ((rendered1 (funcall render-msg msg)))
       (with-temp-buffer
@@ -1467,6 +1444,67 @@ attr_hermes values."
              (should (equal "trailing text"
                             (hermes-segment-content (aref segs 1)))))))
       (delete-file tmp))))
+
+(ert-deftest hermes-org-test/parse-usage-properties-full ()
+  "Reader returns a keyword plist with decoded numerics from
+canonical HERMES_USAGE_* properties."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:HERMES_USAGE_TOKENS_SENT: 1450
+:HERMES_USAGE_TOKENS_RECEIVED: 892
+:HERMES_USAGE_COST: 0.0023
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let ((u (hermes--read-usage-properties)))
+     (should (equal 1450 (plist-get u :tokens_sent)))
+     (should (equal 892 (plist-get u :tokens_received)))
+     (should (equal 0.0023 (plist-get u :cost))))))
+
+(ert-deftest hermes-org-test/parse-usage-properties-unknown-key ()
+  "Unknown HERMES_USAGE_* keys round-trip as downcased keywords."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:HERMES_USAGE_FOO_BAR: 42
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let ((u (hermes--read-usage-properties)))
+     (should (equal 42 (plist-get u :foo_bar))))))
+
+(ert-deftest hermes-org-test/round-trip-usage-via-buffer ()
+  "Writer drops zero/nil counters; reader returns only the survivors."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* turn\n")
+    (goto-char (point-min))
+    (org-back-to-heading)
+    (hermes--write-usage-properties
+     '(:tokens_sent 0 :tokens_received 200 :cost 0.5 :model "gpt-4"))
+    (let ((u (hermes--read-usage-properties)))
+      (should (null (plist-get u :tokens_sent)))   ; zero skipped
+      (should (equal 200 (plist-get u :tokens_received)))
+      (should (equal 0.5 (plist-get u :cost)))
+      ;; Framing key :model dropped (lives in HERMES_MODEL).
+      (should (null (plist-get u :model))))))
+
+(ert-deftest hermes-org-test/round-trip-usage-scientific-notation ()
+  "Scientific-notation cost values round-trip as numbers."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* turn\n")
+    (goto-char (point-min))
+    (org-back-to-heading)
+    (hermes--write-usage-properties '(:cost 1.5e-4))
+    (let ((u (hermes--read-usage-properties)))
+      (should (numberp (plist-get u :cost)))
+      (should (< (abs (- 1.5e-4 (plist-get u :cost))) 1e-9)))))
 
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

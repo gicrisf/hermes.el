@@ -552,9 +552,9 @@ deeper sub-headings (reasoning/response/tools) are skipped."
 (defun hermes--parse-buffer-messages ()
   "Walk the buffer and return a vector of `hermes-message' structs.
 Derives each turn from its visible Org structure: heading properties
-for metadata, body text + `#+attr_org:'/`#+attr_hermes:' lines for
-content (including images), child SUBAGENT headings for subagents,
-and `:HERMES_META:' drawer for usage."
+for metadata and usage, body text + `#+attr_org:'/`#+attr_hermes:'
+lines for content (including images), child SUBAGENT headings for
+subagents."
   (let (messages
         (turn-level (1+ hermes--container-level)))
     (when (derived-mode-p 'org-mode)
@@ -608,15 +608,14 @@ reference.  Verify with the gateway spec before relying on resume."
 
 (defun hermes-inspect-turn ()
   "Pretty-print the parsed turn at point into a temp buffer.
-Shows both the `:HERMES_META:' drawer contents and the parsed
-`hermes-message' struct as visible from `hermes--parse-turn-at-point'."
+Shows the parsed `hermes-message' struct as reconstructed by
+`hermes--parse-turn-at-point' from the visible Org structure."
   (interactive)
-  (let* ((meta (save-excursion (hermes--extract-meta-drawer)))
-         (msg  (save-excursion
-                 (when (derived-mode-p 'org-mode)
-                   (ignore-errors (org-back-to-heading t)))
-                 (hermes--parse-turn-at-point))))
-    (unless (or meta msg)
+  (let ((msg (save-excursion
+               (when (derived-mode-p 'org-mode)
+                 (ignore-errors (org-back-to-heading t)))
+               (hermes--parse-turn-at-point))))
+    (unless msg
       (user-error "No Hermes turn at point"))
     (let ((buf (get-buffer-create "*Hermes Turn Inspector*")))
       (with-current-buffer buf
@@ -624,9 +623,7 @@ Shows both the `:HERMES_META:' drawer contents and the parsed
           (erase-buffer)
           (emacs-lisp-mode)
           (insert ";; Parsed hermes-message:\n")
-          (pp (and msg (hermes--message-to-plist msg)) (current-buffer))
-          (insert "\n;; :HERMES_META: drawer:\n")
-          (pp meta (current-buffer))
+          (pp (hermes--message-to-plist msg) (current-buffer))
           (goto-char (point-min)))
         (setq buffer-read-only t))
       (display-buffer buf))))

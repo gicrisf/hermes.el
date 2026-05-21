@@ -378,28 +378,6 @@ pass-through and never adds escape sequences."
     (should (string-match-p "^- old$" result))
     (should-not (string-match-p "\e\\[" result))))
 
-(ert-deftest hermes-render-test/meta-drawer-contains-clean-text ()
-  "Written `:HERMES_META:' drawer contains no ANSI escape sequences.
-The struct is expected to already be clean (reducer strips on ingest);
-this test asserts the writer doesn't add escapes back."
-  (with-temp-buffer
-    (org-mode)
-    (let* ((tool (make-hermes-tool :id "t1" :name "write_file" :status 'complete
-                                   :inline-diff "a/foo\n+ line"
-                                   :output "ok"
-                                   :summary "wrote 1 file"))
-           (msg (make-hermes-message
-                 :kind 'assistant
-                 :usage '(:tokens_sent 10 :tokens_received 20)
-                 :segments (vector (make-hermes-segment
-                                    :type 'tool :content tool :id "s1")))))
-      (insert "* assistant\n")
-      (hermes--insert-meta-drawer msg))
-    (let ((buf (buffer-string)))
-      (should (string-match-p "^:HERMES_META:" buf))
-      (should-not (string-match-p "\e\\[" buf))
-      (should-not (string-match-p "\033\\[" buf)))))
-
 (ert-deftest hermes-render-test/tool-heading-todo-indicator ()
   "Heading carries a `[N todo]' indicator counting the todos list."
   (let* ((mkht (lambda (s) (let ((h (make-hash-table :test 'equal)))
@@ -477,92 +455,6 @@ property drawer — just heading + drawer."
 
 ;;;; Meta drawer I/O
 
-(ert-deftest hermes-render-test/meta-drawer-insert-and-extract ()
-  "Insert a :HERMES_META: drawer for a turn with metadata and read it back.
-All per-tool fields are body-canonical (name/status/duration/summary
-live in heading properties; output/error/inline-diff/context/todos live
-in #+name'd blocks), so the drawer carries no :tool-calls vector even
-when tool segments are present.  Usage forces the drawer to be emitted."
-  (with-temp-buffer
-    (org-mode)
-    (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                   :output "a\nb" :duration 0.5
-                                   :context "ls -la"
-                                   :summary "ls"))
-           (msg (make-hermes-message
-                 :kind 'assistant
-                 :usage '(:tokens_sent 10 :tokens_received 20)
-                 :segments (vector (make-hermes-segment
-                                    :type 'text :content "Hello" :id "s1")
-                                   (make-hermes-segment
-                                    :type 'tool :content tool :id "s2"))
-                 :timestamp "2024-01-15T10:00:00+0000")))
-      (insert "* assistant\n")
-      (hermes--insert-meta-drawer msg))
-    (goto-char (point-min))
-    (let ((plist (hermes--extract-meta-drawer)))
-      (should plist)
-      (should (plist-get plist :usage))
-      ;; No :tool-calls entry: all per-tool fields are body-canonical.
-      (should-not (plist-member plist :tool-calls)))))
-
-(ert-deftest hermes-render-test/meta-tool-calls-omit-name-status-duration ()
-  "All per-tool fields are body-canonical: name/status/duration/summary
-live in heading PROPERTIES; output/error/inline-diff/context/todos live
-in #+name'd blocks.  The slim meta entry collapses to just :id and is
-skipped, so no :tool-calls vector is written for tool-only turns."
-  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                 :duration 0.5 :output "a\nb" :context "-la"
-                                 :summary "ls"))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1"))))
-         (plist (hermes--message-to-meta-plist msg)))
-    ;; Tool-only turn with no usage/images/subagents produces no meta.
-    (should (null plist))))
-
-(ert-deftest hermes-render-test/meta-omitted-when-tool-has-no-data ()
-  "A turn whose tool carries only :id (no output/context/summary/etc.)
-produces no meta plist at all."
-  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                 :duration 0.1))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1")))))
-    (should-not (hermes--message-to-meta-plist msg))))
-
-(ert-deftest hermes-render-test/meta-drawer-omits-context ()
-  "Meta drawer no longer carries :context — it is body-canonical
-in a `#+name'd #+begin_example block."
-  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                 :duration 0.1 :context "--cached"))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1"))))
-         (meta (hermes--message-to-meta-plist msg))
-         (tcs (plist-get meta :tool-calls)))
-    ;; Either no meta at all (tool only carried :context which is now
-    ;; body-canonical), or a slim entry with no :context key.
-    (should (or (null tcs)
-                (let ((e (aref tcs 0))) (null (plist-get e :context)))))))
-
-(ert-deftest hermes-render-test/meta-drawer-omits-summary ()
-  "Meta drawer no longer carries :summary — it is body-canonical
-in the heading PROPERTIES drawer as :TOOL_SUMMARY:."
-  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                 :duration 0.1 :summary "listed files"))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1"))))
-         (meta (hermes--message-to-meta-plist msg))
-         (tcs (plist-get meta :tool-calls)))
-    (should (or (null tcs)
-                (let ((e (aref tcs 0))) (null (plist-get e :summary)))))))
-
 (ert-deftest hermes-render-test/tool-properties-include-summary ()
   "hermes--tool-properties emits :TOOL_SUMMARY: when summary is set."
   (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
@@ -593,61 +485,9 @@ Duration is full-precision."
                    (cdr (assoc "TOOL_DURATION" props))))
     (should-not (assoc "DURATION" props))))
 
-(ert-deftest hermes-render-test/meta-drawer-drops-zeroed-usage ()
-  "Usage with all-zero counters is dropped; meta drawer omitted if it's
-the only field."
-  (with-temp-buffer
-    (org-mode)
-    (let* ((usage (let ((h (make-hash-table :test 'equal)))
-                    (puthash "input" 0 h)
-                    (puthash "output" 0 h)
-                    (puthash "total" 0 h)
-                    (puthash "model" "deepseek-v4-flash" h)
-                    (puthash "cost_status" "unknown" h)
-                    h))
-           (msg (make-hermes-message
-                 :kind 'assistant
-                 :segments (vector (make-hermes-segment
-                                    :type 'text :content "hi" :id "s1"))
-                 :usage usage)))
-      (insert "* assistant\n")
-      (hermes--insert-meta-drawer msg))
-    (goto-char (point-min))
-    (should-not (re-search-forward "^:HERMES_META:" nil t))))
-
-(ert-deftest hermes-render-test/meta-drawer-keeps-nonzero-usage ()
-  "Usage with at least one non-zero counter is kept; zeros, nils, and
-framing keys (:model, :cost_status, :context_max) are stripped."
-  (with-temp-buffer
-    (org-mode)
-    (let* ((usage (let ((h (make-hash-table :test 'equal)))
-                    (puthash "input" 0 h)
-                    (puthash "output" 42 h)
-                    (puthash "total" 42 h)
-                    (puthash "model" "m1" h)
-                    (puthash "context_max" 1000000 h)
-                    h))
-           (msg (make-hermes-message
-                 :kind 'assistant
-                 :segments (vector (make-hermes-segment
-                                    :type 'text :content "hi" :id "s1"))
-                 :usage usage)))
-      (insert "* assistant\n")
-      (hermes--insert-meta-drawer msg))
-    (goto-char (point-min))
-    (should (re-search-forward "^:HERMES_META:" nil t))
-    (goto-char (point-min))
-    (let* ((plist (hermes--extract-meta-drawer))
-           (u (plist-get plist :usage)))
-      (should (= 42 (plist-get u :output)))
-      (should (= 42 (plist-get u :total)))
-      (should-not (plist-member u :input))
-      (should-not (plist-member u :model))
-      (should-not (plist-member u :context_max)))))
-
 (ert-deftest hermes-render-test/stream-commit-uses-per-turn-usage-not-cumulative ()
-  "Regression: the META drawer must carry the just-completed turn's
-token deltas, not `hermes-state-usage' (the running session total)."
+  "Regression: the assistant heading's HERMES_USAGE_* properties carry
+the just-completed turn's deltas, not the running session total."
   (with-temp-buffer
     (hermes-mode)
     ;; Pre-seed session-cumulative usage as if a prior turn ran.
@@ -672,117 +512,15 @@ token deltas, not `hermes-state-usage' (the running session total)."
                              (puthash "tokens_sent" 7 h)
                              (puthash "tokens_received" 3 h)
                              h)))
-    (let* ((plist (save-excursion
-                    (goto-char (point-min))
-                    (hermes--extract-meta-drawer)))
-           (u (and plist (plist-get plist :usage))))
+    (let ((u (save-excursion
+               (goto-char (point-min))
+               (re-search-forward "^\\*\\* " nil t)
+               (hermes--read-usage-properties))))
       (should u)
       (should (= 7 (plist-get u :tokens_sent)))
       (should (= 3 (plist-get u :tokens_received)))
-      ;; Session-cumulative is still tracked separately and not in the drawer.
+      ;; Session-cumulative is still tracked separately, not on the heading.
       (should (= 1006 (gethash "tokens_sent" (hermes-state-usage hermes--state)))))))
-
-(ert-deftest hermes-render-test/meta-drawer-drops-framing-only-usage ()
-  "Usage carrying only framing (model, context_max, cost_status) and
-zero counters is treated as empty; meta drawer is omitted entirely."
-  (with-temp-buffer
-    (org-mode)
-    (let* ((usage (let ((h (make-hash-table :test 'equal)))
-                    (puthash "input" 0 h)
-                    (puthash "output" 0 h)
-                    (puthash "total" 0 h)
-                    (puthash "context_used" 0 h)
-                    (puthash "model" "deepseek-v4-flash" h)
-                    (puthash "context_max" 1000000 h)
-                    (puthash "cost_status" "unknown" h)
-                    h))
-           (msg (make-hermes-message
-                 :kind 'assistant
-                 :segments (vector (make-hermes-segment
-                                    :type 'text :content "hi" :id "s1"))
-                 :usage usage)))
-      (insert "* assistant\n")
-      (hermes--insert-meta-drawer msg))
-    (goto-char (point-min))
-    (should-not (re-search-forward "^:HERMES_META:" nil t))))
-
-(ert-deftest hermes-render-test/meta-drawer-omitted-when-empty ()
-  "A text-only turn with no tools / images / subagents / usage gets no drawer."
-  (with-temp-buffer
-    (org-mode)
-    (let ((msg (make-hermes-message
-                :kind 'user
-                :segments (vector (make-hermes-segment
-                                   :type 'text :content "Hello" :id "s1"))
-                :timestamp "2024-01-15T10:00:00+0000")))
-      (insert "* user: hi\n")
-      (hermes--insert-meta-drawer msg))
-    (goto-char (point-min))
-    (should-not (re-search-forward "^:HERMES_META:" nil t))))
-
-(ert-deftest hermes-render-test/stream-commit-meta-drawer ()
-  "After stream-commit on a turn that produces tool segments, the buffer
-contains a :HERMES_META: drawer with the tool-calls."
-  (with-temp-buffer
-    (hermes-mode)
-     (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                    :output "out" :summary "Listed files"
-                                    :duration 0.1 :context "-la"))
-           (stream (make-hermes-stream
-                    :segments (vector (make-hermes-segment
-                                       :type 'text :content "Hi" :id "s1")
-                                      (make-hermes-segment
-                                       :type 'tool :content tool :id "s2"))))
-           (old hermes--state)
-           (new (hermes--with-copy hermes--state hermes-state-copy s
-                  (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
-      (hermes--render old new))
-    (let* ((old hermes--state)
-           (stream (hermes-state-stream old))
-           (msg (hermes--message-from-stream
-                 stream '(:tokens_sent 10 :tokens_received 20)))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
-                  (setf (hermes-state-pending-turns s) (vector msg)
-                        (hermes-state-stream s) nil))))
-      (setq hermes--state new)
-      (hermes--render old new))
-    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
-      (should (string-match-p "^:HERMES_META:" body))
-      (should (string-match-p ":usage" body))
-      ;; Tool fields are all body-canonical now — no :tool-calls in meta.
-      (should-not (string-match-p ":tool-calls" body)))))
-
-(ert-deftest hermes-render-test/meta-drawer-auto-folded ()
-  "After insertion, the meta drawer body is hidden by org folding/overlays."
-  (with-temp-buffer
-    (org-mode)
-     (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
-                                    :output "x" :summary "Listed files"
-                                    :duration 0.1 :context "-la"))
-           (msg (make-hermes-message
-                 :kind 'assistant
-                 :usage '(:tokens_sent 10 :tokens_received 20)
-                 :segments (vector (make-hermes-segment
-                                    :type 'tool :content tool :id "s1")))))
-      (insert "* assistant\n")
-      (hermes--insert-meta-drawer msg))
-    (goto-char (point-min))
-    (should (re-search-forward "^:HERMES_META:" nil t))
-    (let* ((body-start (1+ (line-end-position)))
-           (body-end (save-excursion
-                       (re-search-forward "^:END:" nil t)
-                       (line-beginning-position)))
-           (any-invis nil))
-      (save-excursion
-        (goto-char body-start)
-        (while (< (point) body-end)
-          (when (or (get-text-property (point) 'invisible)
-                    (cl-some (lambda (o) (overlay-get o 'invisible))
-                             (overlays-at (point))))
-            (setq any-invis t))
-          (forward-char 1)))
-      (should any-invis))))
 
 (ert-deftest hermes-render-test/pending-turns-drained-correctly ()
   "Render writes pending-turn messages into the buffer and dispatches a clear."
@@ -1263,17 +1001,14 @@ content must end up in the buffer and the snapshot."
 
 (ert-deftest hermes-render-test/commit-refreshes-committed-region ()
   "After stream-commit, the committed assistant region must receive
-indent + drawer-hide + fold passes.  Regression: previously
-`hermes--finalize-assistant-heading' and the drawer insert ran inside
+indent + fold passes.  Regression: previously
+`hermes--finalize-assistant-heading' ran inside
 `with-silent-modifications', stripping `line-prefix' from the
-rewritten heading and leaving any drawer body visible.
-
-Uses a tool segment to force a :HERMES_META: drawer (text-only turns
-omit the drawer entirely under v2)."
+rewritten heading."
   (with-temp-buffer
     (hermes-mode)
     (org-indent-mode 1)
-    ;; Stage 1: stream begins with text + a tool segment so we get a meta drawer.
+    ;; Stage 1: stream begins.
     (let* ((old hermes--state)
             (tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
                                     :output "out" :summary "Listed files"
@@ -1297,17 +1032,6 @@ omit the drawer entirely under v2)."
                         (hermes-state-stream s) nil))))
       (setq hermes--state new)
       (hermes--render old new))
-    ;; The :HERMES_META: drawer body should be hidden (invisible overlay).
-    (goto-char (point-min))
-    (should (re-search-forward "^:HERMES_META:" nil t))
-    (let ((drawer-invis nil))
-      (save-excursion
-        (forward-line 1)
-        (setq drawer-invis
-              (or (get-text-property (point) 'invisible)
-                  (cl-some (lambda (o) (overlay-get o 'invisible))
-                           (overlays-at (point))))))
-      (should drawer-invis))
     ;; The assistant heading line should have a `line-prefix' property,
     ;; proving `org-indent-add-properties' ran on the rewritten heading.
     (goto-char (point-min))
@@ -1526,23 +1250,6 @@ the expected heading, properties, body, and `:HERMES_META:' drawer."
           (setq ok nil)))
       ok)))
 
-(ert-deftest hermes-render-test/meta-drawer-omits-inline-diff ()
-  "Meta drawer no longer carries :inline-diff — it is body-canonical."
-  (let* ((tool (make-hermes-tool :id "t1" :name "write_file"
-                                 :status 'complete
-                                 :inline-diff "+a\n-b"))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1"))))
-         (meta (hermes--message-to-meta-plist msg))
-         (tcs (plist-get meta :tool-calls))
-         (entry (and (vectorp tcs) (> (length tcs) 0) (aref tcs 0))))
-    ;; Either the slim entry is dropped entirely (only :id would remain)
-    ;; or, if present, it has no :inline-diff key.
-    (when entry
-      (should (null (plist-get entry :inline-diff))))))
-
 (ert-deftest hermes-render-test/tool-format-emits-name-marker ()
   "Edit-formatter prefixes diff with `#+name: hermes-tool-<id>-inline-diff'."
   (require 'hermes-tool-formatters)
@@ -1562,52 +1269,6 @@ the expected heading, properties, body, and `:HERMES_META:' drawer."
                 :inline-diff "x"))
          (out (plist-get (hermes-tool-format-edit tool) :body)))
     (should (string-match-p "^#\\+name: hermes-tool-a-b-c-inline-diff$" out))))
-
-(ert-deftest hermes-render-test/meta-drawer-omits-output ()
-  "Meta drawer no longer carries :output — it is body-canonical."
-  (let* ((tool (make-hermes-tool :id "t1" :name "bash" :status 'complete
-                                 :output "hi"))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1"))))
-         (meta (hermes--message-to-meta-plist msg))
-         (tcs (plist-get meta :tool-calls)))
-    (should (or (null tcs)
-                (let ((e (aref tcs 0))) (null (plist-get e :output)))))))
-
-(ert-deftest hermes-render-test/meta-drawer-omits-todos ()
-  "Meta drawer no longer carries :todos — they are body-canonical
-in a `#+name'd Org table."
-  (let* ((ht (let ((h (make-hash-table :test 'equal)))
-               (puthash "status" "completed" h)
-               (puthash "id" "x" h)
-               (puthash "content" "do thing" h)
-               h))
-         (tool (make-hermes-tool
-                :id "t1" :name "TodoWrite" :status 'complete
-                :todos (list ht)))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1"))))
-         (meta (hermes--message-to-meta-plist msg))
-         (tcs (plist-get meta :tool-calls)))
-    (should (or (null tcs)
-                (let ((e (aref tcs 0))) (null (plist-get e :todos)))))))
-
-(ert-deftest hermes-render-test/meta-drawer-omits-error ()
-  "Meta drawer no longer carries :error — it is body-canonical."
-  (let* ((tool (make-hermes-tool :id "t1" :name "bash" :status 'error
-                                 :error "boom"))
-         (msg (make-hermes-message
-               :kind 'assistant
-               :segments (vector (make-hermes-segment
-                                  :type 'tool :content tool :id "s1"))))
-         (meta (hermes--message-to-meta-plist msg))
-         (tcs (plist-get meta :tool-calls)))
-    (should (or (null tcs)
-                (let ((e (aref tcs 0))) (null (plist-get e :error)))))))
 
 (ert-deftest hermes-render-test/tool-format-includes-name-marker-output ()
   "Bash output at terminal status carries `#+name: …-output' before block."

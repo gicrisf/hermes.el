@@ -6,7 +6,7 @@
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).
 >
 > **Recent changes reflected in this version:**
-> - **Org buffer is now the canonical source of truth** — committed history lives in the buffer, not in `hermes-state-messages`. Each turn stores a `:HERMES_RAW:` drawer containing a serialized Elisp plist for round-trip save/load.
+> - **Org buffer is now the canonical source of truth** — committed history lives in the buffer, not in `hermes-state-messages`. Each turn stores a `:HERMES_META:` drawer containing only irreplaceable structured data (tool calls, image metadata, usage, subagents). Text content is parsed back from the visible buffer, so user edits are preserved across resume.
 > - State atom is ephemeral only: connection, in-flight stream, queue, pending prompts, history. No committed message duplication.
 > - Segmented stream rendering: stream state uses typed `segments` vector; renderer uses incremental diffing (only changed tail is replaced, O(delta) cost)
 > - Stream paint throttling with adaptive backoff: 25 Hz for short text, decaying to 0.5 Hz for very long responses

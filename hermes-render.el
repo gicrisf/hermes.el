@@ -190,8 +190,8 @@ buffer) where the container's subtree spans the whole buffer."
         ;; pending-turns AND clears the stream in the same step.  If the
         ;; drain ran first, inserting a user/system message at point-max
         ;; would rear-advance `hermes--bench-end' past the new text, and
-        ;; `stream-commit' would then write the assistant's raw drawer
-        ;; into the wrong subtree.  Sealing the stream first keeps the
+         ;; `stream-commit' would then write the assistant's meta drawer
+         ;; into the wrong subtree.  Sealing the stream first keeps the
         ;; bench-anchored writes contained.
         (let* ((os old-stream-snapshot)
                (ns (hermes-state-stream new))
@@ -289,7 +289,7 @@ buffer) where the container's subtree spans the whole buffer."
         (hermes--refresh-region (marker-position hermes--bench-start)
                                 (marker-position hermes--bench-end)))
       ;; Refresh the assistant region just sealed by `stream-commit'.
-      ;; The heading was rewritten and the raw drawer inserted inside
+      ;; The heading was rewritten and the meta drawer inserted inside
       ;; `with-silent-modifications', which strips/skips the org-indent
       ;; `line-prefix' properties and `hermes--hide-drawers' pass.
       (when committed-region
@@ -1364,7 +1364,7 @@ refresh by the caller, or nil if no bench was active."
   ;; Snapshot the committed region before clearing markers, so the
   ;; caller can run `hermes--refresh-region' on it (after the silent
   ;; block exits) to restore `line-prefix' on the rewritten heading and
-  ;; collapse the just-inserted raw drawer.
+      ;; collapse the just-inserted meta drawer.
   (let ((committed-start (and (markerp hermes--bench-start)
                               (marker-position hermes--bench-start)))
         (committed-end   (and (markerp hermes--bench-end)

@@ -178,7 +178,7 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   ;; head; the recursive render inserts that user heading at point-max
   ;; with stream already nil → `stream-commit' won't have fired yet, so
   ;; when the outer render finally runs, `bench-end' has been rear-
-  ;; advanced past the user content and the assistant raw drawer lands
+     ;; advanced past the user content and the assistant meta drawer lands
   ;; at the end of the buffer.  `add-hook' with nil APPEND *prepends*,
   ;; reversing insertion order — so we explicitly append.
   (add-hook 'hermes-state-change-hook    #'hermes--render        t t)

@@ -79,7 +79,7 @@ reasoning header + answer text, restore separator + input. This is fast enough
 for a 20-line text buffer and eliminates marker-drift issues entirely.
 
 The org buffer still receives the full rich turn (headings, property drawers,
-raw drawers, org IDs) on commit via `hermes--insert-committed-turn`.
+meta drawers, org IDs) on commit via `hermes--insert-committed-turn`.
 
 ### Stream Markers
 

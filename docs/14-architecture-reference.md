@@ -270,16 +270,16 @@ not suppressed by `with-silent-modifications`:
    properties so new sub-headlines get correct virtual indentation.
 3. `hermes--hide-drawers` — collapses `:PROPERTIES:` drawers with plain overlays.
 
-### Raw drawer I/O
+### Meta drawer I/O
 
-Every committed turn gets a `:HERMES_RAW:` drawer at the end of its subtree:
+Every committed turn that carries irreplaceable structured data gets a `:HERMES_META:` drawer at the end of its subtree. Text-only turns omit the drawer entirely.
 
 ```elisp
-(defun hermes--insert-raw-drawer (msg)
-  "Serialize MSG to a plist, insert :HERMES_RAW:...:END:, auto-fold.")
+(defun hermes--insert-meta-drawer (msg)
+  "Serialize irreplaceable metadata from MSG, insert :HERMES_META:...:END:, auto-fold.")
 
-(defun hermes--extract-raw-drawer (&optional pos)
-  "Find :HERMES_RAW: drawer at POS and return its plist.")
+(defun hermes--extract-meta-drawer (&optional pos)
+  "Find :HERMES_META: drawer at POS and return its plist.")
 ```
 
 The drawer is auto-folded after insertion so it stays out of the user's way.
@@ -444,109 +444,94 @@ inheriting from font-lock faces.
 
 ## Org Buffer Structure
 
-### Final hierarchy after each turn
+### Final hierarchy after each turn (v2 format)
 
 \```
 #+TITLE: hermes
 
-* user: what is 2+2?                                    :hermes:
+** U: what is 2+2?
 :PROPERTIES:
-:HERMES_SESSION: a1b2c3d4
-:HERMES_MODEL: nvidia/nemotron-3
+:HERMES_KIND:     USER
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    nvidia/nemotron-3
 :HERMES_TIMESTAMP: 2026-05-14T03:56:12+0200
-:ID: abc123
+:ID:              abc123
 :END:
 what is 2+2?
 
-:HERMES_RAW:
-(:kind user
- :text "what is 2+2?"
- :segments [(:type text :content "what is 2+2?" :id "seg-1")]
- :subagents []
- :usage nil
- :timestamp "2026-05-14T03:56:12+0200")
-:END:
-
-** assistant                                            :hermes:
+** A: Sure, 2+2 is 4.
 :PROPERTIES:
+:HERMES_KIND:     ASSISTANT
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    nvidia/nemotron-3
 :HERMES_TIMESTAMP: 2026-05-14T03:56:12+0200
-:ID: def456
+:ID:              def456
+:END:
+*** Response
+:PROPERTIES:
+:HERMES_KIND: RESPONSE
 :END:
 Sure, 2+2 is 4.
-*** calculator (0.3s)                                 :hermes-tool:
+
+*** DONE calculator (0.3s)
 :PROPERTIES:
-:tool_id:  calc-01
-:status:   complete
-:duration: 0.3
+:HERMES_KIND: TOOL
+:TOOL_ID:     calc-01
 :END:
 #+begin_example
 4
 #+end_example
 
-:HERMES_RAW:
-(:kind assistant
- :text "Sure, 2+2 is 4."
- :segments
- [(:type text :content "Sure, 2+2 is 4." :id "seg-1")
-  (:type tool
-   :content
-   (:id "calc-01" :name "calculator" :status complete
-    :output "4" :error nil :duration 0.3)
-   :id "seg-2")]
- :subagents []
- :usage (:tokens_sent 1450 :tokens_received 892)
- :timestamp "2026-05-14T03:56:12+0200")
+:HERMES_META:
+(:usage (:tokens_sent 1450 :tokens_received 892)
+ :tool-calls [(:id "calc-01" :name "calculator" :status complete :output "4" :duration 0.3)]
+ :images []
+ :subagents [])
 :END:
 
-* user: now 3+3?                                        :hermes:
+** U: now 3+3?
 :PROPERTIES:
-:HERMES_SESSION: a1b2c3d4
-:HERMES_MODEL: openai/gpt-4o       ← model changed
+:HERMES_KIND:     USER
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    openai/gpt-4o       ← model changed
 :HERMES_TIMESTAMP: 2026-05-14T03:57:00+0200
-:ID: ghi789
+:ID:              ghi789
 :END:
 now 3+3?
 
-:HERMES_RAW:
-(:kind user ...)
-:END:
-
-** assistant                                            :hermes:
+** A: It's 6.
 :PROPERTIES:
+:HERMES_KIND:     ASSISTANT
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    openai/gpt-4o
 :HERMES_TIMESTAMP: 2026-05-14T03:57:00+0200
-:ID: jkl012
+:ID:              jkl012
+:END:
+*** Response
+:PROPERTIES:
+:HERMES_KIND: RESPONSE
 :END:
 It's 6.
-
-:HERMES_RAW:
-(:kind assistant ...)
-:END:
 \```
 
 ### Property rules
 
-| Heading | `HERMES_SESSION` | `HERMES_MODEL` | `HERMES_TIMESTAMP` | `:ID:` |
-|---------|:---:|:---:|:---:|:---:|
-| `* user` | yes | yes | yes | `org-id-get-create` |
-| `** assistant` | no | no | yes | `org-id-get-create` |
-| `*** tool` | no | no | no | `org-id-get-create` |
-| `* system` | yes | yes | yes | `org-id-get-create` |
+| Heading | `HERMES_KIND` | `HERMES_SESSION` | `HERMES_MODEL` | `HERMES_TIMESTAMP` | `:ID:` |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| `** user` | `USER` | yes | yes | yes | `org-id-get-create` |
+| `** assistant` | `ASSISTANT` | yes | yes | yes | `org-id-get-create` |
+| `*** Response` | `RESPONSE` | no | no | no | no |
+| `*** Reasoning` | `REASONING` | no | no | no | no |
+| `*** Tool` | `TOOL` | no | no | no | no |
+| `**** Subagent` | `SUBAGENT` | no | no | no | no |
+| `** system` | `SYSTEM` | yes | yes | yes | `org-id-get-create` |
 
 `HERMES_MODEL` can be empty on the first turn if `session.info` hasn't arrived yet.
 
-### Tag rules
-
-| Heading | Tag |
-|---------|-----|
-| `* user` | `:hermes:` |
-| `** assistant` | `:hermes:` |
-| `*** tool` | `:hermes-tool:` |
-| `* system` | `:hermes:` |
-
 ### Heading truncation
 
-- User/system heading shows the first line of message text (no trailing newline)
-- Assistant heading always shows bare `** assistant` (no truncation)
+- User/system heading shows the first line of message text prefixed with `U:` / `S:`
+- Assistant heading shows the first line of response text prefixed with `A:`
 
 ---
 
@@ -557,10 +542,10 @@ is just `(write-region (point-min) (point-max) "chat.org")`.
 
 ### `hermes-resume-buffer`
 
-`M-x hermes-resume-buffer` (in a `hermes-mode` buffer) parses all level-1
-headings, extracts their `:HERMES_RAW:` drawers, reconstructs `hermes-message`
-structs via `hermes--plist-to-message`, and sends them as a `:history` field
-in `session.create`:
+`M-x hermes-resume-buffer` (in a `hermes-mode` buffer) parses all turn
+headings, derives text from the visible buffer structure (Response / Reasoning
+bodies), reads `:HERMES_META:` drawers for irreplaceable structured data, and
+reconstructs `hermes-message` structs for the `:history` field in `session.create`:
 
 ```elisp
 (let* ((history (hermes--parse-buffer-messages))
@@ -578,11 +563,13 @@ before relying on resume.
 
 ### Manual editing safety
 
-`:HERMES_RAW:` drawers are human-readable Elisp plists. A user can manually edit
-the rendered body (e.g. fix a typo in the assistant's response) and the drawer
-will still contain the original raw data. If the drawer is corrupted (unreadable
-plist), `hermes--extract-raw-drawer` returns `nil` and that turn is simply skipped
-during parse — the buffer remains valid.
+`:HERMES_META:` drawers are human-readable Elisp plists carrying only
+irreplaceable structured data. A user can manually edit the rendered body
+(e.g. fix a typo in the assistant's response) and the edit is preserved on
+resume because text is parsed from the visible buffer, not the drawer. If the
+drawer is corrupted (unreadable plist), `hermes--extract-meta-drawer` returns
+`nil` and that turn's structured data is simply absent on resume — the buffer
+remains valid and the text still round-trips.
 
 ## Doom Integration
 
@@ -648,16 +635,22 @@ to prevent Org warnings on fundamental-mode temp buffers in tests.
 
 ### Buffer as canonical source of truth
 
-The state atom no longer stores committed messages. Instead, every turn writes
-a `:HERMES_RAW:` drawer to the Org buffer. Benefits:
+The state atom no longer stores committed messages. Instead, every turn heading
+carries `:HERMES_KIND:` and `:HERMES_TIMESTAMP:` properties; text content is
+parsed back from the visible buffer on resume. A `:HERMES_META:` drawer at the
+end of each turn subtree carries only irreplaceable structured data: tool-call
+records, image metadata, usage, and subagent state. Text-only turns omit the
+drawer entirely. Benefits:
+- No split-brain — user edits to visible text are preserved on resume.
 - No duplication — conversation text exists only once (in the buffer).
 - Natural persistence — save the `.org` file, close Emacs, reopen it.
-- Resume — `hermes-resume-buffer` parses drawers and seeds history into the gateway.
+- Resume — `hermes-resume-buffer` parses visible headings and meta drawers,
+  reconstructs `hermes-message` structs, and seeds history into the gateway.
 
-Trade-off: `hermes-md-to-org` is one-way (markdown→Org). A reverse converter
-would be needed to send raw markdown back to the gateway from a loaded buffer.
-For now, the gateway receives the Elisp plist history, which it may or may
-not understand.
+Trade-off: `hermes-md-to-org` is one-way (markdown→Org). The gateway receives
+Org-formatted text in the history payload. This drift is acceptable for v1
+(gptel precedent); a reverse `hermes-org-to-md` converter can be added later
+if needed.
 
 ### `with-silent-modifications` in render
 

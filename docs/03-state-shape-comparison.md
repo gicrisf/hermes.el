@@ -105,7 +105,7 @@ The TUI splits state across **three nanostore atoms** plus local React state.
   subagents)  ; vector of hermes-subagent — delegation tree
 ```
 
-The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. The full struct is serialized to a `:HERMES_RAW:` Elisp plist drawer at the end of each turn's Org subtree.
+The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. Irreplaceable structured data (tool calls, image metadata, usage, subagents) is serialized to a `:HERMES_META:` Elisp plist drawer at the end of each turn's Org subtree. Text-only turns omit the drawer entirely.
 
 #### Stream State (`hermes-stream`)
 ```elisp
@@ -147,7 +147,7 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
 
 | Aspect | TUI | Emacs |
 |--------|-----|-------|
-| **Canonical history** | `messages` array in TUI state | **Org buffer** — each turn stores a `:HERMES_RAW:` drawer with full Elisp plist |
+| **Canonical history** | `messages` array in TUI state | **Org buffer** — text parsed from visible headings; `:HERMES_META:` drawer carries irreplaceable structured data |
 | **Busy flag** | `uiState.busy` — explicit boolean | Implicit: `(hermes-state-stream state)` |
 | **Activity feed** | `turnState.activity` — array of items, capped at 8 | Not present |
 | **Tool active list** | `turnState.tools` — active tools with context, tokens | `segments` — all tools in stream as typed tool segments |

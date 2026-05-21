@@ -756,7 +756,7 @@ one assistant subtree."
 (ert-deftest hermes-render-test/error-with-stream-no-duplicate ()
   "Error path pushes [assistant, system] and clears stream.
 After render: one assistant subtree, one system heading, system appears
-*after* the assistant turn, and each subtree owns exactly one raw drawer."
+  *after* the assistant turn, and each subtree owns exactly one meta drawer."
   (with-temp-buffer
     (hermes-mode)
     ;; Stage 1: stream begins.

@@ -360,12 +360,13 @@ has a chance to repopulate cleanly."
                   (ignore-errors (org-table-align)))))
           (set-marker end-marker nil))))
     ;; Render inline images for any `[[file:...]]' links in the region.
-    ;; Bound `org-image-actual-width' to the window width so oversized
-    ;; images scale down rather than blowing the buffer geometry.
+    ;; `(NUMBER)' tells Org: honor `#+attr_org: :width …' when present,
+    ;; else cap at the window width so oversized images don't blow the
+    ;; buffer geometry.  A bare number would override the attr line.
     (when (and (derived-mode-p 'org-mode)
                (fboundp 'org-display-inline-images)
                (display-graphic-p))
-      (let ((org-image-actual-width (window-width nil t)))
+      (let ((org-image-actual-width (list (window-width nil t))))
         (ignore-errors
           (org-display-inline-images nil t start end))))))
 
@@ -478,6 +479,16 @@ and assistant turns are all siblings."
         (goto-char hb)
         (ignore-errors (org-id-get-create))
         (goto-char (hermes--session-insert-point)))
+      ;; Insert image segments first (matching the reducer's
+      ;; [image…, text] ordering for user turns), then the joined text.
+      (let ((segs (hermes-message-segments msg)))
+        (when (vectorp segs)
+          (dotimes (i (length segs))
+            (let ((seg (aref segs i)))
+              (when (eq 'image (hermes-segment-type seg))
+                (let ((block (hermes--segment-block seg)))
+                  (unless (string-empty-p block)
+                    (insert block))))))))
       (when (and text (not (string-empty-p text)))
         (insert text)
         (unless (eq (char-before) ?\n) (insert "\n")))
@@ -488,10 +499,10 @@ and assistant turns are all siblings."
 (defun hermes--message-to-meta-plist (msg)
   "Extract irreplaceable metadata from MSG as a plist.
 Returns nil when there is no metadata to persist (text-only turn).
-Stores: usage.  Subagents are body-canonical in child headings.  Images
-are written to the drawer but not yet parsed back (see backlog).
-Text and reasoning live in the visible buffer and are not
-duplicated here.
+Stores: usage.  Subagents and images are body-canonical (subagents as
+child headings; images as `#+attr_org:'/`#+attr_hermes:' + `[[file:…]]'
+in the turn body).  Text and reasoning live in the visible buffer and
+are not duplicated here.
 
 Compactness rules:
 - Drops nil-valued keys from tool-call plists.
@@ -505,8 +516,7 @@ Compactness rules:
                             (t usage)))
          (usage-plist (hermes--meta-usage-or-nil usage-plist))
          (segs (or (hermes-message-segments msg) []))
-         (tool-calls nil)
-         (images nil))
+         (tool-calls nil))
     (dotimes (i (length segs))
       (let ((seg (aref segs i)))
         (pcase (hermes-segment-type seg)
@@ -525,22 +535,9 @@ Compactness rules:
                  ;; Skip the entry entirely when only :id would remain —
                  ;; a "simple" tool fully described by its heading.
                  (when (cddr slim)
-                   (push slim tool-calls))))))
-          ('image
-           (let ((img (hermes-segment-content seg)))
-             (when (listp img)
-               (push (hermes--plist-drop-nils
-                      (list :path (plist-get img :path)
-                            :name (plist-get img :name)
-                            :width (plist-get img :width)
-                            :height (plist-get img :height)
-                            :token-estimate (plist-get img :token-estimate)))
-                     images)))))))
+                   (push slim tool-calls)))))))))
     (let* ((tc-vec (vconcat (nreverse tool-calls)))
-           (img-vec (vconcat (nreverse images)))
            (acc nil))
-      (when (> (length img-vec) 0)
-        (setq acc (nconc (list :images img-vec) acc)))
       (when (> (length tc-vec) 0)
         (setq acc (nconc (list :tool-calls tc-vec) acc)))
       (when usage-plist
@@ -1022,21 +1019,44 @@ from `hermes-tool-formatters' and only inserted when non-empty."
       ('image (hermes--format-image-segment content))
       (_ ""))))
 
+(defun hermes--format-attr-line (keyword plist)
+  "Return `#+attr_KEYWORD: :k1 v1 :k2 v2\\n' for the non-nil entries of PLIST.
+Strings are printed with `prin1' (so they keep their quotes); numbers
+and symbols are formatted with %S.  Returns the empty string when
+PLIST has no non-nil values."
+  (let (parts)
+    (while plist
+      (let ((k (car plist)) (v (cadr plist)))
+        (when v
+          (push (format "%s %s" k
+                        (cond ((stringp v) (prin1-to-string v))
+                              (t (format "%S" v))))
+                parts)))
+      (setq plist (cddr plist)))
+    (if (null parts) ""
+      (format "#+attr_%s: %s\n" keyword
+              (mapconcat #'identity (nreverse parts) " ")))))
+
 (defun hermes--format-image-segment (content)
   "Return an Org `file:' link (or placeholder) for image segment CONTENT.
-CONTENT is a plist with at least :path; :name is used in the missing-file
-placeholder.  The path is used verbatim — no expansion or canonicalization."
-  (let* ((path (and (listp content) (plist-get content :path)))
-         (name (or (and (listp content) (plist-get content :name))
-                   (and path (file-name-nondirectory path))
-                   "image")))
+Precedes the link with:
+- #+attr_org:    :width / :height  (when present — Org honors these natively)
+- #+attr_hermes: :name / :token-estimate  (when present — Hermes-private)
+The path is used verbatim — no expansion or canonicalization."
+  (let* ((path   (and (listp content) (plist-get content :path)))
+         (name   (and (listp content) (plist-get content :name)))
+         (width  (and (listp content) (plist-get content :width)))
+         (height (and (listp content) (plist-get content :height)))
+         (tokens (and (listp content) (plist-get content :token-estimate)))
+         (label  (or (and path (file-name-nondirectory path)) name "image")))
     (cond
      ((and path (file-readable-p path))
-      ;; Inline image link.  `org-display-inline-images' (triggered by
-      ;; the post-commit refresh) renders these into actual images.
-      (format "[[file:%s]]\n" path))
-     (t
-      (format "[image: %s (not found)]\n" name)))))
+      (concat (hermes--format-attr-line "org"
+                                        (list :width width :height height))
+              (hermes--format-attr-line "hermes"
+                                        (list :name name :token-estimate tokens))
+              (format "[[file:%s]]\n" path)))
+     (t (format "[image: %s (not found)]\n" label)))))
 
 (defun hermes--segment-block (seg)
   "Return the buffer bytes for SEG: formatted text + trailing newline.

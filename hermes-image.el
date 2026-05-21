@@ -28,6 +28,16 @@
 (defvar hermes-image--attach-counter 0
   "Monotonic counter for client-side attach ids.")
 
+(defun hermes-image--probe-dimensions (path)
+  "Return (WIDTH . HEIGHT) in pixels for image at PATH, or nil on failure.
+Used as a client-side fallback when the gateway response omits
+dimensions.  Requires a live display frame and a format Emacs can
+decode; degrades silently otherwise."
+  (when (and path (file-readable-p path) (display-images-p))
+    (ignore-errors
+      (let ((img (create-image path)))
+        (and img (image-size img t (selected-frame)))))))
+
 (defun hermes-image--next-attach-id ()
   "Return a fresh client-side attach id (a string).
 Used to match RPC callbacks back to their optimistic placeholder
@@ -144,15 +154,23 @@ or removed with an error status if the gateway rejects the file."
                      (hermes-bench-show-status
                       parent (format "Attach failed: %s" msg) t))))
                 (t
-                 (hermes-dispatch
-                  (cons :attachment-update
-                        (list :attach-id attach-id
-                              :path (or (hermes-image--get result "path") path)
-                              :name (or (hermes-image--get result "name") name)
-                              :width (hermes-image--get result "width")
-                              :height (hermes-image--get result "height")
-                              :token-estimate (hermes-image--get result "token_estimate")
-                              :status 'attached)))
+                 (let* ((rpath (or (hermes-image--get result "path") path))
+                        (w (hermes-image--get result "width"))
+                        (h (hermes-image--get result "height")))
+                   (unless (and w h)
+                     (let ((dims (hermes-image--probe-dimensions rpath)))
+                       (when dims
+                         (setq w (or w (car dims))
+                               h (or h (cdr dims))))))
+                   (hermes-dispatch
+                    (cons :attachment-update
+                          (list :attach-id attach-id
+                                :path rpath
+                                :name (or (hermes-image--get result "name") name)
+                                :width w
+                                :height h
+                                :token-estimate (hermes-image--get result "token_estimate")
+                                :status 'attached))))
                  (hermes-image--repaint-bench parent)))))))))
     attach-id))
 
@@ -223,15 +241,23 @@ error status in the bench paired with PARENT."
        ((and (not error)
              result
              (eq t (hermes-image--get result "attached")))
-        (hermes-dispatch
-         (cons :attachment-update
-               (list :attach-id attach-id
-                     :path (hermes-image--get result "path")
-                     :name (or (hermes-image--get result "name") "clipboard")
-                     :width (hermes-image--get result "width")
-                     :height (hermes-image--get result "height")
-                     :token-estimate (hermes-image--get result "token_estimate")
-                     :status 'attached)))
+        (let* ((rpath (hermes-image--get result "path"))
+               (w (hermes-image--get result "width"))
+               (h (hermes-image--get result "height")))
+          (unless (and w h)
+            (let ((dims (hermes-image--probe-dimensions rpath)))
+              (when dims
+                (setq w (or w (car dims))
+                      h (or h (cdr dims))))))
+          (hermes-dispatch
+           (cons :attachment-update
+                 (list :attach-id attach-id
+                       :path rpath
+                       :name (or (hermes-image--get result "name") "clipboard")
+                       :width w
+                       :height h
+                       :token-estimate (hermes-image--get result "token_estimate")
+                       :status 'attached))))
         (hermes-image--repaint-bench parent))
        (t
         (hermes-dispatch

@@ -1393,6 +1393,28 @@ omit the drawer entirely under v2)."
           (should (string-match-p (regexp-quote (format "[[file:%s]]" tmp)) out)))
       (delete-file tmp))))
 
+(ert-deftest hermes-render-test/format-image-segment-emits-attr-lines ()
+  "When width/height/name/token-estimate are present, the formatter
+emits `#+attr_org:' (width/height) and `#+attr_hermes:' (name/tokens)
+before the file link."
+  (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
+         (seg (make-hermes-segment
+               :type 'image
+               :content (list :path tmp :name "x.png"
+                              :width 100 :height 50
+                              :token-estimate 150)
+               :id "s1")))
+    (unwind-protect
+        (let ((out (hermes--format-segment seg)))
+          (should (string-match-p "^#\\+attr_org: :width 100 :height 50$"
+                                  out))
+          (should (string-match-p
+                   "^#\\+attr_hermes: :name \"x.png\" :token-estimate 150$"
+                   out))
+          (should (string-match-p (regexp-quote (format "[[file:%s]]" tmp))
+                                  out)))
+      (delete-file tmp))))
+
 (ert-deftest hermes-render-test/format-image-segment-missing-file ()
   "Missing path → placeholder including the file name."
   (let* ((seg (make-hermes-segment

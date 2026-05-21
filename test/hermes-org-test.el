@@ -1362,5 +1362,94 @@ re-render must be byte-identical to the first render."
                (rendered2 (funcall render-msg parsed)))
           (should (equal rendered1 rendered2)))))))
 
+(ert-deftest hermes-org-test/parse-attr-line ()
+  "Canonical Org attr-line scanner parses keyword/value pairs."
+  (should (equal '(:width 100 :height 50)
+                 (hermes--parse-attr-line ":width 100 :height 50")))
+  (should (equal '(:name "foo.png" :token-estimate 150)
+                 (hermes--parse-attr-line ":name \"foo.png\" :token-estimate 150")))
+  (should (equal '(:width 100)
+                 (hermes--parse-attr-line ":width 100")))
+  (should (null (hermes--parse-attr-line "")))
+  (should (null (hermes--parse-attr-line "no pairs here"))))
+
+(ert-deftest hermes-org-test/parse-body-segments-mixed ()
+  "Body parser yields text/image/text in order with attrs merged."
+  (let* ((body (concat "some text\n"
+                       "#+attr_org: :width 100 :height 50\n"
+                       "#+attr_hermes: :name \"x.png\" :token-estimate 150\n"
+                       "[[file:/tmp/x.png]]\n"
+                       "more text"))
+         (parts (hermes--parse-body-segments body)))
+    (should (= 3 (length parts)))
+    (should (eq 'text (car (nth 0 parts))))
+    (should (equal "some text" (cdr (nth 0 parts))))
+    (should (eq 'image (car (nth 1 parts))))
+    (let ((img (cdr (nth 1 parts))))
+      (should (equal "/tmp/x.png" (plist-get img :path)))
+      (should (equal 100 (plist-get img :width)))
+      (should (equal 50 (plist-get img :height)))
+      (should (equal "x.png" (plist-get img :name)))
+      (should (equal 150 (plist-get img :token-estimate))))
+    (should (eq 'text (car (nth 2 parts))))
+    (should (equal "more text" (cdr (nth 2 parts))))))
+
+(ert-deftest hermes-org-test/parse-image-no-attrs ()
+  "Bare [[file:…]] line yields image segment with only :path."
+  (let* ((parts (hermes--parse-body-segments "[[file:/tmp/x.png]]"))
+         (img (cdr (nth 0 parts))))
+    (should (= 1 (length parts)))
+    (should (eq 'image (car (nth 0 parts))))
+    (should (equal "/tmp/x.png" (plist-get img :path)))
+    (should (null (plist-get img :width)))
+    (should (null (plist-get img :name)))))
+
+(ert-deftest hermes-org-test/parse-image-attr-org-only ()
+  "User-edited `#+attr_org:' alone (no Hermes side-line) still round-trips."
+  (let* ((body (concat "#+attr_org: :width 200\n"
+                       "[[file:/tmp/y.png]]"))
+         (parts (hermes--parse-body-segments body))
+         (img (cdr (nth 0 parts))))
+    (should (= 1 (length parts)))
+    (should (eq 'image (car (nth 0 parts))))
+    (should (equal "/tmp/y.png" (plist-get img :path)))
+    (should (equal 200 (plist-get img :width)))
+    (should (null (plist-get img :name)))))
+
+(ert-deftest hermes-org-test/round-trip-image-via-buffer ()
+  "Formatter → parser round-trip preserves image segment fields."
+  (require 'hermes-render)
+  (let ((tmp (make-temp-file "hermes-img-" nil ".png")))
+    (unwind-protect
+        (let* ((img (list :path tmp
+                          :name "x.png"
+                          :width 320
+                          :height 200
+                          :token-estimate 99))
+               (formatted (hermes--format-image-segment img)))
+          (hermes-org-test--with-buffer
+           (concat "* chat :hermes:\n"
+                   "** U: hi\n"
+                   ":PROPERTIES:\n"
+                   ":HERMES_KIND: USER\n"
+                   ":END:\n"
+                   formatted
+                   "trailing text\n")
+           (hermes-org-test--at-first-turn)
+           (let* ((msg (hermes--parse-turn-at-point))
+                  (segs (hermes-message-segments msg)))
+             (should (= 2 (length segs)))
+             (should (eq 'image (hermes-segment-type (aref segs 0))))
+             (let ((c (hermes-segment-content (aref segs 0))))
+               (should (equal tmp (plist-get c :path)))
+               (should (equal 320 (plist-get c :width)))
+               (should (equal 200 (plist-get c :height)))
+               (should (equal "x.png" (plist-get c :name)))
+               (should (equal 99 (plist-get c :token-estimate))))
+             (should (eq 'text (hermes-segment-type (aref segs 1))))
+             (should (equal "trailing text"
+                            (hermes-segment-content (aref segs 1)))))))
+      (delete-file tmp))))
+
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

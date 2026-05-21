@@ -552,8 +552,9 @@ deeper sub-headings (reasoning/response/tools) are skipped."
 (defun hermes--parse-buffer-messages ()
   "Walk the buffer and return a vector of `hermes-message' structs.
 Derives each turn from its visible Org structure: heading properties
-for metadata, body text for content, child SUBAGENT headings for
-subagents, and `:HERMES_META:' drawer for usage."
+for metadata, body text + `#+attr_org:'/`#+attr_hermes:' lines for
+content (including images), child SUBAGENT headings for subagents,
+and `:HERMES_META:' drawer for usage."
   (let (messages
         (turn-level (1+ hermes--container-level)))
     (when (derived-mode-p 'org-mode)

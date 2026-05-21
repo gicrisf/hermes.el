@@ -304,6 +304,74 @@ Excludes child headings, :PROPERTIES:, and :HERMES_META: drawers."
           (let ((s (string-trim (buffer-substring-no-properties start end))))
             (and (not (string-empty-p s)) s)))))))
 
+(defun hermes--parse-attr-line (text)
+  "Parse a `:key val :key val …' attribute string into a plist.
+Quoted strings are unquoted; numeric tokens become numbers; bare
+non-numeric tokens become symbols.  Returns nil when TEXT has no
+recognizable pairs.  No `read'/eval — safe on user-edited buffers."
+  (let ((result nil)
+        (pos 0))
+    (while (string-match
+            "[ \t]*\\(:[^ \t]+\\)[ \t]+\\(\"[^\"]*\"\\|[^ \t]+\\)" text pos)
+      (let* ((k (intern (match-string 1 text)))
+             (raw (match-string 2 text))
+             (v (cond
+                 ((string-match-p "\\`\"" raw)
+                  (substring raw 1 -1))
+                 ((string-match-p "\\`-?[0-9]+\\(\\.[0-9]+\\)?\\'" raw)
+                  (string-to-number raw))
+                 (t (intern raw)))))
+        (setq result (plist-put result k v))
+        (setq pos (match-end 0))))
+    result))
+
+(defun hermes--parse-body-segments (text)
+  "Split TEXT into a list of (TYPE . CONTENT) pairs.
+TYPE is `text or `image.  CONTENT is a string for text, a plist for
+image (with :path plus any of :width :height :name :token-estimate).
+Adjacent text lines collapse into one segment joined by newlines.
+Looks back up to two lines from each `[[file:PATH]]' link for
+`#+attr_org:'/`#+attr_hermes:' attributes."
+  (let (segs)
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      (while (not (eobp))
+        (cond
+         ((looking-at "^#\\+attr_\\(?:org\\|hermes\\):")
+          (forward-line 1))
+         ((looking-at "\\[\\[file:\\([^]]+\\)\\]\\]")
+          (let ((path (match-string-no-properties 1))
+                (img nil))
+            (save-excursion
+              (dotimes (_ 2)
+                (when (zerop (forward-line -1))
+                  (when (looking-at
+                         "^#\\+attr_\\(?:org\\|hermes\\):[ \t]*\\(.*\\)$")
+                    (let ((plist (hermes--parse-attr-line
+                                  (match-string-no-properties 1))))
+                      (while plist
+                        (setq img (plist-put img (car plist) (cadr plist)))
+                        (setq plist (cddr plist))))))))
+            (setq img (plist-put img :path path))
+            (push (cons 'image img) segs))
+          (forward-line 1))
+         (t
+          (push (cons 'text (buffer-substring-no-properties
+                             (line-beginning-position)
+                             (line-end-position)))
+                segs)
+          (forward-line 1)))))
+    (let (collapsed)
+      (dolist (seg (nreverse segs))
+        (if (and collapsed
+                 (eq 'text (caar collapsed))
+                 (eq 'text (car seg)))
+            (setcdr (car collapsed)
+                    (concat (cdar collapsed) "\n" (cdr seg)))
+          (push seg collapsed)))
+      (nreverse collapsed))))
+
 (defun hermes--split-subagent-heading (text)
   "Return (GOAL . STATUS) from \"goal (status)\" headline TEXT.
 STATUS is nil if no trailing parenthesized status is found."
@@ -395,8 +463,10 @@ reorder into tools-then-notes."
   "Parse the turn heading at point into a `hermes-message' struct.
 Derives text segments from visible buffer structure (USER/SYSTEM body,
 or assistant child Response/Reasoning headings).  Reads usage from the
-:HERMES_META: drawer.  Subagents are parsed from visible child headings.
-Returns nil if point is not on a recognized turn heading."
+:HERMES_META: drawer.  Subagents and images are parsed from visible
+buffer structure (child SUBAGENT headings; `#+attr_*:' + `[[file:…]]'
+lines in user/system bodies).  Returns nil if point is not on a
+recognized turn heading."
   (when (and (derived-mode-p 'org-mode)
              (org-at-heading-p))
     (let* ((kind-prop (org-entry-get (point) "HERMES_KIND"))
@@ -412,11 +482,22 @@ Returns nil if point is not on a recognized turn heading."
       (when kind
         (cond
          ((memq kind '(user system))
-          (let ((text (hermes--parse-turn-body-text)))
-            (when text
-              (push (make-hermes-segment :type 'text :content text
-                                         :id (hermes--next-segment-id))
-                    segs))))
+          (let* ((body (hermes--parse-turn-body-text))
+                 (parts (and body (hermes--parse-body-segments body))))
+            (dolist (part parts)
+              (pcase (car part)
+                ('text
+                 (let ((s (cdr part)))
+                   (when (and s (not (string-empty-p (string-trim s))))
+                     (push (make-hermes-segment
+                            :type 'text :content s
+                            :id (hermes--next-segment-id))
+                           segs))))
+                ('image
+                 (push (make-hermes-segment
+                        :type 'image :content (cdr part)
+                        :id (hermes--next-segment-id))
+                       segs))))))
          ((eq kind 'assistant)
           (let ((turn-pos (point))
                 (turn-end (save-excursion (org-end-of-subtree t t))))
@@ -522,8 +603,9 @@ Returns nil if point is not on a recognized turn heading."
 (defun hermes--parse-subtree-messages ()
   "Parse turn headings under the container at point into a vector of
 `hermes-message' structs.  Scope is the current Org subtree only; the
-container heading itself is skipped.  Derives text and subagents from
-visible buffer structure; reads usage from :HERMES_META: drawers."
+container heading itself is skipped.  Derives text, subagents, and
+images from visible buffer structure; reads usage from :HERMES_META:
+drawers."
   (let (messages)
     (when (derived-mode-p 'org-mode)
       (save-excursion

@@ -273,18 +273,19 @@ returns the (sid . state) pair for whichever container contains point."
 (require 'hermes-input)
 
 (defun hermes-org-test--seed-subtree-with-drawer (text)
-  "Insert a container + one turn with a `:HERMES_RAW:' drawer for TEXT
-and return a marker at the container heading."
+  "Insert a container + one v2-format USER turn for TEXT.
+Returns a marker at the container heading."
   (insert (format "* Resumed chat :hermes:
 :PROPERTIES:
 :HERMES_SESSION: resumed-1
 :END:
-** %s :user:
-%s
-:HERMES_RAW:
-(:kind user :text \"%s\" :segments [(:type text :content \"%s\" :id \"s1\")] :subagents [] :usage nil :timestamp \"2024-01-15T10:00:00+0000\")
+** U: %s
+:PROPERTIES:
+:HERMES_KIND: USER
+:HERMES_TIMESTAMP: 2024-01-15T10:00:00+0000
 :END:
-" text text text text))
+%s
+" text text))
   (save-excursion
     (goto-char (point-min))
     (re-search-forward "^\\* Resumed chat")
@@ -388,6 +389,317 @@ removed from the alist."
                  (lambda (_t) (setq called t))))
         (hermes--drain-pre-send-queue "ghost-sid"))
       (should-not called))))
+
+;;;; v2 parser: hermes--parse-turn-at-point
+
+(require 'hermes-state)
+(require 'hermes-render)
+
+(defun hermes-org-test--at-first-turn ()
+  "Move point to the first level-2 turn heading.  Assumes the buffer is
+loaded with a `* container :hermes:' + `** turn' shape."
+  (goto-char (point-min))
+  (re-search-forward "^\\*\\* "))
+
+(ert-deftest hermes-org-test/parse-turn-user ()
+  "USER turn: kind, timestamp, single text segment from body."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+:PROPERTIES:
+:HERMES_SESSION: s1
+:END:
+** U: hello there
+:PROPERTIES:
+:HERMES_KIND: USER
+:HERMES_TIMESTAMP: 2026-05-21T10:00:00+0200
+:END:
+hello there
+"
+   (hermes-org-test--at-first-turn)
+   (let ((msg (hermes--parse-turn-at-point)))
+     (should msg)
+     (should (eq 'user (hermes-message-kind msg)))
+     (should (equal "2026-05-21T10:00:00+0200" (hermes-message-timestamp msg)))
+     (let ((segs (hermes-message-segments msg)))
+       (should (= 1 (length segs)))
+       (should (eq 'text (hermes-segment-type (aref segs 0))))
+       (should (equal "hello there"
+                      (hermes-segment-content (aref segs 0))))))))
+
+(ert-deftest hermes-org-test/parse-turn-system ()
+  "SYSTEM turn: kind, body text."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** S: boom
+:PROPERTIES:
+:HERMES_KIND: SYSTEM
+:END:
+gateway connection lost
+"
+   (hermes-org-test--at-first-turn)
+   (let ((msg (hermes--parse-turn-at-point)))
+     (should msg)
+     (should (eq 'system (hermes-message-kind msg)))
+     (should (equal "gateway connection lost"
+                    (hermes-segment-content
+                     (aref (hermes-message-segments msg) 0)))))))
+
+(ert-deftest hermes-org-test/parse-turn-assistant ()
+  "ASSISTANT turn: Response + Reasoning body text + Tool from meta drawer,
+preserving buffer order."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: here
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:HERMES_MODEL: m1
+:END:
+*** Reasoning
+:PROPERTIES:
+:HERMES_KIND: REASONING
+:END:
+thinking it through
+*** DONE ls (0.5s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: t1
+:END:
+listing display
+*** Response
+:PROPERTIES:
+:HERMES_KIND: RESPONSE
+:END:
+the answer
+:HERMES_META:
+(:usage nil :tool-calls [(:id \"t1\" :name \"ls\" :status complete :output \"a\\nb\" :duration 0.5)] :images [] :subagents [])
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let ((msg (hermes--parse-turn-at-point)))
+     (should msg)
+     (should (eq 'assistant (hermes-message-kind msg)))
+     (let ((segs (hermes-message-segments msg)))
+       (should (= 3 (length segs)))
+       ;; Buffer order: Reasoning, Tool, Response.
+       (should (eq 'reasoning (hermes-segment-type (aref segs 0))))
+       (should (eq 'tool (hermes-segment-type (aref segs 1))))
+       (should (eq 'text (hermes-segment-type (aref segs 2))))
+       (should (equal "thinking it through"
+                      (hermes-segment-content (aref segs 0))))
+       (let ((tool (hermes-segment-content (aref segs 1))))
+         (should (hermes-tool-p tool))
+         (should (equal "t1" (hermes-tool-id tool)))
+         (should (equal "ls" (hermes-tool-name tool)))
+         (should (equal "a\nb" (hermes-tool-output tool))))
+       (should (equal "the answer"
+                      (hermes-segment-content (aref segs 2))))))))
+
+(ert-deftest hermes-org-test/parse-turn-images ()
+  "USER turn with images: meta drawer carries the images array."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** U: see this
+:PROPERTIES:
+:HERMES_KIND: USER
+:END:
+see this
+:HERMES_META:
+(:usage nil :tool-calls [] :images [(:path \"/tmp/x.png\" :width 100 :height 50)] :subagents [])
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((meta (save-excursion (hermes--extract-meta-drawer)))
+          (imgs (plist-get meta :images)))
+     (should (and (vectorp imgs) (= 1 (length imgs))))
+     (should (equal "/tmp/x.png" (plist-get (aref imgs 0) :path))))))
+
+(ert-deftest hermes-org-test/parse-turn-no-meta ()
+  "Turn without a :HERMES_META: drawer parses with nil usage and empty subagents."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** U: hi
+:PROPERTIES:
+:HERMES_KIND: USER
+:END:
+hi
+"
+   (hermes-org-test--at-first-turn)
+   (let ((msg (hermes--parse-turn-at-point)))
+     (should msg)
+     (should (null (hermes-message-usage msg)))
+     (should (equal [] (hermes-message-subagents msg))))))
+
+(ert-deftest hermes-org-test/parse-turn-edited-text ()
+  "If the user edits the Response body, the parser returns the edited text."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** Response
+:PROPERTIES:
+:HERMES_KIND: RESPONSE
+:END:
+EDITED BY USER
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (text (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (equal "EDITED BY USER" text)))))
+
+(ert-deftest hermes-org-test/parse-turn-child-kinds ()
+  "Child headings are dispatched by :HERMES_KIND:, not by heading string.
+Unknown / missing kinds (e.g. SUBAGENT, plain headings) are skipped."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** Foo
+:PROPERTIES:
+:HERMES_KIND: SUBAGENT
+:END:
+ignored
+*** Response
+:PROPERTIES:
+:HERMES_KIND: RESPONSE
+:END:
+visible answer
+"
+   (hermes-org-test--at-first-turn)
+   (let ((msg (hermes--parse-turn-at-point)))
+     (should msg)
+     (should (= 1 (length (hermes-message-segments msg))))
+     (should (equal "visible answer"
+                    (hermes-segment-content
+                     (aref (hermes-message-segments msg) 0)))))))
+
+(ert-deftest hermes-org-test/parse-subtree-roundtrip-after-renderer ()
+  "End-to-end: insert a committed turn via the renderer, then parse it
+back via `hermes--parse-turn-at-point' and verify kind + text."
+  (require 'hermes-render)
+  (require 'hermes-mode)
+  (with-temp-buffer
+    (hermes-mode)
+    (let* ((msg (make-hermes-message
+                 :kind 'user
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "ping" :id "s1"))
+                 :timestamp "2026-05-21T10:00:00+0200"))
+           (old hermes--state)
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s) (vector msg)))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    (let* ((msgs (hermes--parse-buffer-messages))
+           (parsed (and (> (length msgs) 0) (aref msgs 0))))
+      (should parsed)
+      (should (eq 'user (hermes-message-kind parsed)))
+      (should (equal "ping"
+                     (hermes-segment-content
+                      (aref (hermes-message-segments parsed) 0)))))))
+
+;;;; v1→v2 migration
+
+(require 'hermes-migrate)
+
+(defvar hermes--container-level)
+
+(defun hermes-org-test--seed-v1-buffer (raw-body)
+  "Insert a container + one v1 USER turn with RAW-BODY in its drawer.
+Returns nothing; leaves point at point-min."
+  (let ((hermes--container-level 1))
+    (erase-buffer)
+    (org-mode)
+    (insert "* old chat :hermes:
+:PROPERTIES:
+:HERMES_SESSION: s1
+:END:
+** U: legacy
+" raw-body "
+")
+    (goto-char (point-min))))
+
+(ert-deftest hermes-org-test/migrate-v1-to-v2-text-only ()
+  "Text-only USER turn → properties set, no meta drawer (empty meta)."
+  (with-temp-buffer
+    (hermes-org-test--seed-v1-buffer
+     ":HERMES_RAW:
+(:kind user :text \"hi\" :segments [(:type text :content \"hi\" :id \"s1\")] :subagents [] :usage nil :timestamp \"2024-01-15T10:00:00+0000\")
+:END:")
+    (let ((hermes--container-level 1))
+      (hermes-migrate-v1-to-v2))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should-not (string-match-p ":HERMES_RAW:" body))
+      (should-not (string-match-p ":HERMES_META:" body))
+      (should (string-match-p ":HERMES_KIND: USER" body))
+      (should (string-match-p ":HERMES_TIMESTAMP: 2024-01-15T10:00:00\\+0000" body)))))
+
+(ert-deftest hermes-org-test/migrate-v1-to-v2-with-tools ()
+  "Tool segments → meta drawer carries tool-calls."
+  (with-temp-buffer
+    (hermes-org-test--seed-v1-buffer
+     ":HERMES_RAW:
+(:kind assistant :segments [(:type tool :content (:id \"t1\" :name \"ls\" :status complete :output \"a\\nb\" :duration 0.5) :id \"sg1\")] :subagents [] :usage nil :timestamp nil)
+:END:")
+    (let ((hermes--container-level 1))
+      (hermes-migrate-v1-to-v2))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should-not (string-match-p ":HERMES_RAW:" body))
+      (should (string-match-p ":HERMES_META:" body))
+      (should (string-match-p ":HERMES_KIND: ASSISTANT" body))
+      (should (string-match-p ":tool-calls" body))
+      (should (string-match-p "\"t1\"" body)))))
+
+(ert-deftest hermes-org-test/migrate-v1-to-v2-with-images ()
+  "Image segments → meta drawer carries images array."
+  (with-temp-buffer
+    (hermes-org-test--seed-v1-buffer
+     ":HERMES_RAW:
+(:kind user :segments [(:type image :content (:path \"/tmp/x.png\" :name \"x.png\" :width 100 :height 50) :id \"img1\")] :subagents [] :usage nil :timestamp nil)
+:END:")
+    (let ((hermes--container-level 1))
+      (hermes-migrate-v1-to-v2))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should-not (string-match-p ":HERMES_RAW:" body))
+      (should (string-match-p ":HERMES_META:" body))
+      (should (string-match-p ":images" body))
+      (should (string-match-p "/tmp/x.png" body)))))
+
+(ert-deftest hermes-org-test/migrate-v1-to-v2-with-subagents ()
+  "Subagents → meta drawer carries subagents array."
+  (with-temp-buffer
+    (hermes-org-test--seed-v1-buffer
+     ":HERMES_RAW:
+(:kind assistant :segments [] :subagents [(:id \"sa1\" :goal \"analyze\" :status complete :thinking nil :tools [] :notes [] :summary \"done\" :duration 1.0)] :usage nil :timestamp nil)
+:END:")
+    (let ((hermes--container-level 1))
+      (hermes-migrate-v1-to-v2))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should-not (string-match-p ":HERMES_RAW:" body))
+      (should (string-match-p ":HERMES_META:" body))
+      (should (string-match-p ":subagents" body))
+      (should (string-match-p "\"sa1\"" body)))))
+
+(ert-deftest hermes-org-test/migrate-v1-to-v2-idempotent ()
+  "Running the migration on an already-migrated buffer is a no-op."
+  (with-temp-buffer
+    (hermes-org-test--seed-v1-buffer
+     ":HERMES_RAW:
+(:kind assistant :segments [(:type tool :content (:id \"t1\" :name \"ls\" :status complete :output \"x\" :duration 0.1) :id \"sg1\")] :subagents [] :usage nil :timestamp nil)
+:END:")
+    (let ((hermes--container-level 1))
+      (let ((n1 (hermes-migrate-v1-to-v2)))
+        (should (= 1 n1)))
+      (let ((after-first (buffer-substring-no-properties (point-min) (point-max)))
+            (n2 (hermes-migrate-v1-to-v2)))
+        (should (= 0 n2))
+        ;; Buffer unchanged on second pass.
+        (should (equal after-first
+                       (buffer-substring-no-properties (point-min) (point-max))))))))
 
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

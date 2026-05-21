@@ -100,8 +100,9 @@ participate in the comparison.")
 
 (defun hermes--build-history-text ()
   "Return a text block reconstructed from buffer history, or nil.
-Reads `:HERMES_RAW:' drawers, formats each turn as a \"Role: text\"
-pair, and truncates to the last `hermes-history-seed-max-turns' turns.
+Parses each turn from visible buffer structure plus `:HERMES_META:'
+drawers, formats each turn as a \"Role: text\" pair, and truncates to
+the last `hermes-history-seed-max-turns' turns.
 Returns nil when the buffer has no committed turns or every turn's
 text is empty."
   (let* ((messages (hermes--parse-buffer-messages))

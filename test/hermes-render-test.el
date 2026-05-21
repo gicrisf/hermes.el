@@ -445,10 +445,131 @@ property drawer — just heading + drawer."
       ;; by an outline fold overlay.
       (should (hermes-render-test--invisible-at reasoning-pos)))))
 
-;;;; Raw drawer I/O
+;;;; Meta drawer I/O
 
-(ert-deftest hermes-render-test/raw-drawer-insert-and-extract ()
-  "Insert a :HERMES_RAW: drawer and read the plist back."
+(ert-deftest hermes-render-test/meta-drawer-insert-and-extract ()
+  "Insert a :HERMES_META: drawer for a turn with metadata and read it back."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                   :output "a\nb" :duration 0.5))
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "Hello" :id "s1")
+                                   (make-hermes-segment
+                                    :type 'tool :content tool :id "s2"))
+                 :timestamp "2024-01-15T10:00:00+0000")))
+      (insert "* assistant\n")
+      (hermes--insert-meta-drawer msg))
+    (goto-char (point-min))
+    (let ((plist (hermes--extract-meta-drawer)))
+      (should plist)
+      (let ((tcs (plist-get plist :tool-calls)))
+        (should (and (vectorp tcs) (= 1 (length tcs))))
+        (should (equal "t1" (plist-get (aref tcs 0) :id)))
+        (should (equal "ls" (plist-get (aref tcs 0) :name)))))))
+
+(ert-deftest hermes-render-test/meta-drawer-drops-nil-tool-fields ()
+  "Tool plist in :tool-calls omits nil-valued slots."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                   :duration 0.1))   ; output / context / etc. nil
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'tool :content tool :id "s1")))))
+      (insert "* assistant\n")
+      (hermes--insert-meta-drawer msg))
+    (goto-char (point-min))
+    (let* ((plist (hermes--extract-meta-drawer))
+           (tc (aref (plist-get plist :tool-calls) 0)))
+      (should-not (plist-member tc :output))
+      (should-not (plist-member tc :context))
+      (should-not (plist-member tc :error))
+      (should-not (plist-member tc :preview))
+      (should (equal "t1" (plist-get tc :id)))
+      (should (equal 'complete (plist-get tc :status))))))
+
+(ert-deftest hermes-render-test/meta-drawer-drops-zeroed-usage ()
+  "Usage with all-zero counters is dropped; meta drawer omitted if it's
+the only field."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((usage (let ((h (make-hash-table :test 'equal)))
+                    (puthash "input" 0 h)
+                    (puthash "output" 0 h)
+                    (puthash "total" 0 h)
+                    (puthash "model" "deepseek-v4-flash" h)
+                    (puthash "cost_status" "unknown" h)
+                    h))
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "hi" :id "s1"))
+                 :usage usage)))
+      (insert "* assistant\n")
+      (hermes--insert-meta-drawer msg))
+    (goto-char (point-min))
+    (should-not (re-search-forward "^:HERMES_META:" nil t))))
+
+(ert-deftest hermes-render-test/meta-drawer-keeps-nonzero-usage ()
+  "Usage with at least one non-zero counter is kept; zeros, nils, and
+framing keys (:model, :cost_status, :context_max) are stripped."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((usage (let ((h (make-hash-table :test 'equal)))
+                    (puthash "input" 0 h)
+                    (puthash "output" 42 h)
+                    (puthash "total" 42 h)
+                    (puthash "model" "m1" h)
+                    (puthash "context_max" 1000000 h)
+                    h))
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "hi" :id "s1"))
+                 :usage usage)))
+      (insert "* assistant\n")
+      (hermes--insert-meta-drawer msg))
+    (goto-char (point-min))
+    (should (re-search-forward "^:HERMES_META:" nil t))
+    (goto-char (point-min))
+    (let* ((plist (hermes--extract-meta-drawer))
+           (u (plist-get plist :usage)))
+      (should (= 42 (plist-get u :output)))
+      (should (= 42 (plist-get u :total)))
+      (should-not (plist-member u :input))
+      (should-not (plist-member u :model))
+      (should-not (plist-member u :context_max)))))
+
+(ert-deftest hermes-render-test/meta-drawer-drops-framing-only-usage ()
+  "Usage carrying only framing (model, context_max, cost_status) and
+zero counters is treated as empty; meta drawer is omitted entirely."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((usage (let ((h (make-hash-table :test 'equal)))
+                    (puthash "input" 0 h)
+                    (puthash "output" 0 h)
+                    (puthash "total" 0 h)
+                    (puthash "context_used" 0 h)
+                    (puthash "model" "deepseek-v4-flash" h)
+                    (puthash "context_max" 1000000 h)
+                    (puthash "cost_status" "unknown" h)
+                    h))
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'text :content "hi" :id "s1"))
+                 :usage usage)))
+      (insert "* assistant\n")
+      (hermes--insert-meta-drawer msg))
+    (goto-char (point-min))
+    (should-not (re-search-forward "^:HERMES_META:" nil t))))
+
+(ert-deftest hermes-render-test/meta-drawer-omitted-when-empty ()
+  "A text-only turn with no tools / images / subagents / usage gets no drawer."
   (with-temp-buffer
     (org-mode)
     (let ((msg (make-hermes-message
@@ -457,28 +578,54 @@ property drawer — just heading + drawer."
                                    :type 'text :content "Hello" :id "s1"))
                 :timestamp "2024-01-15T10:00:00+0000")))
       (insert "* user: hi\n")
-      (hermes--insert-raw-drawer msg))
+      (hermes--insert-meta-drawer msg))
     (goto-char (point-min))
-    (let ((plist (hermes--extract-raw-drawer)))
-      (should plist)
-      (should (eq 'user (plist-get plist :kind)))
-      (should (equal "Hello" (plist-get plist :text))))))
+    (should-not (re-search-forward "^:HERMES_META:" nil t))))
 
-(ert-deftest hermes-render-test/raw-drawer-auto-folded ()
-  "After insertion, the drawer body is hidden by org folding/overlays."
+(ert-deftest hermes-render-test/stream-commit-meta-drawer ()
+  "After stream-commit on a turn that produces tool segments, the buffer
+contains a :HERMES_META: drawer with the tool-calls."
+  (with-temp-buffer
+    (hermes-mode)
+    (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                   :output "out" :duration 0.1))
+           (stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content "Hi" :id "s1")
+                                      (make-hermes-segment
+                                       :type 'tool :content tool :id "s2"))))
+           (old hermes--state)
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-stream s) stream))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    (let* ((old hermes--state)
+           (stream (hermes-state-stream old))
+           (msg (hermes--message-from-stream stream nil))
+           (new (hermes--with-copy hermes--state hermes-state-copy s
+                  (setf (hermes-state-pending-turns s) (vector msg)
+                        (hermes-state-stream s) nil))))
+      (setq hermes--state new)
+      (hermes--render old new))
+    (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "^:HERMES_META:" body))
+      (should (string-match-p ":tool-calls" body))
+      (should (string-match-p "\"t1\"" body)))))
+
+(ert-deftest hermes-render-test/meta-drawer-auto-folded ()
+  "After insertion, the meta drawer body is hidden by org folding/overlays."
   (with-temp-buffer
     (org-mode)
-    (let ((msg (make-hermes-message
-                :kind 'user
-                :segments (vector (make-hermes-segment
-                                   :type 'text :content "x" :id "s1")))))
-      (insert "* user: hi\n")
-      (hermes--insert-raw-drawer msg))
-    ;; Either an org-fold invisibility region covers the drawer body, or
-    ;; the body line carries an invisible text/overlay property.  Look
-    ;; for any invisible coverage somewhere between :HERMES_RAW: and :END:.
+    (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                   :output "x" :duration 0.1))
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'tool :content tool :id "s1")))))
+      (insert "* assistant\n")
+      (hermes--insert-meta-drawer msg))
     (goto-char (point-min))
-    (should (re-search-forward "^:HERMES_RAW:" nil t))
+    (should (re-search-forward "^:HERMES_META:" nil t))
     (let* ((body-start (1+ (line-end-position)))
            (body-end (save-excursion
                        (re-search-forward "^:END:" nil t)
@@ -513,9 +660,11 @@ property drawer — just heading + drawer."
       (setq hermes--state new)
       (hermes--render old new))
     ;; Buffer now contains a `** U: ping' heading with the body.
+    ;; Text-only user turn → no :HERMES_META: drawer (intentional).
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       (should (string-match-p "^\\*\\* U: ping" body))
-      (should (string-match-p ":HERMES_RAW:" body)))
+      (should (string-match-p ":HERMES_KIND: USER" body))
+      (should-not (string-match-p ":HERMES_RAW:" body)))
     ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
@@ -534,7 +683,7 @@ property drawer — just heading + drawer."
 The reducer pushes the assistant msg to pending-turns AND clears the
 stream in the same step.  The renderer must seal the streaming turn
 via stream-commit and skip the assistant in the drain, leaving exactly
-one assistant subtree with exactly one :HERMES_RAW: drawer."
+one assistant subtree."
   (with-temp-buffer
     (hermes-mode)
     ;; Stage 1: stream begins and accumulates text.
@@ -562,7 +711,9 @@ one assistant subtree with exactly one :HERMES_RAW: drawer."
     ;; the assistant turn uses an `A:' prefix instead.
     (should (= 1 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
-    (should (= 1 (hermes-render-test--count "^:HERMES_RAW:")))
+    ;; Text-only assistant turn → no :HERMES_META: drawer.
+    (should (= 0 (hermes-render-test--count "^:HERMES_META:")))
+    (should (= 0 (hermes-render-test--count "^:HERMES_RAW:")))
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
 
 (ert-deftest hermes-render-test/error-with-stream-no-duplicate ()
@@ -603,7 +754,9 @@ After render: one assistant subtree, one system heading, system appears
     (should (= 1 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
     (should (= 1 (hermes-render-test--count "^\\*\\* S: ")))
-    (should (= 2 (hermes-render-test--count "^:HERMES_RAW:")))
+    ;; Text-only turns → no :HERMES_META: drawers.
+    (should (= 0 (hermes-render-test--count "^:HERMES_META:")))
+    (should (= 0 (hermes-render-test--count "^:HERMES_RAW:")))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       (should (< (string-match "^\\*\\* A: " body)
                  (string-match "^\\*\\* S: " body))))))
@@ -632,8 +785,8 @@ but still clears the vector via :pending-turns-clear."
 
 (ert-deftest hermes-render-test/queue-drain-order-correct ()
   "Realistic reproduction: user enqueues while busy, then `message.complete'
-fires.  The assistant raw drawer must land *before* the dequeued user
-heading — i.e. inside the assistant subtree, not after it."
+fires.  The dequeued user heading must land *after* the assistant
+subtree has been fully committed (heading + body), not interleaved."
   (cl-letf (((symbol-function 'hermes-rpc-request)
              (lambda (&rest _) nil))
             ((symbol-function 'hermes-rpc-live-p)
@@ -657,27 +810,19 @@ heading — i.e. inside the assistant subtree, not after it."
       ;; Stage 4 — message.complete: stream-commit, then drain hook fires
       ;; and dequeues + sends "next" (which renders as a `* user:' heading).
       (hermes-dispatch (cons "message.complete" nil))
-      ;; Inspect buffer.  Expected order: assistant heading → assistant
-      ;; raw drawer → user heading for "next" → user raw drawer for "next".
+      ;; Inspect buffer.  Expected order: assistant heading appears
+      ;; before the dequeued user heading; assistant's response body
+      ;; (the streamed "Hello") sits between them.
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
-             ;; All turns are level-2 siblings under the level-1 session
-             ;; container.  The assistant heading is the only `**' line
-             ;; carrying an `A:' prefix; the user turns carry `U:'.
              (assist-head (string-match "^\\*\\* A: " body))
              (user-next (string-match "^\\*\\* U: next" body))
-             ;; Find the *assistant's* raw drawer: the first :HERMES_RAW:
-             ;; that appears after the assistant heading.
-             (raw-after-assistant
-              (and assist-head
-                   (string-match ":HERMES_RAW:" body assist-head))))
+             (resp-body (and assist-head
+                             (string-match "Hello" body assist-head))))
         (should assist-head)
         (should user-next)
-        (should raw-after-assistant)
-        ;; The assistant's raw drawer must sit *between* its heading and
-        ;; the dequeued user heading.  If the drawer slid past `user-next',
-        ;; we have the corruption described in PLAN.md.
-        (should (< assist-head raw-after-assistant))
-        (should (< raw-after-assistant user-next))))))
+        (should resp-body)
+        (should (< assist-head resp-body))
+        (should (< resp-body user-next))))))
 
 ;;;; Relative turn levels
 
@@ -976,18 +1121,24 @@ content must end up in the buffer and the snapshot."
 (ert-deftest hermes-render-test/commit-refreshes-committed-region ()
   "After stream-commit, the committed assistant region must receive
 indent + drawer-hide + fold passes.  Regression: previously
-`hermes--finalize-assistant-heading' and the raw-drawer insert ran
-inside `with-silent-modifications', stripping `line-prefix' from the
-rewritten heading and leaving the drawer body visible."
+`hermes--finalize-assistant-heading' and the drawer insert ran inside
+`with-silent-modifications', stripping `line-prefix' from the
+rewritten heading and leaving any drawer body visible.
+
+Uses a tool segment to force a :HERMES_META: drawer (text-only turns
+omit the drawer entirely under v2)."
   (with-temp-buffer
     (hermes-mode)
     (org-indent-mode 1)
-    ;; Stage 1: stream begins, accumulates text.
+    ;; Stage 1: stream begins with text + a tool segment so we get a meta drawer.
     (let* ((old hermes--state)
+           (tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                   :output "out" :duration 0.1))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
-                                       :type 'text :content "Hello"
-                                       :id "s1"))))
+                                       :type 'text :content "Hello" :id "s1")
+                                      (make-hermes-segment
+                                       :type 'tool :content tool :id "s2"))))
            (new (hermes--with-copy hermes--state hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
       (setq hermes--state new)
@@ -1001,9 +1152,9 @@ rewritten heading and leaving the drawer body visible."
                         (hermes-state-stream s) nil))))
       (setq hermes--state new)
       (hermes--render old new))
-    ;; The :HERMES_RAW: drawer body should be hidden (invisible overlay).
+    ;; The :HERMES_META: drawer body should be hidden (invisible overlay).
     (goto-char (point-min))
-    (should (re-search-forward "^:HERMES_RAW:" nil t))
+    (should (re-search-forward "^:HERMES_META:" nil t))
     (let ((drawer-invis nil))
       (save-excursion
         (forward-line 1)
@@ -1119,7 +1270,7 @@ rewritten heading and leaving the drawer body visible."
 
 (ert-deftest hermes-render-test/bg-task-buffer-created-on-complete ()
   "`hermes--render-bg-task' creates a `*hermes-bg:sid:tid*' buffer with
-the expected heading, properties, body, and `:HERMES_RAW:' drawer."
+the expected heading, properties, body, and `:HERMES_META:' drawer."
   (let* ((task (make-hermes-bg-task
                 :task-id "t42" :prompt "analyze logs"
                 :status 'complete :result "found 3 errors"
@@ -1137,7 +1288,7 @@ the expected heading, properties, body, and `:HERMES_RAW:' drawer."
           (should (string-match-p ":HERMES_TASK_ID: t42" text))
           (should (string-match-p ":HERMES_STATUS: complete" text))
           (should (string-match-p "found 3 errors" text))
-          (should (string-match-p ":HERMES_RAW:" text))
+          (should (string-match-p ":HERMES_META:" text))
           (should (string-match-p ":task-id \"t42\"" text))))
       (kill-buffer buf))))
 

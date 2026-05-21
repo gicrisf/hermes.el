@@ -9,8 +9,10 @@ Communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway`.
 hermes-rpc.el        JSON-RPC 2.0 transport (make-process, NDJSON, pending callback map)
 hermes-events.el     Event/method name registry (single source of truth)
 hermes-state.el      TEA-style ephemeral state atoms + pure reducers (in-flight stream, queue, pending)
-hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling, :HERMES_RAW: drawers)
+hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling, :HERMES_META: drawers)
 hermes-mode.el       Org-mode derived major mode, event routing, entry point, buffer parser
+hermes-org.el        Heading-scoped session helpers + v2 buffer-canonical turn parser
+hermes-migrate.el    v1 (:HERMES_RAW:) → v2 (:HERMES_META:) file format migration
 hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
@@ -22,12 +24,21 @@ hermes-config.el     Wrappers for config.get/set, toolsets.list, tools.configure
 hermes-bg.el         Background task buffers (`/bg` prompts run async in dedicated Org buffers)
 ```
 
-**Key design principle:** The Org buffer is the canonical source of truth for
-committed conversation history. The state atom (`hermes-state`) only holds
-ephemeral data: connection, in-flight stream, pending prompts, queue, and
-minibuffer history. Every committed turn stores a `:HERMES_RAW:` drawer
-(containing a serialized Elisp plist) at the end of its subtree, enabling
-round-trip save/load/resume without a separate serialization format.
+**Key design principle:** The visible Org buffer is the canonical source of
+truth for committed conversation history. The state atom (`hermes-state`)
+only holds ephemeral data: connection, in-flight stream, pending prompts,
+queue, and minibuffer history. Every turn heading carries `:HERMES_KIND:`
+(USER / ASSISTANT / SYSTEM) and `:HERMES_TIMESTAMP:` properties; assistant
+child headings (Response / Reasoning / Tool / Subagent) carry their own
+`:HERMES_KIND:` markers. Text content is parsed back from the visible
+buffer, so user edits to prose are preserved across resume.
+
+A `:HERMES_META:` drawer at the end of each turn subtree carries only the
+irreplaceable structured data: tool-call records, image metadata, usage,
+and subagent state. Text-only turns omit the drawer entirely. Files
+written in the legacy v1 format (`:HERMES_RAW:` drawers, pre-v2.0) remain
+readable as plain Org but can no longer be resumed directly; run
+`M-x hermes-migrate-v1-to-v2` to upgrade them in place.
 
 **Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
 bench (`*hermes-bench:<sid>*`) — a 20-line side-window with structured zones
@@ -169,8 +180,10 @@ Disable at runtime with `(setq hermes-notifications-enabled nil)`.
 
 ### Debugging
 
-- `M-x hermes-inspect-turn` — pretty-print the `:HERMES_RAW:` drawer
-  at point into a temporary buffer.
+- `M-x hermes-inspect-turn` — pretty-print the parsed `hermes-message'
+  and its `:HERMES_META:` drawer at point into a temporary buffer.
+- `M-x hermes-migrate-v1-to-v2` — one-shot upgrade of a v1 buffer
+  (`:HERMES_RAW:` drawers) to the v2 format.
 - `M-x hermes-debug-state` — inspect the live state atom for the
   current session.
 
@@ -251,7 +264,7 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (255/255 green)
+eldev test                           # run all ERT tests (271/271 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
@@ -268,13 +281,14 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 
 | File | Tests | Scope |
 |------|-------|-------|
-| `test/hermes-state-test.el` | 78 | Reducers (persistent + UI) + serialization round-trip + background tasks |
-| `test/hermes-render-test.el` | 30 | Segmented renderer + subagent blocks + raw drawer I/O + throttling + incremental diff + post-commit refresh + background task rendering |
+| `test/hermes-state-test.el` | 79 | Reducers (persistent + UI) + serialization round-trip + background tasks |
+| `test/hermes-render-test.el` | 33 | Segmented renderer + subagent blocks + meta drawer I/O + throttling + incremental diff + post-commit refresh + background task rendering |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
 | `test/hermes-input-test.el` | 7 | History seed: builder truncation, sid-based guard, slash-command exemption, all three prompt.submit paths |
+| `test/hermes-org-test.el` | 36 | Session lookup + heading containers + v2 turn parser + v1→v2 migration |
 | `test/hermes-bg-test.el` | 4 | Background task buffers, list mode, kill-all |
 
-**255/255 green, 0 unexpected** — all tests pass.
+**271/271 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

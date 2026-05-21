@@ -60,8 +60,8 @@
 ;;;; Structs
 
 (cl-defstruct (hermes-segment (:copier hermes-segment-copy))
-  type        ; 'text | 'thinking | 'reasoning | 'tool | 'system
-  content     ; string for text/thinking/reasoning/system; hermes-tool for tool segments
+  type        ; 'text | 'reasoning | 'tool | 'system | 'image
+  content     ; string for text/reasoning/system; hermes-tool for tool; image plist for image
   id)         ; unique segment id (for stable updates)
 
 (cl-defstruct (hermes-tool (:copier hermes-tool-copy))
@@ -493,7 +493,6 @@ hash-tables (usage)."
                        ((null ts) nil)
                        (t (format-time-string "%Y-%m-%dT%H:%M:%S%z" ts)))))
     (list :kind (hermes-message-kind msg)
-          :text (hermes--message-text msg)
           :segments seg-plists
           :subagents sa-plists
           :usage usage-plist

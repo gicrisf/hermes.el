@@ -20,6 +20,7 @@
         "hermes-image.el"
         "hermes-project.el"
         "hermes-bg.el"
+        "hermes-migrate.el"
         "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"

@@ -535,34 +535,34 @@ so turn insertion follows the relative depth."
 (defun hermes--buffer-message-count ()
   "Count committed turns in the current buffer.
 A turn is a heading one level below the session container carrying a
-`:HERMES_RAW:' drawer.  The container itself and any deeper sub-headings
-\(reasoning/response/tools) are skipped."
+recognized `:HERMES_KIND:' property.  The container itself and any
+deeper sub-headings (reasoning/response/tools) are skipped."
   (let ((count 0)
         (turn-level (1+ hermes--container-level)))
     (when (derived-mode-p 'org-mode)
       (org-map-entries
        (lambda ()
          (when (and (= turn-level (org-current-level))
-                    (save-excursion (hermes--extract-raw-drawer)))
+                    (let ((k (org-entry-get (point) "HERMES_KIND")))
+                      (member k '("USER" "ASSISTANT" "SYSTEM"))))
            (cl-incf count)))
        nil nil 'file))
     count))
 
 (defun hermes--parse-buffer-messages ()
   "Walk the buffer and return a vector of `hermes-message' structs.
-Reads `:HERMES_RAW:' drawers under turn headings (direct children of
-the session container, i.e. `hermes--container-level' + 1).  The
-heading text itself is ignored, so older `** user: …' headings resume
-the same as the content-first format (`** … :user:')."
+Derives each turn from its visible Org structure: heading properties
+for metadata, body text for content, `:HERMES_META:' drawer for tool
+calls, usage, images, and subagents."
   (let (messages
         (turn-level (1+ hermes--container-level)))
     (when (derived-mode-p 'org-mode)
       (org-map-entries
        (lambda ()
          (when (= turn-level (org-current-level))
-           (let ((raw (save-excursion (hermes--extract-raw-drawer))))
-             (when raw
-               (push (hermes--plist-to-message raw) messages)))))
+           (let ((msg (hermes--parse-turn-at-point)))
+             (when msg
+               (push msg messages)))))
        nil nil 'file))
     (vconcat (nreverse messages))))
 
@@ -606,17 +606,26 @@ reference.  Verify with the gateway spec before relying on resume."
 ;;;; Debug inspectors
 
 (defun hermes-inspect-turn ()
-  "Pretty-print the `:HERMES_RAW:' drawer at point into a temp buffer."
+  "Pretty-print the parsed turn at point into a temp buffer.
+Shows both the `:HERMES_META:' drawer contents and the parsed
+`hermes-message' struct as visible from `hermes--parse-turn-at-point'."
   (interactive)
-  (let ((raw (save-excursion (hermes--extract-raw-drawer))))
-    (unless raw
-      (user-error "No :HERMES_RAW: drawer at point"))
+  (let* ((meta (save-excursion (hermes--extract-meta-drawer)))
+         (msg  (save-excursion
+                 (when (derived-mode-p 'org-mode)
+                   (ignore-errors (org-back-to-heading t)))
+                 (hermes--parse-turn-at-point))))
+    (unless (or meta msg)
+      (user-error "No Hermes turn at point"))
     (let ((buf (get-buffer-create "*Hermes Turn Inspector*")))
       (with-current-buffer buf
         (let ((inhibit-read-only t))
           (erase-buffer)
           (emacs-lisp-mode)
-          (pp raw (current-buffer))
+          (insert ";; Parsed hermes-message:\n")
+          (pp (and msg (hermes--message-to-plist msg)) (current-buffer))
+          (insert "\n;; :HERMES_META: drawer:\n")
+          (pp meta (current-buffer))
           (goto-char (point-min)))
         (setq buffer-read-only t))
       (display-buffer buf))))

@@ -140,6 +140,17 @@ Thinking deltas no longer touch the persistent stream — see UI reducer tests."
                                       (hermes-test--ht "text" "hmm")))))
     (should (equal s0 s1))))
 
+(ert-deftest hermes-state-test/message-to-plist-omits-text-key ()
+  "v2: `hermes--message-to-plist' no longer emits the legacy `:text' key.
+Text content is derivable from `:segments'."
+  (let* ((msg (make-hermes-message
+               :kind 'user
+               :segments (vector (make-hermes-segment
+                                  :type 'text :content "hi" :id "s1"))))
+         (p (hermes--message-to-plist msg)))
+    (should (plist-member p :segments))
+    (should-not (plist-member p :text))))
+
 (ert-deftest hermes-state-test/reasoning-delta-suppressed-when-duplicate-of-text ()
   "A `reasoning.delta' whose payload equals the prior text segment is dropped."
   (let* ((s (hermes-test--reduce*

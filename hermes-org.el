@@ -20,7 +20,12 @@
 (declare-function hermes-state-session-id "hermes-state" (state))
 (declare-function make-hermes-state "hermes-state" (&rest _))
 (declare-function hermes--plist-to-message "hermes-state" (plist))
-(declare-function hermes--extract-raw-drawer "hermes-render" (&optional pos))
+(declare-function hermes--extract-meta-drawer "hermes-render" (&optional pos))
+(declare-function hermes--next-segment-id "hermes-state" ())
+(declare-function make-hermes-segment "hermes-state" (&rest _))
+(declare-function make-hermes-message "hermes-state" (&rest _))
+(declare-function make-hermes-tool "hermes-state" (&rest _))
+(declare-function hermes--plist-to-subagent "hermes-state" (p))
 (declare-function hermes-rpc-request "hermes-rpc" (method params callback))
 (declare-function hermes-rpc-live-p "hermes-rpc" ())
 (declare-function hermes-rpc-start "hermes-rpc" ())
@@ -165,12 +170,156 @@ Populated by `hermes-input-send' when the user targets a heading whose
 `:HERMES_SESSION:' has no active in-memory state.  `hermes--drain-pre-send-queue'
 flushes the matching entry once resume / fresh-create completes.")
 
+(defun hermes--parse-heading-body ()
+  "Return the body text of the Org heading at point, excluding child
+headings, the property drawer, and any sibling `:HERMES_META:' drawer.
+Point must be on a heading."
+  (save-excursion
+    (let ((subtree-end (save-excursion (org-end-of-subtree t t))))
+      (forward-line 1)
+      (when (looking-at "^:PROPERTIES:")
+        (re-search-forward "^:END:" nil t)
+        (forward-line 1))
+      (let ((start (point))
+            (end (or (save-excursion
+                       (catch 'stop
+                         (while (< (point) subtree-end)
+                           (cond
+                            ((org-at-heading-p) (throw 'stop (point)))
+                            ((looking-at "^:HERMES_META:") (throw 'stop (point)))
+                            (t (forward-line 1))))
+                         subtree-end))
+                     subtree-end)))
+        (when (> end start)
+          (let ((s (string-trim (buffer-substring-no-properties start end))))
+            (and (not (string-empty-p s)) s)))))))
+
+(defun hermes--parse-turn-body-text ()
+  "Return the body text under a turn heading at point.
+Excludes child headings, :PROPERTIES:, and :HERMES_META: drawers."
+  (save-excursion
+    (let ((turn-end (save-excursion (org-end-of-subtree t t))))
+      (forward-line 1)
+      (when (looking-at "^:PROPERTIES:")
+        (re-search-forward "^:END:" nil t)
+        (forward-line 1))
+      (let ((start (point))
+            (end (or (save-excursion
+                       (catch 'stop
+                         (while (< (point) turn-end)
+                           (cond
+                            ((org-at-heading-p) (throw 'stop (point)))
+                            ((looking-at "^:HERMES_META:") (throw 'stop (point)))
+                            (t (forward-line 1))))
+                         turn-end))
+                     turn-end)))
+        (when (> end start)
+          (let ((s (string-trim (buffer-substring-no-properties start end))))
+            (and (not (string-empty-p s)) s)))))))
+
+(defun hermes--parse-turn-at-point ()
+  "Parse the turn heading at point into a `hermes-message' struct.
+Derives text segments from visible buffer structure (USER/SYSTEM body,
+or assistant child Response/Reasoning headings).  Reads tool segments,
+usage, images, and subagents from the :HERMES_META: drawer.  Returns
+nil if point is not on a recognized turn heading."
+  (when (and (derived-mode-p 'org-mode)
+             (org-at-heading-p))
+    (let* ((kind-prop (org-entry-get (point) "HERMES_KIND"))
+           (kind (pcase kind-prop
+                   ("USER" 'user)
+                   ("ASSISTANT" 'assistant)
+                   ("SYSTEM" 'system)
+                   (_ nil)))
+           (timestamp (org-entry-get (point) "HERMES_TIMESTAMP"))
+           (meta (save-excursion (hermes--extract-meta-drawer)))
+           (segs ()))
+      (when kind
+        (cond
+         ((memq kind '(user system))
+          (let ((text (hermes--parse-turn-body-text)))
+            (when text
+              (push (make-hermes-segment :type 'text :content text
+                                         :id (hermes--next-segment-id))
+                    segs))))
+         ((eq kind 'assistant)
+          (let ((turn-pos (point))
+                (turn-end (save-excursion (org-end-of-subtree t t))))
+            (save-excursion
+              (when (ignore-errors (org-goto-first-child))
+                (let ((continue t))
+                  (while continue
+                    (when (and (org-at-heading-p) (< (point) turn-end))
+                      (let ((child-kind (org-entry-get (point) "HERMES_KIND")))
+                        (cond
+                         ((equal child-kind "RESPONSE")
+                          (let ((text (hermes--parse-heading-body)))
+                            (when text
+                              (push (make-hermes-segment :type 'text
+                                                         :content text
+                                                         :id (hermes--next-segment-id))
+                                    segs))))
+                         ((equal child-kind "REASONING")
+                          (let ((text (hermes--parse-heading-body)))
+                            (when text
+                              (push (make-hermes-segment :type 'reasoning
+                                                         :content text
+                                                         :id (hermes--next-segment-id))
+                                    segs))))
+                         ((equal child-kind "TOOL")
+                          (let* ((tool-id (org-entry-get (point) "TOOL_ID"))
+                                 (tcs (plist-get meta :tool-calls))
+                                 (tc (and tcs tool-id
+                                          (cl-find-if
+                                           (lambda (x)
+                                             (equal tool-id (plist-get x :id)))
+                                           (append tcs nil)))))
+                            (when tc
+                              (push (make-hermes-segment
+                                     :type 'tool
+                                     :content (make-hermes-tool
+                                               :id (plist-get tc :id)
+                                               :name (plist-get tc :name)
+                                               :status (plist-get tc :status)
+                                               :context (plist-get tc :context)
+                                               :preview (plist-get tc :preview)
+                                               :inline-diff (plist-get tc :inline-diff)
+                                               :todos (plist-get tc :todos)
+                                               :output (plist-get tc :output)
+                                               :summary (plist-get tc :summary)
+                                               :error (plist-get tc :error)
+                                               :duration (plist-get tc :duration))
+                                     :id (hermes--next-segment-id))
+                                    segs))))
+                         (t nil))))
+                    (unless (and (outline-next-heading)
+                                 (< (point) turn-end))
+                      (setq continue nil))))))
+            (ignore turn-pos)))
+         (t nil))
+        (let* ((sa-raw (plist-get meta :subagents))
+               (subagents
+                (cond
+                 ((vectorp sa-raw)
+                  (apply #'vector
+                         (mapcar #'hermes--plist-to-subagent
+                                 (append sa-raw nil))))
+                 ((listp sa-raw)
+                  (apply #'vector
+                         (mapcar #'hermes--plist-to-subagent sa-raw)))
+                 (t []))))
+          (make-hermes-message
+           :kind kind
+           :segments (vconcat (nreverse segs))
+           :usage (plist-get meta :usage)
+           :subagents subagents
+           :timestamp timestamp))))))
+
 (defun hermes--parse-subtree-messages ()
-  "Parse `:HERMES_RAW:' drawers under the heading at point into a vector
-of `hermes-message' structs.  Scope is the current Org subtree only,
-and the container heading itself is skipped — `hermes--extract-raw-drawer'
-treats the next drawer inside the subtree as the heading's own, so the
-container would otherwise vacuum up its first child's drawer."
+  "Parse turn headings under the container at point into a vector of
+`hermes-message' structs.  Scope is the current Org subtree only; the
+container heading itself is skipped.  Derives text from visible buffer
+structure, reads metadata from :HERMES_META: drawers."
   (let (messages)
     (when (derived-mode-p 'org-mode)
       (save-excursion
@@ -178,10 +327,10 @@ container would otherwise vacuum up its first child's drawer."
         (let ((container-level (org-current-level)))
           (org-map-entries
            (lambda ()
-             (when (> (org-current-level) container-level)
-               (let ((raw (save-excursion (hermes--extract-raw-drawer))))
-                 (when raw
-                   (push (hermes--plist-to-message raw) messages)))))
+             (when (= (org-current-level) (1+ container-level))
+               (let ((msg (hermes--parse-turn-at-point)))
+                 (when msg
+                   (push msg messages)))))
            nil 'tree))))
     (vconcat (nreverse messages))))
 
@@ -191,8 +340,8 @@ container would otherwise vacuum up its first child's drawer."
 (defun hermes--rebuild-session-state (sid marker)
   "Build a fresh `hermes-state' for SID and register it under MARKER.
 The state atom holds only ephemeral data (stream / queue / pending);
-committed history already lives in the Org subtree as `:HERMES_RAW:'
-drawers, so there's nothing to seed.  Mirroring to `hermes--state'
+committed history already lives in the Org subtree as visible text
+plus `:HERMES_META:' drawers, so there's nothing to seed.  Mirroring to `hermes--state'
 keeps single-session readers coherent.  Also ensures `hermes-minor-mode'
 is on and the bench is visible so the user can interact with the
 resumed session.  Returns the new state."

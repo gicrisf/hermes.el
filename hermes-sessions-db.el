@@ -127,6 +127,104 @@ THEN, if non-nil, is invoked with no args after the print completes."
       (with-current-buffer buf
         (hermes-sessions-db--fetch)))))
 
+;;;; DB → Org rendering (Phase 3)
+;;
+;; The gateway returns messages already flattened by `_history_to_messages':
+;;   {role: "user",      text|content: "..."}
+;;   {role: "assistant", text|content: "..."}
+;;   {role: "tool",      name: "...", context: "..."}
+;;
+;; `tool_call_id`, full tool arguments, reasoning, subagents, images, usage,
+;; and timestamps are NOT surfaced by the gateway in this method.  The render
+;; is intentionally lossy — see PLAN_SUPPORT_GATEWAY_DB_SESSIONS.md Decision 3.
+
+(defun hermes--db-msg-field (msg key)
+  "Return KEY from MSG (hash-table or alist), or nil."
+  (cond
+   ((hash-table-p msg) (gethash key msg))
+   ((listp msg) (or (cdr (assoc key msg))
+                    (cdr (assoc (intern key) msg))))))
+
+(defun hermes--db-msg-text (msg)
+  "Return the display text of MSG, preferring `text', then `content'."
+  (or (hermes--db-msg-field msg "text")
+      (hermes--db-msg-field msg "content")
+      ""))
+
+(defun hermes--db-msg-role (msg)
+  "Return MSG's role as a string, or empty."
+  (or (hermes--db-msg-field msg "role") ""))
+
+(defun hermes--db-messages-to-org (messages sid)
+  "Render MESSAGES (list/vector of hashtables) for SID as an org string.
+
+Format:
+
+  * Hermes session :hermes:
+  :PROPERTIES:
+  :HERMES_SESSION: <sid>
+  :END:
+
+  ** User
+  :PROPERTIES:
+  :HERMES_KIND: USER
+  :END:
+  <body>
+
+  ** Assistant
+  :PROPERTIES:
+  :HERMES_KIND: ASSISTANT
+  :END:
+  <body>
+
+  *** Tool (<name>)
+  :PROPERTIES:
+  :HERMES_KIND: TOOL
+  :TOOL_NAME: <name>
+  :END:
+  <context>"
+  (let ((msgs (cond
+               ((vectorp messages) (append messages nil))
+               ((listp messages) messages)
+               (t nil)))
+        (parts (list (format "* Hermes session :hermes:\n:PROPERTIES:\n:HERMES_SESSION: %s\n:END:\n"
+                             (or sid ""))))
+        (last-assistant-depth 2))
+    (dolist (msg msgs)
+      (let ((role (hermes--db-msg-role msg)))
+        (pcase role
+          ("user"
+           (setq last-assistant-depth 2)
+           (push (format "\n** User\n:PROPERTIES:\n:HERMES_KIND: USER\n:END:\n%s\n"
+                         (hermes--db-msg-text msg))
+                 parts))
+          ("assistant"
+           (setq last-assistant-depth 2)
+           (push (format "\n** Assistant\n:PROPERTIES:\n:HERMES_KIND: ASSISTANT\n:END:\n%s\n"
+                         (hermes--db-msg-text msg))
+                 parts))
+          ("tool"
+           (let* ((name (or (hermes--db-msg-field msg "name") "tool"))
+                  (ctx  (or (hermes--db-msg-field msg "context")
+                            (hermes--db-msg-text msg)))
+                  (stars (make-string (1+ last-assistant-depth) ?*)))
+             (push (format "\n%s Tool (%s)\n:PROPERTIES:\n:HERMES_KIND: TOOL\n:TOOL_NAME: %s\n:END:\n%s\n"
+                           stars name name ctx)
+                   parts)))
+          (_
+           ;; Unknown role: skip with a comment so the user knows something
+           ;; was filtered.  Defensive — gateway shouldn't emit other roles.
+           (push (format "\n# skipped role: %s\n" role) parts)))))
+    (mapconcat #'identity (nreverse parts) "")))
+
+(defun hermes--render-db-messages-to-buffer (messages sid)
+  "Insert the org rendering of MESSAGES (for SID) into the current buffer.
+Erases the buffer first.  Returns no useful value."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (hermes--db-messages-to-org messages sid))
+    (goto-char (point-min))))
+
 ;;;; Mode
 
 (defvar hermes-sessions-db-mode-map

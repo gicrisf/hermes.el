@@ -10,6 +10,7 @@
         "hermes-prompts.el"
         "hermes-input.el"
         "hermes-sessions.el"
+        "hermes-sessions-db.el"
         "hermes-md.el"
         "hermes-skin.el"
         "hermes-compose.el"
@@ -30,4 +31,5 @@
                            "test/hermes-org-test.el"
                            "test/hermes-bench-test.el"
                            "test/hermes-bg-test.el"
-                           "test/hermes-project-test.el"))
+                           "test/hermes-project-test.el"
+                           "test/hermes-sessions-db-test.el"))

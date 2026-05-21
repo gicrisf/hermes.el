@@ -171,6 +171,36 @@ Populated by `hermes-input-send' when the user targets a heading whose
 `:HERMES_SESSION:' has no active in-memory state.  `hermes--drain-pre-send-queue'
 flushes the matching entry once resume / fresh-create completes.")
 
+(defun hermes--extract-named-block (text name)
+  "Find an Org block labelled NAME in TEXT and return its unwrapped content.
+TEXT is the body of an Org heading (a string).  NAME is the value
+expected after `#+name:', e.g. \"hermes-tool-write_file-inline-diff\".
+
+Scans for a `#+name: NAME' line, reads the wrapper type (`src',
+`example', ...) from the immediately following `#+begin_TYPE' line,
+and returns the content up to the matching `#+end_TYPE' line, with
+surrounding whitespace trimmed.  Returns nil if NAME is absent or
+the wrapper is malformed.  Note: a literal `#+end_TYPE' line embedded
+in the block content will terminate extraction early — this is the
+standard text-inside-block boundary problem and is accepted."
+  (when (and text name)
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      (let ((case-fold-search t)
+            (pattern (format "^#\\+name: %s[ \t]*$" (regexp-quote name))))
+        (when (re-search-forward pattern nil t)
+          (forward-line 1)
+          (when (looking-at "^#\\+begin_\\([a-zA-Z][a-zA-Z0-9_-]*\\)")
+            (let ((type (match-string 1))
+                  (start (line-end-position)))
+              (when (re-search-forward
+                     (format "^#\\+end_%s[ \t]*$" (regexp-quote type))
+                     nil t)
+                (let ((content (buffer-substring-no-properties
+                                (1+ start) (line-beginning-position))))
+                  (string-trim content))))))))))
+
 (defun hermes--parse-heading-body ()
   "Return the body text of the Org heading at point, excluding child
 headings, the property drawer, and any sibling `:HERMES_META:' drawer.
@@ -281,13 +311,20 @@ nil if point is not on a recognized turn heading."
                                  ;; alone is sufficient for a tool segment.
                                  ;; :output is canonical in meta — the body
                                  ;; is formatter-generated display only and
-                                 ;; is NOT used for round-trip.
+                                 ;; is NOT used for round-trip.  :inline-diff
+                                 ;; is body-canonical: extracted from the
+                                 ;; #+name'd src block in the heading body.
                                  (tcs (plist-get meta :tool-calls))
                                  (tc (and tcs tool-id
                                           (cl-find-if
                                            (lambda (x)
                                              (equal tool-id (plist-get x :id)))
-                                           (append tcs nil)))))
+                                           (append tcs nil))))
+                                 (body (hermes--parse-heading-body))
+                                 (diff-block-name
+                                  (and tool-id
+                                       (format "hermes-tool-%s-inline-diff"
+                                               (hermes--slug-for-name tool-id)))))
                             (push (make-hermes-segment
                                    :type 'tool
                                    :content (make-hermes-tool
@@ -298,7 +335,8 @@ nil if point is not on a recognized turn heading."
                                              :output (hermes--strip-ansi (plist-get tc :output))
                                              :context (hermes--strip-ansi (plist-get tc :context))
                                              :preview (hermes--strip-ansi (plist-get tc :preview))
-                                             :inline-diff (hermes--strip-ansi (plist-get tc :inline-diff))
+                                             :inline-diff (hermes--extract-named-block
+                                                           body diff-block-name)
                                              :todos (plist-get tc :todos)
                                              :summary (hermes--strip-ansi (plist-get tc :summary))
                                              :error (hermes--strip-ansi (plist-get tc :error)))

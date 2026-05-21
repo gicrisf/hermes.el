@@ -246,6 +246,13 @@ Returns nil for nil input, the filtered string otherwise.
 Empty strings are preserved as empty strings."
   (and string (ansi-color-filter-apply string)))
 
+(defun hermes--slug-for-name (id)
+  "Sanitize ID into a single token safe for use as an Org #+name value.
+Replaces any character outside [A-Za-z0-9_-] with `-'.  Returns nil for
+nil input.  Used to derive collision-resistant block names from tool IDs
+when emitting body-canonical fields (see `hermes--extract-named-block')."
+  (and id (replace-regexp-in-string "[^A-Za-z0-9_-]" "-" id)))
+
 (defmacro hermes--with-copy (struct copier place &rest body)
   "Bind PLACE to a fresh shallow copy of STRUCT and run BODY for side effects.
 BODY is expected to `setf' slots on PLACE.  Returns PLACE."

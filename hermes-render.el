@@ -499,14 +499,17 @@ Compactness rules:
                ;; *display* only and is NOT round-tripped.  :output is
                ;; the canonical raw tool output and lives in meta so
                ;; re-renders are byte-stable.
+               ;; :inline-diff is body-canonical (lives in the heading body
+               ;; as a #+name'd src block) and is omitted from meta to avoid
+               ;; duplication.  The parser re-reads it from the body via
+               ;; `hermes--extract-named-block'.
                (let ((slim (hermes--plist-drop-nils
-                            (list :id          (hermes-tool-id tool)
-                                  :output      (hermes-tool-output tool)
-                                  :context     (hermes-tool-context tool)
-                                  :summary     (hermes-tool-summary tool)
-                                  :error       (hermes-tool-error tool)
-                                  :inline-diff (hermes-tool-inline-diff tool)
-                                  :todos       (hermes-tool-todos tool)))))
+                            (list :id      (hermes-tool-id tool)
+                                  :output  (hermes-tool-output tool)
+                                  :context (hermes-tool-context tool)
+                                  :summary (hermes-tool-summary tool)
+                                  :error   (hermes-tool-error tool)
+                                  :todos   (hermes-tool-todos tool)))))
                  ;; Skip the entry entirely when only :id would remain —
                  ;; a "simple" tool fully described by its heading.
                  (when (cddr slim)

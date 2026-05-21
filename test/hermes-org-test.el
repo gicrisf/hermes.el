@@ -534,7 +534,8 @@ formatter-display
        (should (equal "2 days, 22 hours." (hermes-tool-output tool)))))))
 
 (ert-deftest hermes-org-test/parse-tool-extended-data-from-meta ()
-  "Parser reads context/summary/error/inline-diff/todos from meta."
+  "Parser reads context/summary/error/todos from meta and inline-diff
+from the heading body via the #+name'd src block."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: diff
@@ -549,9 +550,12 @@ formatter-display
 :TOOL_STATUS: complete
 :TOOL_DURATION: 1.2
 :END:
-diff body
+#+name: hermes-tool-gd1-inline-diff
+#+begin_src diff
+D
+#+end_src
 :HERMES_META:
-(:tool-calls [(:id \"gd1\" :context \"--cached\" :summary \"sum\" :error \"err\" :inline-diff \"D\" :todos nil)])
+(:tool-calls [(:id \"gd1\" :context \"--cached\" :summary \"sum\" :error \"err\" :todos nil)])
 :END:
 "
    (hermes-org-test--at-first-turn)
@@ -741,6 +745,44 @@ back via `hermes--parse-turn-at-point' and verify kind + text."
       (should (equal "ping"
                      (hermes-segment-content
                       (aref (hermes-message-segments parsed) 0)))))))
+
+;;;; Body-canonical :inline-diff via #+name'd src blocks
+
+(ert-deftest hermes-org-test/extract-named-block-unwraps-diff ()
+  "Extracts the raw content from a #+name'd src block in a body string."
+  (let ((body "preamble\n#+name: hermes-tool-t1-inline-diff\n#+begin_src diff\n+hello\n-world\n#+end_src\ntrailer"))
+    (should (equal "+hello\n-world"
+                   (hermes--extract-named-block
+                    body "hermes-tool-t1-inline-diff")))))
+
+(ert-deftest hermes-org-test/extract-named-block-nil-when-missing ()
+  "Returns nil when no #+name line exists."
+  (should (null (hermes--extract-named-block
+                 "#+begin_src diff\nx\n#+end_src\n"
+                 "hermes-tool-t1-inline-diff"))))
+
+(ert-deftest hermes-org-test/extract-named-block-nil-for-wrong-name ()
+  "Returns nil when the named block doesn't match."
+  (should (null (hermes--extract-named-block
+                 "#+name: something-else\n#+begin_src diff\nx\n#+end_src\n"
+                 "hermes-tool-t1-inline-diff"))))
+
+(ert-deftest hermes-org-test/extract-named-block-truncates-on-embedded-end ()
+  "If the block content contains a literal #+end_src line, extraction
+stops there.  Known limitation: extraction must not crash and must
+return a string (possibly truncated)."
+  (let* ((body "#+name: hermes-tool-t1-inline-diff\n#+begin_src diff\nbefore\n#+end_src\nafter\n#+end_src\n")
+         (result (hermes--extract-named-block
+                  body "hermes-tool-t1-inline-diff")))
+    (should (stringp result))
+    (should (equal "before" result))))
+
+(ert-deftest hermes-org-test/extract-named-block-handles-special-chars-in-name ()
+  "regexp-quote shields special characters in NAME from regex interpretation."
+  (let ((body "#+name: hermes-tool-a.b+c-inline-diff\n#+begin_src diff\ncontent\n#+end_src\n"))
+    (should (equal "content"
+                   (hermes--extract-named-block
+                    body "hermes-tool-a.b+c-inline-diff")))))
 
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

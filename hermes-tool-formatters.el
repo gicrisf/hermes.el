@@ -156,7 +156,10 @@ failure.  Keys are downcased symbols, values are strings."
             (err (hermes-tool--example err))
             (out (hermes-tool--example out))
             (t ""))
-           (when diff (format "#+begin_src diff\n%s\n#+end_src\n" diff))
+           (when diff
+             (format "#+name: hermes-tool-%s-inline-diff\n#+begin_src diff\n%s\n#+end_src\n"
+                     (hermes--slug-for-name (hermes-tool-id tool))
+                     diff))
            (when todos
              (concat ":TODOS:\n"
                      (mapconcat
@@ -243,7 +246,9 @@ failure.  Keys are downcased symbols, values are strings."
           :body (concat
                  (cond
                   (err (hermes-tool--example err))
-                  (diff (format "#+begin_src diff\n%s\n#+end_src\n" diff))
+                  (diff (format "#+name: hermes-tool-%s-inline-diff\n#+begin_src diff\n%s\n#+end_src\n"
+                                (hermes--slug-for-name (hermes-tool-id tool))
+                                diff))
                   ((and (string-equal-ignore-case name "write") out)
                    (hermes-tool--src-block
                     (hermes-tool--lang-from-path path) out))

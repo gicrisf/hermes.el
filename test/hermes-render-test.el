@@ -1414,5 +1414,44 @@ the expected heading, properties, body, and `:HERMES_META:' drawer."
         (should (string-match-p "exploded" text))))
     (kill-buffer buf-name)))
 
+;;;; Body-canonical :inline-diff via #+name'd src blocks
+
+(ert-deftest hermes-render-test/meta-drawer-omits-inline-diff ()
+  "Meta drawer no longer carries :inline-diff — it is body-canonical."
+  (let* ((tool (make-hermes-tool :id "t1" :name "write_file"
+                                 :status 'complete
+                                 :inline-diff "+a\n-b"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (meta (hermes--message-to-meta-plist msg))
+         (tcs (plist-get meta :tool-calls))
+         (entry (and (vectorp tcs) (> (length tcs) 0) (aref tcs 0))))
+    ;; Either the slim entry is dropped entirely (only :id would remain)
+    ;; or, if present, it has no :inline-diff key.
+    (when entry
+      (should (null (plist-get entry :inline-diff))))))
+
+(ert-deftest hermes-render-test/tool-format-emits-name-marker ()
+  "Edit-formatter prefixes diff with `#+name: hermes-tool-<id>-inline-diff'."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "wf1" :name "write_file" :status 'complete
+                :context "{\"file_path\":\"/tmp/x.c\"}"
+                :inline-diff "+hello\n-world"))
+         (out (plist-get (hermes-tool-format-edit tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-wf1-inline-diff$" out))
+    (should (string-match-p "#\\+begin_src diff" out))))
+
+(ert-deftest hermes-render-test/tool-format-slugs-unsafe-tool-id ()
+  "Unsafe characters in tool-id are slugged before becoming an Org #+name."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "a b:c" :name "Edit" :status 'complete
+                :inline-diff "x"))
+         (out (plist-get (hermes-tool-format-edit tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-a-b-c-inline-diff$" out))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

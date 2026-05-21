@@ -332,7 +332,7 @@ M-x hermes → hermes → hermes-new-session
 ### `hermes-send`
 
 ```
-C-c C-i → hermes-send → hermes-input-send (hermes-input.el)
+C-c C-i → hermes-send → hermes-send (hermes-input.el)
   │
   │  Read input via read-string (with history and slash-completion)
   │
@@ -366,7 +366,7 @@ Events handled: `approval.request`, `clarify.request`, `sudo.request`,
 
 `C-c C-l` opens a `*hermes-compose*` buffer in `org-mode`.
 Keybindings:
-- `C-c C-c` → send content through `hermes-input-send`, kill buffer
+- `C-c C-c` → send content through `hermes-send`, kill buffer
 - `C-c C-k` → kill buffer (cancel)
 
 The composer is a clean org-mode buffer (not hermes-mode derived) to avoid
@@ -388,7 +388,7 @@ inline metadata.
 | `hermes-stored-resume` | `session.list` (gateway DB) | `hermes-resume-from-db` |
 | `hermes-stored-branch` | `session.list` | `hermes-branch-from-db` |
 | `hermes-stored-delete` | `session.list` | `session.delete` (confirm) |
-| `hermes-stored-save` | `session.list` | `session.save` (JSON export) |
+| `hermes-stored-export-as-json` | `session.list` | `session.save` (JSON export) |
 
 The `hermes-stored-*` commands accept a prefix argument to restrict the
 candidate list to the current project's CWD (`hermes-project-detect-cwd`).
@@ -549,7 +549,7 @@ a matching in-memory state.
 
 ### Stale-heading prompt
 
-`M-x hermes` (or `hermes-input-send`) on a stale heading dispatches through
+`M-x hermes` (or `hermes-send`) on a stale heading dispatches through
 `hermes--handle-stale-heading`, which prompts the user:
 
 1. **Load from org** — fresh gateway session, history seeded from the
@@ -568,9 +568,9 @@ When the gateway returns code `4007 "session not found"` (DB wiped, old
 SID format, etc.), the error message hints to pick "Load from org"
 instead.
 
-### `hermes-load-org`
+### `hermes-reload-from-org`
 
-`M-x hermes-load-org` (in a `hermes-mode` buffer) is the direct entry point
+`M-x hermes-reload-from-org` (in a `hermes-mode` buffer) is the direct entry point
 for option (1): creates a fresh gateway session bound to the current buffer.
 The gateway does not accept a `:history` parameter in `session.create`, so
 context is restored on the first outgoing prompt via the history seed
@@ -678,7 +678,7 @@ body-canonical — parsed back from the visible buffer on resume.  Benefits:
 - No split-brain — user edits to visible text are preserved on resume.
 - No duplication — conversation text exists only once (in the buffer).
 - Natural snapshot — save the `.org` file, close Emacs, reopen it.
-- Load org — `hermes-load-org` parses visible headings and seeds
+- Load org — `hermes-reload-from-org` parses visible headings and seeds
   history into a fresh gateway session via the first-prompt seed.
 
 Trade-off: `hermes-md-to-org` is one-way (markdown→Org). The gateway receives

@@ -32,7 +32,7 @@
 (declare-function hermes--parse-buffer-messages "hermes-mode" ())
 (declare-function hermes--buffer-message-count "hermes-mode" ())
 (declare-function hermes--message-text-for-display "hermes-render" (msg))
-(declare-function hermes-interrupt "hermes-mode" ())
+(declare-function hermes-interrupt-current-session "hermes-mode" ())
 (declare-function hermes-resume-from-db "hermes-sessions" (sid))
 (declare-function hermes-branch-from-db "hermes-sessions" (sid))
 (declare-function hermes-bench-add-steer "hermes-bench" (parent text))
@@ -321,7 +321,7 @@ Minibuffer context only — reads catalog from
 
 ;;;; Public entry — replaces the M2 `hermes-send'.
 
-(defun hermes-input-send (text)
+(defun hermes-send (text)
   "Submit TEXT to the current Hermes session.
 Slash commands bypass the queue and transcript; idle text is committed
 immediately, while busy text is queued silently and sent when the turn
@@ -448,7 +448,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
                 (funcall k expanded))))))))))
 
 (defun hermes-input--send-1 (text)
-  "Internal worker for `hermes-input-send'.  Assumes `hermes--state' and
+  "Internal worker for `hermes-send'.  Assumes `hermes--state' and
 `hermes--current-session-id' are bound to the target session."
   ;; If the gateway died, offer to reconnect.  The text is committed and
   ;; queued; `hermes-reconnect' creates a fresh session and drains the head
@@ -544,7 +544,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
               (message "hermes: steer rejected"))
              (t (message "hermes: steer queued"))))))
         ("interrupt"
-         (hermes-interrupt)
+         (hermes-interrupt-current-session)
          ;; After interrupt the stream clears; the drain hook will
          ;; submit this text once the queue head becomes head-of-line.
          (hermes-dispatch (cons :enqueue (list :text text))))

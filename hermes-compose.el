@@ -8,14 +8,14 @@
 
 ;; `C-c C-l' from a Hermes session buffer pops a `*hermes-compose*' buffer
 ;; in `org-mode'.  Edit freely; `C-c C-c' sends the contents through the
-;; usual `hermes-input-send' (so reconnect, queue and history all apply);
+;; usual `hermes-send' (so reconnect, queue and history all apply);
 ;; `C-c C-k' cancels.  The compose buffer is killed on send/cancel.
 
 ;;; Code:
 
 (require 'org)
 
-(declare-function hermes-input-send "hermes-input" (text))
+(declare-function hermes-send "hermes-input" (text))
 
 (defvar-local hermes-compose--target nil
   "The Hermes conversation buffer this composer sends to.")
@@ -69,7 +69,7 @@
     (when (string-empty-p text)
       (user-error "Nothing to send"))
     (with-current-buffer target
-      (hermes-input-send text))
+      (hermes-send text))
     (kill-buffer buf)))
 
 (defun hermes-compose-cancel ()

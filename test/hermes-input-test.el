@@ -50,7 +50,7 @@
   "When no stream is in flight, the user message appears in the buffer
 and `prompt.submit' is sent right away."
   (hermes-input-test--with-buffer
-    (hermes-input-send "hi")
+    (hermes-send "hi")
     (should (hermes-input-test--buffer-has-user-heading-p "hi"))
     (should (= 1 (length hermes-input-test--rpc-calls)))
     (should (equal "prompt.submit"
@@ -64,7 +64,7 @@ and `prompt.submit' is sent right away."
 no RPC is sent yet."
   (hermes-input-test--with-buffer
     (hermes-input-test--set-stream)
-    (hermes-input-send "and?")
+    (hermes-send "and?")
     (should-not (hermes-input-test--buffer-has-user-heading-p "and?"))
     (should (null hermes-input-test--rpc-calls))
     (should (equal '("and?") (hermes-state-queue hermes--state)))))
@@ -73,9 +73,9 @@ no RPC is sent yet."
   "Three messages sent while busy stay queued in arrival order."
   (hermes-input-test--with-buffer
     (hermes-input-test--set-stream)
-    (hermes-input-send "one")
-    (hermes-input-send "two")
-    (hermes-input-send "three")
+    (hermes-send "one")
+    (hermes-send "two")
+    (hermes-send "three")
     (should-not (hermes-input-test--buffer-has-user-heading-p "one"))
     (should-not (hermes-input-test--buffer-has-user-heading-p "two"))
     (should-not (hermes-input-test--buffer-has-user-heading-p "three"))
@@ -90,7 +90,7 @@ no RPC is sent yet."
 is rendered, removed from the queue, and submitted via RPC."
   (hermes-input-test--with-buffer
     (hermes-input-test--set-stream)
-    (hermes-input-send "queued")
+    (hermes-send "queued")
     (let ((old hermes--state))
       (setq hermes--state
             (hermes--with-copy hermes--state hermes-state-copy s
@@ -106,8 +106,8 @@ is rendered, removed from the queue, and submitted via RPC."
   "Each `message.complete' drains one item; oldest first."
   (hermes-input-test--with-buffer
     (hermes-input-test--set-stream)
-    (hermes-input-send "a")
-    (hermes-input-send "b")
+    (hermes-send "a")
+    (hermes-send "b")
     ;; Tick 1: stream → nil.
     (let ((old hermes--state))
       (setq hermes--state
@@ -170,7 +170,7 @@ wire text with history and stamps `hermes--seeded-session-id'."
              (lambda () 1)))
     (hermes-input-test--with-buffer
       (setq hermes--seeded-session-id nil)
-      (hermes-input-send "hello")
+      (hermes-send "hello")
       (should (equal "sess-1" hermes--seeded-session-id))
       (let* ((call (car hermes-input-test--rpc-calls))
              (wire (plist-get (cdr call) :text)))
@@ -188,7 +188,7 @@ the wire text is verbatim — no second seeding."
              (lambda () 1)))
     (hermes-input-test--with-buffer
       (setq hermes--seeded-session-id "sess-1")
-      (hermes-input-send "hello")
+      (hermes-send "hello")
       (let* ((call (car hermes-input-test--rpc-calls))
              (wire (plist-get (cdr call) :text)))
         (should (equal "prompt.submit" (car call)))
@@ -199,7 +199,7 @@ the wire text is verbatim — no second seeding."
 `hermes--seeded-session-id', so the next real prompt still seeds."
   (hermes-input-test--with-buffer
     (setq hermes--seeded-session-id nil)
-    (hermes-input-send "/clear")
+    (hermes-send "/clear")
     (should (null hermes--seeded-session-id))
     (let ((call (car hermes-input-test--rpc-calls)))
       (should (equal "slash.exec" (car call))))))
@@ -212,7 +212,7 @@ every send for the lifetime of the session."
              (lambda () 0)))
     (hermes-input-test--with-buffer
       (setq hermes--seeded-session-id nil)
-      (hermes-input-send "hello")
+      (hermes-send "hello")
       (should (equal "sess-1" hermes--seeded-session-id))
       (let* ((call (car hermes-input-test--rpc-calls))
              (wire (plist-get (cdr call) :text)))

@@ -716,7 +716,7 @@ subtree has been fully committed (heading + body), not interleaved."
       (setq hermes--state
             (hermes--with-copy hermes--state hermes-state-copy s
               (setf (hermes-state-session-id s) "sess-1")))
-      (hermes-input-send "hi")
+      (hermes-send "hi")
       ;; Stage 2 — stream begins, accumulates one chunk.
       (hermes-dispatch (cons "message.start" nil))
       (hermes-dispatch (cons "message.delta"
@@ -724,7 +724,7 @@ subtree has been fully committed (heading + body), not interleaved."
                                (puthash "text" "Hello" h)
                                h)))
       ;; Stage 3 — user types "next" while busy → silently queued.
-      (hermes-input-send "next")
+      (hermes-send "next")
       (should (equal '("next") (hermes-state-queue hermes--state)))
       ;; Stage 4 — message.complete: stream-commit, then drain hook fires
       ;; and dequeues + sends "next" (which renders as a `* user:' heading).

@@ -166,7 +166,7 @@ Returns nil when no session is reachable."
 
 (defvar hermes--pre-send-queue nil
   "Alist of (SESSION-ID . TEXT) waiting for a stale session to resume.
-Populated by `hermes-input-send' when the user targets a heading whose
+Populated by `hermes-send' when the user targets a heading whose
 `:HERMES_SESSION:' has no active in-memory state.  `hermes--drain-pre-send-queue'
 flushes the matching entry once resume / fresh-create completes.")
 

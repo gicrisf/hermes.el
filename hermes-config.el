@@ -96,7 +96,7 @@ Aborts with `user-error' if a stream is in flight."
          (_ (unless target (user-error "No Hermes session at point")))
          (state (cdr target)))
     (when (and state (hermes-state-stream state))
-      (user-error "Cannot switch models mid-turn — run M-x hermes-interrupt first"))
+      (user-error "Cannot switch models mid-turn — run M-x hermes-interrupt-current-session first"))
     (when (or refresh (null hermes-config--last-providers))
       (setq hermes-config--last-providers nil))
     (let ((buf (current-buffer)))

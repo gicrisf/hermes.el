@@ -22,10 +22,10 @@
 (require 'hermes-state)
 (require 'hermes-tool-formatters)
 
-(declare-function hermes-input-send "hermes-input" (text))
+(declare-function hermes-send "hermes-input" (text))
 (declare-function hermes-input--slash-complete "hermes-input" (beg end catalog))
 (declare-function hermes-state-slash-catalog "hermes-state" (state))
-(declare-function hermes-interrupt "hermes-mode" ())
+(declare-function hermes-interrupt-current-session "hermes-mode" ())
 (declare-function hermes-compose "hermes-compose" ())
 (declare-function hermes-image-attach-file "hermes-image" (&optional file))
 (declare-function hermes-image-clipboard-paste "hermes-image" ())
@@ -880,7 +880,7 @@ then dispatches the text to the parent."
     (hermes-bench--align-parent-to-tail parent)
     ;; 4. Dispatch to parent (fires :user-submit + RPC).
     (with-current-buffer parent
-      (hermes-input-send text))
+      (hermes-send text))
     (goto-char (point-max))))
 
 (defun hermes-bench-interrupt-parent ()
@@ -888,7 +888,7 @@ then dispatches the text to the parent."
   (interactive)
   (when (buffer-live-p hermes-bench--parent-buffer)
     (with-current-buffer hermes-bench--parent-buffer
-      (call-interactively #'hermes-interrupt))))
+      (call-interactively #'hermes-interrupt-current-session))))
 
 (declare-function hermes-steer "hermes-config" (text))
 

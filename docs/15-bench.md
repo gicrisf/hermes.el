@@ -167,7 +167,7 @@ User hits RET in bench input area
     2. hermes-bench--clear-input
     3. hermes-bench--paint-ephemeral(text, "", "")
        → wipes old turn, shows "** <text>"
-    4. hermes-input-send (in parent org buffer)
+    4. hermes-send (in parent org buffer)
        → :user-submit dispatched → org buffer gets "** user: <text>"
        → prompt.submit RPC sent
     5. goto-char (point-max)

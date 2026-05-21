@@ -57,13 +57,13 @@ Defined in `hermes-events.el` and used across the Emacs codebase.
 | `session.create` | `{cols?}` | Create new session | `hermes--do-session-create` |
 | `session.resume` | `{session_id}` | Resume prior session | *(not wired in M2-M4)* |
 | `session.close` | `{session_id}` | Close session | `hermes-sessions-close` |
-| `session.interrupt` | `{session_id}` | Interrupt turn | `hermes-interrupt` |
-| `prompt.submit` | `{session_id, text}` | Send user message | `hermes-input-send` |
+| `session.interrupt` | `{session_id}` | Interrupt turn | `hermes-interrupt-current-session` |
+| `prompt.submit` | `{session_id, text}` | Send user message | `hermes-send` |
 | `approval.respond` | `{session_id, request_id, choice, all?}` | Respond to approval | `hermes--prompt-approval` |
 | `clarify.respond` | `{request_id, answer}` | Respond to clarify | `hermes--prompt-clarify` |
 | `sudo.respond` | `{request_id, password}` | Respond to sudo | `hermes--prompt-sudo` |
 | `secret.respond` | `{request_id, value}` | Respond to secret | `hermes--prompt-secret` |
-| `slash.exec` | `{session_id, command}` | Execute slash command | `hermes-input-send` |
+| `slash.exec` | `{session_id, command}` | Execute slash command | `hermes-send` |
 | `command.dispatch` | `{session_id?, name, arg}` | Direct command dispatch | *(not wired)* |
 | `commands.catalog` | `{}` | Fetch slash command list | `hermes-input-fetch-catalog` |
 

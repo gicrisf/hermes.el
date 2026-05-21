@@ -129,9 +129,9 @@ without this cache, the very first buffer would never see the skin.")
 
 (defvar hermes-mode-map
   (let ((m (make-sparse-keymap)))
-    (define-key m (kbd "C-c C-i") #'hermes-send-or-focus-bench)
+    (define-key m (kbd "C-c C-i") #'hermes-bench-focus)
     (define-key m (kbd "C-c C-l") #'hermes-compose)
-    (define-key m (kbd "C-c C-k") #'hermes-interrupt)
+    (define-key m (kbd "C-c C-k") #'hermes-interrupt-current-session)
     (define-key m (kbd "C-c C-v") #'hermes-view-log)
     (define-key m (kbd "C-c C-m") #'hermes-set-model)
     (define-key m (kbd "C-c C-f") #'hermes-toggle-fast)
@@ -142,7 +142,7 @@ without this cache, the very first buffer would never see the skin.")
 (with-eval-after-load 'which-key
   (when (fboundp 'which-key-add-keymap-based-replacements)
     (which-key-add-keymap-based-replacements hermes-mode-map
-      "C-c C-i" "Send / focus bench"
+      "C-c C-i" "Focus bench"
       "C-c C-l" "Compose multi-line"
       "C-c C-k" "Interrupt session"
       "C-c C-v" "View log"
@@ -247,8 +247,11 @@ the session container heading."
     (insert (concat (make-string hermes--container-level ?*)
                     " Hermes session :hermes:\n"))))
 
-(defun hermes-send-or-focus-bench ()
-  "If the bench is active, focus its input; otherwise call `hermes-send'."
+(defun hermes-bench-focus ()
+  "Move cursor to the bench input zone for the current Hermes buffer.
+If the bench window is hidden, redisplay it first.  When no bench is
+attached to the buffer (e.g. `hermes-minor-mode' rather than the major
+mode), fall back to `hermes-send' for a minibuffer prompt."
   (interactive)
   (let ((bench (and (derived-mode-p 'hermes-mode)
                     (hermes-bench-active-p))))
@@ -402,9 +405,6 @@ background; for the user-facing entry that also pops the buffer, see
           (select-window win)
           (goto-char (point-max)))))))
 
-(defalias 'hermes-send #'hermes-input-send
-  "Queue-aware submission entry; see `hermes-input-send'.")
-
 (defun hermes-reconnect ()
   "Restart the gateway (if needed) and bind the current buffer to a fresh session.
 Used after the gateway subprocess has died.  The old session id is removed
@@ -448,7 +448,7 @@ queued input is drained."
                (hermes-input--drain-after-reconnect)
                (message "hermes: reconnected as %s" sid))))))))))
 
-(defun hermes-interrupt ()
+(defun hermes-interrupt-current-session ()
   "Send `session.interrupt' for the Hermes session at point.
 In the dedicated `*hermes*' buffer this is always the buffer's
 session; in an arbitrary Org buffer with `hermes-minor-mode' enabled,
@@ -565,11 +565,13 @@ subagents."
        nil nil 'file))
     (vconcat (nreverse messages))))
 
-(defun hermes-load-org ()
-  "Create a fresh gateway session bound to the current buffer.
-The gateway does not accept a history parameter, so conversation
-context is restored via the history seed on the first outgoing
-prompt (see `hermes--build-history-text')."
+(defun hermes-reload-from-org ()
+  "Reload the current Org buffer into a fresh gateway session.
+A new `session.create' is issued; the buffer's existing visible
+conversation is replayed to the new session via the history seed on
+the first outgoing prompt (see `hermes--build-history-text').  The
+gateway does not accept a history parameter on session creation, so
+this is the only way to re-attach an Org snapshot to a live session."
   (interactive)
   (unless (derived-mode-p 'hermes-mode)
     (user-error "Not in a Hermes buffer"))

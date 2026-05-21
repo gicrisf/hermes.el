@@ -34,7 +34,7 @@
   (define-key hermes-leader-map (kbd "c") #'hermes-compose)
   (define-key hermes-leader-map (kbd "l") #'hermes-current-sessions)
   (define-key hermes-leader-map (kbd "g") #'hermes)
-  (define-key hermes-leader-map (kbd "k") #'hermes-interrupt-everywhere)
+  (define-key hermes-leader-map (kbd "k") #'hermes-interrupt-all-sessions)
   (define-key hermes-leader-map (kbd "m") #'hermes-set-model)
   (define-key hermes-leader-map (kbd "f") #'hermes-toggle-fast)
   (define-key hermes-leader-map (kbd "r") #'hermes-toggle-reasoning)
@@ -54,12 +54,12 @@
 
 ;; ── Global helpers ────────────────────────────────────────────────────────
 
-(defun hermes-interrupt-everywhere ()
+(defun hermes-interrupt-all-sessions ()
   "Interrupt the primary session from any buffer."
   (interactive)
   (let ((buf (hermes--primary-session-buffer)))
     (if buf
-        (with-current-buffer buf (hermes-interrupt))
+        (with-current-buffer buf (hermes-interrupt-current-session))
       (user-error "No primary Hermes session"))))
 
 (provide 'hermes-doom)

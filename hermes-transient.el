@@ -83,9 +83,9 @@ skills commands only when a Hermes session is reachable."
      ("l" "Session list" hermes-current-sessions)]
 
     ["Input" :if hermes-transient--in-session-p
-     ("i" "Send / focus bench" hermes-send-or-focus-bench)
+     ("i" "Focus bench" hermes-bench-focus)
      ("c" "Compose" hermes-compose)
-     ("k" "Interrupt" hermes-interrupt)
+     ("k" "Interrupt" hermes-interrupt-current-session)
      ("S" "Steer" hermes-steer)]
 
     ["Config" :if hermes-transient--in-session-p

@@ -12,7 +12,7 @@
 ;;     session buffers.  Pick one to switch to it.
 ;;
 ;;   `hermes-stored-resume', `hermes-stored-branch', `hermes-stored-delete',
-;;   `hermes-stored-save' — completing-read over the gateway DB
+;;   `hermes-stored-export-as-json' — completing-read over the gateway DB
 ;;     (`session.list').  With a prefix arg, restrict to the current
 ;;     project's CWD.
 ;;
@@ -243,7 +243,7 @@ current project's CWD."
            (t (message "hermes: deleted %s" short)))))))))
 
 ;;;###autoload
-(defun hermes-stored-save (&optional cwd-filter)
+(defun hermes-stored-export-as-json (&optional cwd-filter)
   "Export a stored gateway-DB session to a JSON file via `session.save'.
 With a prefix arg CWD-FILTER, restrict the candidate list to the
 current project's CWD."
@@ -414,13 +414,15 @@ install."
                                (t nil))))
         (when then (funcall then buf))))))))
 
-;;;###autoload
 (defun hermes-resume-from-db (sid)
   "Resume the gateway-DB session SID into a fresh Hermes buffer.
+Internal helper.  User-facing entry points are `hermes-stored-resume'
+and the stale-heading prompt (`hermes--handle-stale-heading') — both
+pick a SID from a list, so there is no interactive form here.
+
 The gateway returns a NEW session id (distinct from SID); the new buffer
 is named `*hermes:<new-sid>*' and its history seed is suppressed since
 the gateway already has full context."
-  (interactive (list (read-string "Session id to resume: ")))
   (unless (and sid (not (string-empty-p sid)))
     (user-error "No session id given"))
   (when (string-prefix-p "bg_" sid)
@@ -433,12 +435,13 @@ the gateway already has full context."
    (lambda (result error)
      (hermes--db-handle-resume-response result error sid nil))))
 
-;;;###autoload
 (defun hermes-branch-from-db (sid)
   "Branch the gateway-DB session SID into a new session and open it.
+Internal helper.  User-facing entry points are `hermes-stored-branch'
+and the stale-heading prompt — both pick a SID from a list.
+
 Chains `session.branch' → `session.resume' so the new buffer is ready
 to receive prompts."
-  (interactive (list (read-string "Session id to branch: ")))
   (unless (and sid (not (string-empty-p sid)))
     (user-error "No session id given"))
   (when (string-prefix-p "bg_" sid)

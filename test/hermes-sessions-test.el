@@ -147,11 +147,15 @@
   (should (fboundp 'hermes-stored-resume))
   (should (fboundp 'hermes-stored-branch))
   (should (fboundp 'hermes-stored-delete))
-  (should (fboundp 'hermes-stored-save))
+  (should (fboundp 'hermes-stored-export-as-json))
   (should (fboundp 'hermes-resume-from-db))
   (should (fboundp 'hermes-branch-from-db))
   (should (commandp 'hermes-current-sessions))
-  (should (commandp 'hermes-stored-resume)))
+  (should (commandp 'hermes-stored-resume))
+  ;; Internal helpers must not be M-x-callable — users always pick
+  ;; from a list via the hermes-stored-* commands.
+  (should-not (commandp 'hermes-resume-from-db))
+  (should-not (commandp 'hermes-branch-from-db)))
 
 (provide 'hermes-sessions-test)
 ;;; hermes-sessions-test.el ends here

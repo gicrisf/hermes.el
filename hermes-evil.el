@@ -26,8 +26,8 @@
 
 (with-eval-after-load 'evil
   (evil-define-key 'normal hermes-mode-map
-    (kbd "C-c C-i") #'hermes-send-or-focus-bench
-    (kbd "C-c C-k") #'hermes-interrupt
+    (kbd "C-c C-i") #'hermes-bench-focus
+    (kbd "C-c C-k") #'hermes-interrupt-current-session
     (kbd "C-c C-l") #'hermes-compose))
 
 (provide 'hermes-evil)

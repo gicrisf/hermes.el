@@ -401,9 +401,16 @@ this test asserts the writer doesn't add escapes back."
 
 (ert-deftest hermes-render-test/tool-heading-todo-indicator ()
   "Heading carries a `[N todo]' indicator counting the todos list."
-  (let* ((tool (make-hermes-tool :id "t1" :name "TodoWrite"
+  (let* ((mkht (lambda (s) (let ((h (make-hash-table :test 'equal)))
+                             (puthash "status" "pending" h)
+                             (puthash "id" s h)
+                             (puthash "content" s h)
+                             h)))
+         (tool (make-hermes-tool :id "t1" :name "TodoWrite"
                                  :status 'complete
-                                 :todos '((:text "a") (:text "b") (:text "c"))))
+                                 :todos (list (funcall mkht "a")
+                                              (funcall mkht "b")
+                                              (funcall mkht "c"))))
          (result (hermes--format-segment
                   (make-hermes-segment :type 'tool :content tool :id "s1"))))
     (should (string-match-p "\\[3 todo\\]" result))))
@@ -1483,6 +1490,26 @@ the expected heading, properties, body, and `:HERMES_META:' drawer."
     (should (or (null tcs)
                 (let ((e (aref tcs 0))) (null (plist-get e :output)))))))
 
+(ert-deftest hermes-render-test/meta-drawer-omits-todos ()
+  "Meta drawer no longer carries :todos — they are body-canonical
+in a `#+name'd Org table."
+  (let* ((ht (let ((h (make-hash-table :test 'equal)))
+               (puthash "status" "completed" h)
+               (puthash "id" "x" h)
+               (puthash "content" "do thing" h)
+               h))
+         (tool (make-hermes-tool
+                :id "t1" :name "TodoWrite" :status 'complete
+                :todos (list ht)))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (meta (hermes--message-to-meta-plist msg))
+         (tcs (plist-get meta :tool-calls)))
+    (should (or (null tcs)
+                (let ((e (aref tcs 0))) (null (plist-get e :todos)))))))
+
 (ert-deftest hermes-render-test/meta-drawer-omits-error ()
   "Meta drawer no longer carries :error — it is body-canonical."
   (let* ((tool (make-hermes-tool :id "t1" :name "bash" :status 'error
@@ -1554,6 +1581,85 @@ across all formatters that emit body-canonical fields."
            (fmt (cadr case))
            (body (plist-get (funcall fmt tool) :body)))
       (should (hermes-render-test--name-marker-tight-p body)))))
+
+;;;; Body-canonical :todos via named Org table
+
+(defun hermes-render-test--mkht (status id content)
+  (let ((h (make-hash-table :test 'equal)))
+    (puthash "status" status h)
+    (puthash "id" id h)
+    (puthash "content" content h)
+    h))
+
+(ert-deftest hermes-render-test/tool-format-todos-includes-name-marker ()
+  "TodoWrite formatter emits `#+name: hermes-tool-<id>-todos' followed
+immediately by a pipe-prefixed table row."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "completed" "a" "Alpha"))))
+         (out (plist-get (hermes-tool-format-todos tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-tw1-todos$" out))
+    (should (string-match-p "^#\\+name: hermes-tool-tw1-todos\n| " out))))
+
+(ert-deftest hermes-render-test/tool-format-todos-4-column-table ()
+  "Table rows have 4 columns: checkbox, status, id, content."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "completed" "a" "Alpha"))))
+         (out (plist-get (hermes-tool-format-todos tool) :body)))
+    (should (string-match-p "^| \\[X\\] | completed | a | Alpha |$" out))))
+
+(ert-deftest hermes-render-test/tool-format-todos-preserves-pending-status ()
+  "Status `pending' is written verbatim in column 2 — NOT collapsed to
+the same checkbox state as `in_progress'."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "pending" "p" "later"))))
+         (out (plist-get (hermes-tool-format-todos tool) :body)))
+    (should (string-match-p "| pending | p | later |" out))
+    ;; pending uses the `[ ]' checkbox to distinguish from in_progress `[-]'.
+    (should (string-match-p "^| \\[ \\] | pending " out))))
+
+(ert-deftest hermes-render-test/name-marker-tight-to-table ()
+  "`#+name:' line is immediately followed by `|' row, no blank line."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "completed" "a" "x"))))
+         (body (plist-get (hermes-tool-format-todos tool) :body)))
+    (with-temp-buffer
+      (insert body)
+      (goto-char (point-min))
+      (should (re-search-forward "^#\\+name:" nil t))
+      (forward-line 1)
+      (should (looking-at "^[ \t]*|")))))
+
+(ert-deftest hermes-render-test/refresh-region-aligns-todo-tables ()
+  "`hermes--refresh-region' aligns named Hermes todo tables in place
+because `with-silent-modifications' suppresses Org's auto-align hooks."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* h\n#+name: hermes-tool-t1-todos\n"
+            "| [X] | completed | a | Alpha |\n"
+            "| [ ] | pending | bb | Beta |\n")
+    (hermes--refresh-region (point-min) (point-max))
+    ;; Column 2's widest cell is `completed' (9 chars), so the `pending'
+    ;; row gains trailing spaces inside its cell.
+    (goto-char (point-min))
+    (should (re-search-forward "| pending +|" nil t))))
+
+(ert-deftest hermes-render-test/refresh-region-skips-foreign-tables ()
+  "`hermes--refresh-region' must not touch tables outside the
+`hermes-tool-' namespace — user tables are left as-is."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* h\n#+name: user-table\n| a | b |\n| longer | x |\n")
+    (let ((before (buffer-string)))
+      (hermes--refresh-region (point-min) (point-max))
+      (should (equal before (buffer-string))))))
 
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

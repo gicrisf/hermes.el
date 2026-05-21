@@ -877,6 +877,89 @@ partial
                    (hermes--extract-named-block
                     body "hermes-tool-a.b+c-inline-diff")))))
 
+;;;; Body-canonical :todos via named Org table
+
+(ert-deftest hermes-org-test/extract-named-table-finds-table ()
+  "`hermes--extract-named-table' returns the pipe-prefixed rows."
+  (let ((text "noise\n#+name: hermes-tool-t1-todos\n| [X] | completed | a | Alpha |\n| [ ] | pending | b | Beta |\ntail"))
+    (should (equal "| [X] | completed | a | Alpha |\n| [ ] | pending | b | Beta |"
+                   (hermes--extract-named-table text "hermes-tool-t1-todos")))))
+
+(ert-deftest hermes-org-test/extract-named-table-nil-when-missing ()
+  (should (null (hermes--extract-named-table "no name here" "x")))
+  (should (null (hermes--extract-named-table nil "x")))
+  (should (null (hermes--extract-named-table "#+name: x\nnot a table line\n" "x"))))
+
+(ert-deftest hermes-org-test/parse-todos-table-extracts-hash-tables ()
+  "Rows parse into hash-tables with string keys matching gateway shape."
+  (let* ((todos (hermes--parse-todos-table
+                 "| [X] | completed   | a | Alpha |\n| [-] | in_progress | b | Beta |\n| [ ] | pending     | c | Gamma |")))
+    (should (= 3 (length todos)))
+    (let ((t0 (nth 0 todos)))
+      (should (hash-table-p t0))
+      (should (equal "completed" (gethash "status" t0)))
+      (should (equal "a" (gethash "id" t0)))
+      (should (equal "Alpha" (gethash "content" t0))))
+    (let ((t1 (nth 1 todos)))
+      (should (equal "in_progress" (gethash "status" t1)))
+      (should (equal "Beta" (gethash "content" t1))))
+    (let ((t2 (nth 2 todos)))
+      (should (equal "pending" (gethash "status" t2)))
+      (should (equal "Gamma" (gethash "content" t2))))))
+
+(ert-deftest hermes-org-test/parse-todos-table-preserves-pending-status ()
+  "`pending' must NOT be normalized to `in_progress' on parse."
+  (let* ((todos (hermes--parse-todos-table
+                 "| [ ] | pending | x | Body |"))
+         (ht (car todos)))
+    (should (equal "pending" (gethash "status" ht)))))
+
+(ert-deftest hermes-org-test/parse-todos-table-empty-id-tolerated ()
+  "Empty `id' column does not crash; value is an empty string."
+  (let* ((todos (hermes--parse-todos-table
+                 "| [X] | completed |  | Anonymous |"))
+         (ht (car todos)))
+    (should (equal "" (gethash "id" ht)))
+    (should (equal "Anonymous" (gethash "content" ht)))))
+
+(ert-deftest hermes-org-test/parse-todos-table-nil-when-empty ()
+  (should (null (hermes--parse-todos-table nil)))
+  (should (null (hermes--parse-todos-table "")))
+  (should (null (hermes--parse-todos-table "garbage no pipes here"))))
+
+(ert-deftest hermes-org-test/parse-tool-todos-from-body ()
+  "Parser reads :todos from the #+name'd Org table in the heading body."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: t
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE TodoWrite (0.0s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: tw1
+:TOOL_NAME: TodoWrite
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.0
+:END:
+#+name: hermes-tool-tw1-todos
+| [X] | completed | a | alpha |
+| [ ] | pending   | b | beta  |
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0)))
+          (todos (hermes-tool-todos tool)))
+     (should (= 2 (length todos)))
+     (should (equal "completed" (gethash "status" (nth 0 todos))))
+     (should (equal "a"         (gethash "id"     (nth 0 todos))))
+     (should (equal "alpha"     (gethash "content" (nth 0 todos))))
+     (should (equal "pending"   (gethash "status" (nth 1 todos))))
+     (should (equal "b"         (gethash "id"     (nth 1 todos))))
+     (should (equal "beta"      (gethash "content" (nth 1 todos)))))))
+
 (ert-deftest hermes-org-test/roundtrip-body-canonical-fields ()
   "Render→parse→render preserves bytes for :inline-diff, :output, and
 :error when they are body-canonical at terminal status."
@@ -936,7 +1019,27 @@ partial
                        :content (make-hermes-tool
                                  :id "b1" :name "bash"
                                  :status 'error :duration 0.1
-                                 :error "boom")))))))
+                                 :error "boom")))))
+    ;; :todos round-trip (TodoWrite tool) — gateway hash-table shape
+    (let ((mkht (lambda (status id content)
+                  (let ((h (make-hash-table :test 'equal)))
+                    (puthash "status" status h)
+                    (puthash "id" id h)
+                    (puthash "content" content h)
+                    h))))
+      (funcall roundtrip
+               (make-hermes-message
+                :kind 'assistant
+                :segments
+                (vector (make-hermes-segment
+                         :type 'tool :id "s1"
+                         :content (make-hermes-tool
+                                   :id "tw1" :name "TodoWrite"
+                                   :status 'complete :duration 0.0
+                                   :todos (list
+                                           (funcall mkht "completed"   "a" "alpha")
+                                           (funcall mkht "in_progress" "b" "beta")
+                                           (funcall mkht "pending"     "c" "gamma"))))))))))
 
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

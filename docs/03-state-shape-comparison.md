@@ -131,7 +131,7 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
   context     ; tool args preview from tool.start
   preview     ; live preview from tool.progress
   inline-diff ; diff output from tool.complete
-  todos       ; list of plists (:text :done) from tool.complete
+   todos       ; list of hash-tables ("content" "status" "id") from tool.complete
   output error duration)
 ```
 

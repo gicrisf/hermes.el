@@ -201,6 +201,62 @@ standard text-inside-block boundary problem and is accepted."
                                 (1+ start) (line-beginning-position))))
                   (string-trim content))))))))))
 
+(defun hermes--extract-named-table (text name)
+  "Find the Org table labelled NAME in TEXT and return its raw text.
+TEXT is the body of an Org heading (string).  NAME is the value
+expected after `#+name:'.  The line immediately after the `#+name'
+must begin with `|' (no blank line between).  Returns the table
+text — pipe-prefixed rows joined by newlines — with trailing
+whitespace trimmed.  Returns nil if NAME is absent or the line
+after it is not a table row.
+
+Companion to `hermes--extract-named-block': blocks (`#+begin_…')
+extract through the block helper; bare named tables extract here."
+  (when (and text name)
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      (let ((case-fold-search t)
+            (pattern (format "^#\\+name: %s[ \t]*$" (regexp-quote name))))
+        (when (re-search-forward pattern nil t)
+          (forward-line 1)
+          (when (looking-at "^[ \t]*|")
+            (let ((start (line-beginning-position))
+                  (end (save-excursion
+                         (while (and (not (eobp))
+                                     (looking-at "^[ \t]*|"))
+                           (forward-line 1))
+                         (point))))
+              (when (> end start)
+                (string-trim-right
+                 (buffer-substring-no-properties start end))))))))))
+
+(defun hermes--parse-todos-table (text)
+  "Parse an Org table in TEXT into a list of hash-tables.
+Each row must match `| [X|space|-] | status | id | content |'.
+Returns hash-tables with string keys \"status\", \"id\", \"content\",
+matching the gateway shape.  The checkbox column (1) is ignored;
+column 2 is read verbatim as the canonical status string — this
+preserves `pending', `in_progress', `completed' (or any other
+status string the gateway introduces) without normalization.
+Returns nil for nil input or when no rows match."
+  (when text
+    (let ((items nil)
+          (re (concat "^[ \t]*"
+                      "| *\\[\\([Xx -]\\)\\] *"
+                      "| *\\([^|]+?\\) *"
+                      "| *\\([^|]*?\\) *"
+                      "| *\\(.*?\\) *"
+                      "|[ \t]*$")))
+      (dolist (line (split-string text "\n" t))
+        (when (string-match re line)
+          (let ((ht (make-hash-table :test 'equal)))
+            (puthash "status"  (match-string 2 line) ht)
+            (puthash "id"      (match-string 3 line) ht)
+            (puthash "content" (match-string 4 line) ht)
+            (push ht items))))
+      (nreverse items))))
+
 (defun hermes--parse-heading-body ()
   "Return the body text of the Org heading at point, excluding child
 headings, the property drawer, and any sibling `:HERMES_META:' drawer.
@@ -339,7 +395,11 @@ nil if point is not on a recognized turn heading."
                                                                (hermes--extract-named-block
                                                                 body
                                                                 (format "hermes-tool-%s-inline-diff" slug)))
-                                             :todos (plist-get tc :todos)
+                                             :todos (let ((table (and slug
+                                                                       (hermes--extract-named-table
+                                                                        body
+                                                                        (format "hermes-tool-%s-todos" slug)))))
+                                                      (and table (hermes--parse-todos-table table)))
                                              :summary (hermes--strip-ansi (plist-get tc :summary))
                                              :error (and (eq status 'error) slug
                                                          (hermes--extract-named-block

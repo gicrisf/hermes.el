@@ -70,7 +70,9 @@
   context     ; tool args preview from tool.start
   preview     ; live preview from tool.progress
   inline-diff ; diff output from tool.complete
-  todos       ; list of plists (:text :done) from tool.complete
+  todos       ; list of hash-tables with "content" "status" "id" — from
+              ; tool.complete (and defensively tool.start/tool.progress
+              ; when the gateway forwards them earlier)
   output      ; string or nil (raw tool result text — rarely populated)
   summary     ; string or nil (human summary from gateway, e.g. "Did 3 searches")
   error duration)
@@ -999,7 +1001,8 @@ which case dispatch routes to the correct typed reconstructor."
       ("tool.start"
        (let ((str (hermes-state-stream state))
              (tid (hermes--get p "tool_id"))
-             (ctx (hermes--strip-ansi (hermes--get p "context"))))
+             (ctx (hermes--strip-ansi (hermes--get p "context")))
+             (todos-raw (hermes--get p "todos")))
          (if (or (null str) (null tid))
              state
            (let* ((segs (hermes-stream-segments str))
@@ -1010,7 +1013,9 @@ which case dispatch routes to the correct typed reconstructor."
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
                                   (setf (hermes-tool-status nt) 'running
-                                        (hermes-tool-context nt) ctx)))
+                                        (hermes-tool-context nt) ctx)
+                                  (when todos-raw
+                                    (setf (hermes-tool-todos nt) todos-raw))))
                       (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
                                  (setf (hermes-segment-content ns) new-tool)))
                       (new-segs (copy-sequence segs)))
@@ -1022,7 +1027,8 @@ which case dispatch routes to the correct typed reconstructor."
       ("tool.progress"
        (let ((str (hermes-state-stream state))
              (tid (hermes--get p "tool_id"))
-             (preview (hermes--strip-ansi (hermes--get p "preview"))))
+             (preview (hermes--strip-ansi (hermes--get p "preview")))
+             (todos-raw (hermes--get p "todos")))
          (if (or (null str) (null tid))
              state
            (let* ((segs (hermes-stream-segments str))
@@ -1032,7 +1038,9 @@ which case dispatch routes to the correct typed reconstructor."
                (let* ((old-seg (aref segs idx))
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                  (setf (hermes-tool-preview nt) preview)))
+                                  (setf (hermes-tool-preview nt) preview)
+                                  (when todos-raw
+                                    (setf (hermes-tool-todos nt) todos-raw))))
                       (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
                                  (setf (hermes-segment-content ns) new-tool)))
                       (new-segs (copy-sequence segs)))

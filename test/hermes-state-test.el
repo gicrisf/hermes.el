@@ -554,18 +554,64 @@ and writes the error text to the log."
     (should (equal "- old\n+ new" (hermes-tool-inline-diff tool)))))
 
 (ert-deftest hermes-state-test/tool-complete-stores-todos ()
-  (let* ((s (hermes-test--reduce*
+  "Reducer passes the gateway's hash-table todo payload through unchanged.
+Gateway shape: list of hash-tables with \"content\" / \"status\" / \"id\"."
+  (let* ((todo (hermes-test--ht "content" "fix bug" "status" "completed" "id" "x"))
+         (s (hermes-test--reduce*
              nil
              (cons "message.start" nil)
              (cons "tool.generating"
                    (hermes-test--ht "tool_id" "t1" "name" "todo"))
              (cons "tool.complete"
+                   (hermes-test--ht "tool_id" "t1" "todos" (list todo)))))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg))
+         (got (car (hermes-tool-todos tool))))
+    (should (= 1 (length (hermes-tool-todos tool))))
+    (should (hash-table-p got))
+    (should (equal "fix bug"   (gethash "content" got)))
+    (should (equal "completed" (gethash "status"  got)))
+    (should (equal "x"         (gethash "id"      got)))))
+
+(ert-deftest hermes-state-test/tool-start-stores-todos ()
+  "If gateway forwards todos on tool.start, the running tool captures them."
+  (let* ((todo (hermes-test--ht "content" "do it" "status" "pending" "id" "p1"))
+         (s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "todo"))
+             (cons "tool.start"
                    (hermes-test--ht "tool_id" "t1"
-                                    "todos" '(("text" . "fix bug") ("done" . t))))))
+                                    "context" "ctx"
+                                    "todos" (list todo)))))
          (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
          (tool (hermes-segment-content seg)))
-    (should (equal '(("text" . "fix bug") ("done" . t))
-                   (hermes-tool-todos tool)))))
+    (should (eq 'running (hermes-tool-status tool)))
+    (should (= 1 (length (hermes-tool-todos tool))))
+    (should (equal "pending"
+                   (gethash "status" (car (hermes-tool-todos tool)))))))
+
+(ert-deftest hermes-state-test/tool-progress-updates-todos ()
+  "tool.progress with todos payload updates the running tool in place."
+  (let* ((before (hermes-test--ht "content" "x" "status" "pending"     "id" "p1"))
+         (after  (hermes-test--ht "content" "x" "status" "in_progress" "id" "p1"))
+         (s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "todo"))
+             (cons "tool.start"
+                   (hermes-test--ht "tool_id" "t1"
+                                    "todos" (list before)))
+             (cons "tool.progress"
+                   (hermes-test--ht "tool_id" "t1"
+                                    "preview" "running"
+                                    "todos" (list after)))))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
+    (should (equal "in_progress"
+                   (gethash "status" (car (hermes-tool-todos tool)))))))
 
 (ert-deftest hermes-state-test/tools-commit-with-message ()
   (let* ((s (hermes-test--reduce*

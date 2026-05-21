@@ -128,6 +128,35 @@ failure.  Keys are downcased symbols, values are strings."
     ('error    body-complete)
     (_         body-running)))
 
+(defun hermes-tool--format-todos-table (tool todos)
+  "Render TODOS as a `#+name'd Org table for TOOL.  Returns nil when
+TODOS is empty.
+
+The table has four columns: `[X|-|space]` (visual sugar), the
+verbatim gateway `status` string, `id`, and `content`.  Column 2
+preserves all gateway statuses (including `pending` and any others
+the gateway might introduce); the parser reads it verbatim and
+ignores column 1.
+
+Body-canonical: the parser re-reads this via
+`hermes--extract-named-table' + `hermes--parse-todos-table'."
+  (when todos
+    (let ((slug (hermes--slug-for-name (hermes-tool-id tool)))
+          (rows (mapconcat
+                 (lambda (todo)
+                   (let* ((content (or (hermes--get todo "content") ""))
+                          (status  (or (hermes--get todo "status") ""))
+                          (id      (or (hermes--get todo "id") ""))
+                          (check   (pcase status
+                                     ("completed"   "X")
+                                     ("in_progress" "-")
+                                     (_             " "))))
+                     (format "| [%s] | %s | %s | %s |"
+                             check status id content)))
+                 todos "\n")))
+      (concat (format "#+name: hermes-tool-%s-todos\n" slug)
+              rows "\n"))))
+
 (defun hermes-tool--maybe-name (tool field-suffix block)
   "Prefix BLOCK with `#+name: hermes-tool-<slug>-FIELD-SUFFIX' when TOOL's
 status is terminal (`complete' or `error'); otherwise return BLOCK
@@ -176,15 +205,7 @@ empty or nil.  The `#+name' line is placed immediately before the
              (hermes-tool--maybe-name
               tool "inline-diff"
               (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
-           (when todos
-             (concat ":TODOS:\n"
-                     (mapconcat
-                      (lambda (todo)
-                        (let ((text (or (hermes--get todo "text") ""))
-                              (done (hermes--get todo "done")))
-                          (format "- [%s] %s" (if done "X" " ") text)))
-                      todos "\n")
-                     "\n:END:\n")))))
+           (hermes-tool--format-todos-table tool todos))))
     (list :summary name :body body :fold nil)))
 
 ;;;; Bash
@@ -343,18 +364,10 @@ empty or nil.  The `#+name' line is placed immediately before the
          (done  (cl-count-if (lambda (td) (hermes--get td "done")) todos))
          (summary (if (> total 0)
                       (format "Todos (%d/%d done)" done total)
-                    "Todos"))
-         (list-body
-          (when todos
-            (concat
-             (mapconcat
-              (lambda (todo)
-                (let ((text (or (hermes--get todo "text") ""))
-                      (d (hermes--get todo "done")))
-                  (format "- [%s] %s" (if d "X" " ") text)))
-              todos "\n")
-             "\n"))))
-    (list :summary summary :body (or list-body "") :fold nil)))
+                    "Todos")))
+    (list :summary summary
+          :body (or (hermes-tool--format-todos-table tool todos) "")
+          :fold nil)))
 
 ;;;; WebFetch / WebSearch
 

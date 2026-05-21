@@ -71,7 +71,7 @@ Renderer markers:
 | **Missing `tool.start`** | ✅ Fixed — reducer transitions `generating` → `running`, stores context | **High** |
 | **Dead `tool.progress` state** | ✅ Fixed — preview stored in persistent `tool.preview`, rendered in block | **Medium** |
 | **No `inline_diff` support** | ✅ Fixed — stored in `tool.inline-diff`, rendered as `#+begin_diff` block | **Medium** |
-| **No `todos` support** | ✅ Fixed — stored in `tool.todos`, rendered as `:TODOS:` checklist | **Low** |
+| **No `todos` support** | ✅ Fixed — stored in `tool.todos`, rendered as `#+name`d Org table | **Low** |
 | **No `tool.started` event** | This is a Python-side event type that maps to `tool.progress` emission | N/A |
 | **Tool context** | ✅ Fixed — `tool.start` stores context in `hermes-tool-context`; rendered as `:CONTEXT:` drawer in running tool block | Low |
 

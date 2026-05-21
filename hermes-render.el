@@ -340,6 +340,25 @@ has a chance to repopulate cleanly."
       (ignore-errors
         (org-indent-add-properties start end)))
     (hermes--hide-drawers start end)
+    ;; Align named Hermes todo tables in the region.  `with-silent-
+    ;; modifications' suppresses Org's auto-align hooks, so we run an
+    ;; explicit pass here.  Scope is targeted to our `hermes-tool-…'
+    ;; namespace via the `#+name' line so we never touch user tables.
+    ;; END is captured as a marker because `org-table-align' inserts
+    ;; whitespace and would otherwise leave the bound stale across
+    ;; multiple tables in the same region.
+    (when (derived-mode-p 'org-mode)
+      (let ((end-marker (copy-marker end)))
+        (unwind-protect
+            (save-excursion
+              (goto-char start)
+              (while (re-search-forward
+                      "^#\\+name: hermes-tool-[^ \t\r\n]+[ \t]*$"
+                      end-marker t)
+                (forward-line 1)
+                (when (looking-at "^[ \t]*|")
+                  (ignore-errors (org-table-align)))))
+          (set-marker end-marker nil))))
     ;; Render inline images for any `[[file:...]]' links in the region.
     ;; Bound `org-image-actual-width' to the window width so oversized
     ;; images scale down rather than blowing the buffer geometry.
@@ -499,15 +518,17 @@ Compactness rules:
                ;; *display* only and is NOT round-tripped.  :output is
                ;; the canonical raw tool output and lives in meta so
                ;; re-renders are byte-stable.
-               ;; :inline-diff, :output, and :error are body-canonical at
-               ;; terminal status — they live in the heading body as #+name'd
-               ;; blocks and are omitted from meta to avoid duplication.  The
-               ;; parser re-reads them via `hermes--extract-named-block'.
+               ;; Body-canonical fields are omitted from meta to avoid
+               ;; duplication: :inline-diff / :output / :error live in
+               ;; #+name'd blocks (parser: `hermes--extract-named-block'),
+                ;; and :todos lives in a `#+name'd Org table (parser:
+                ;; `hermes--extract-named-table' + `hermes--parse-todos-table').
+                ;; Meta only carries
+               ;; structured fields the body cannot represent natively.
                (let ((slim (hermes--plist-drop-nils
                             (list :id      (hermes-tool-id tool)
                                   :context (hermes-tool-context tool)
-                                  :summary (hermes-tool-summary tool)
-                                  :todos   (hermes-tool-todos tool)))))
+                                  :summary (hermes-tool-summary tool)))))
                  ;; Skip the entry entirely when only :id would remain —
                  ;; a "simple" tool fully described by its heading.
                  (when (cddr slim)

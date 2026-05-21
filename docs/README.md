@@ -2,7 +2,7 @@
 
 > **Purpose:** Comprehensive analysis of the official Hermes TUI (`ui-tui` + `tui_gateway`) compared to the Emacs frontend (`hermes.el`). This document captures protocol semantics, state shapes, event handling, and implementation gaps for future development.
 >
-> **Date:** 2026-05-13 (updated 2026-05-14)
+> **Date:** 2026-05-13 (updated 2026-05-21)
 > **Sources:** `hermes-agent/ui-tui/src/`, `hermes-agent/tui_gateway/server.py`, `hermes-agent/tools/approval.py`, and the Emacs codebase (`*.el`).
 >
 > **Recent changes reflected in this version:**
@@ -13,6 +13,7 @@
 > - Tool rendering moved into segments (tool blocks are interleaved in arrival order, not appended after text)
 > - Reasoning rendered as typed segments (not separate marker-managed blocks); thinking is UI-only via header-line status
 > - Approval choices fixed to canonical `once`/`session`/`always`/`deny`
+> - Body-canonical tool fields: `:inline-diff`, `:output`, `:error` via `#+name`d blocks; `:todos` via `#+name`d Org table. `:HERMES_META:` now carries only `:context`, `:summary`, `:usage`, `:images`, `:subagents`.
 
 ## Sections
 

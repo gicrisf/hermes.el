@@ -120,7 +120,7 @@ hermes-tool
 ├── context     :: tool args preview from tool.start
 ├── preview     :: live preview from tool.progress
 ├── inline-diff :: diff output from tool.complete
-├── todos       :: list of plists (:text :done)
+├── todos       :: list of hash-tables ("content" "status" "id")
 ├── output      :: string or nil
 ├── error       :: string or nil
 └── duration    :: number or nil
@@ -477,14 +477,17 @@ Sure, 2+2 is 4.
 :PROPERTIES:
 :HERMES_KIND: TOOL
 :TOOL_ID:     calc-01
+:TOOL_NAME:   calculator
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.3
 :END:
+#+name: hermes-tool-calc-01-output
 #+begin_example
 4
 #+end_example
 
 :HERMES_META:
 (:usage (:tokens_sent 1450 :tokens_received 892)
- :tool-calls [(:id "calc-01" :name "calculator" :status complete :output "4" :duration 0.3)]
  :images []
  :subagents [])
 :END:

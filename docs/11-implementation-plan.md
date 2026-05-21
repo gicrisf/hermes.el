@@ -77,7 +77,7 @@
 3. **Handle `todos`** ✅
    - Added `todos` slot to `hermes-tool`
    - Reducer stores `todos` from `tool.complete`
-   - Renderer renders as `:TODOS:` drawer with checklist
+    - Renderer renders as `#+name`d Org table
 
 ### Phase 3 — Subagent Support ✅ Completed
 

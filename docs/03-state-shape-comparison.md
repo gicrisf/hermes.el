@@ -128,11 +128,13 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
 (cl-defstruct hermes-tool
   id name
   status      ; 'generating | 'running | 'complete | 'error
-  context     ; tool args preview from tool.start
-  preview     ; live preview from tool.progress
-  inline-diff ; diff output from tool.complete
-   todos       ; list of hash-tables ("content" "status" "id") from tool.complete
-  output error duration)
+   context     ; tool args preview from tool.start — body-canonical
+   preview     ; live preview from tool.progress
+   inline-diff ; diff output from tool.complete — body-canonical
+   todos       ; list of hash-tables ("content" "status" "id") — body-canonical
+   output      ; string or nil — body-canonical
+   error       ; string or nil — body-canonical
+   duration)
 ```
 
 #### Pending State (`hermes-pending`)

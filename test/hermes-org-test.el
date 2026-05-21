@@ -551,6 +551,10 @@ are body-canonical (read from #+name'd blocks at terminal status)."
 :TOOL_STATUS: error
 :TOOL_DURATION: 1.2
 :END:
+#+name: hermes-tool-gd1-context
+#+begin_example
+--cached
+#+end_example
 #+name: hermes-tool-gd1-inline-diff
 #+begin_src diff
 D
@@ -560,7 +564,7 @@ D
 err
 #+end_example
 :HERMES_META:
-(:tool-calls [(:id \"gd1\" :context \"--cached\" :summary \"sum\" :todos nil)])
+(:tool-calls [(:id \"gd1\" :summary \"sum\" :todos nil)])
 :END:
 "
    (hermes-org-test--at-first-turn)
@@ -1040,6 +1044,97 @@ partial
                                            (funcall mkht "completed"   "a" "alpha")
                                            (funcall mkht "in_progress" "b" "beta")
                                            (funcall mkht "pending"     "c" "gamma"))))))))))
+
+(ert-deftest hermes-org-test/parse-tool-context-from-body ()
+  "Parser reads :context from a `#+name'd #+begin_example block in the
+tool heading body — not from meta.  This is the body-canonical
+contract: meta carries only the structured fields the body cannot
+represent natively."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE Bash (0.1s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: b1
+:TOOL_NAME: Bash
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.1
+:END:
+#+name: hermes-tool-b1-context
+#+begin_example
+ls -la /tmp
+#+end_example
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (equal "ls -la /tmp" (hermes-tool-context tool))))))
+
+(ert-deftest hermes-org-test/parse-tool-context-resume-without-meta ()
+  "Loading a saved buffer that has a `#+name'd context block but NO
+:HERMES_META: drawer still populates `hermes-tool-context'.  This
+proves context survives resume on the body channel alone."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE Bash (0.1s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: b1
+:TOOL_NAME: Bash
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.1
+:END:
+#+name: hermes-tool-b1-context
+#+begin_example
+echo hello
+#+end_example
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (equal "echo hello" (hermes-tool-context tool))))))
+
+(ert-deftest hermes-org-test/roundtrip-body-canonical-context ()
+  "Render → parse → render a tool that carries only :context.  The
+re-render must be byte-identical to the first render."
+  (let* ((tool (make-hermes-tool
+                :id "b1" :name "Bash" :status 'complete
+                :duration 0.1
+                :context "grep -R foo ."))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (render-msg
+          (lambda (m)
+            (with-temp-buffer
+              (org-mode)
+              (insert "* chat :hermes:\n** A: x\n:PROPERTIES:\n:HERMES_KIND: ASSISTANT\n:END:\n")
+              (let ((segs (hermes-message-segments m)))
+                (dotimes (i (length segs))
+                  (insert (hermes--format-segment (aref segs i)))))
+              (hermes--insert-meta-drawer m)
+              (buffer-substring-no-properties (point-min) (point-max))))))
+    (let* ((rendered1 (funcall render-msg msg)))
+      (with-temp-buffer
+        (org-mode)
+        (insert rendered1)
+        (goto-char (point-min))
+        (re-search-forward "^\\*\\* A:" nil t)
+        (beginning-of-line)
+        (let* ((parsed (hermes--parse-turn-at-point))
+               (rendered2 (funcall render-msg parsed)))
+          (should (equal rendered1 rendered2)))))))
 
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

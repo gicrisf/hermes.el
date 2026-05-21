@@ -121,6 +121,20 @@ failure.  Keys are downcased symbols, values are strings."
       (format "#+begin_example\n%s\n#+end_example\n" content)
     ""))
 
+(defun hermes-tool--context-block (tool)
+  "Return a `#+name'd example block carrying TOOL's raw context string,
+or the empty string when no context is set.  Body-canonical: the
+parser re-reads this via `hermes--extract-named-block'.  Unlike
+preview/output blocks, the `#+name' marker is emitted unconditionally
+(no terminal-status gate) because context is static, set once at
+`tool.start' and never updated."
+  (let ((ctx (hermes-tool-context tool)))
+    (if (and ctx (stringp ctx) (not (string-empty-p ctx)))
+        (concat (format "#+name: hermes-tool-%s-context\n"
+                        (hermes--slug-for-name (hermes-tool-id tool)))
+                (hermes-tool--example ctx))
+      "")))
+
 (defun hermes-tool--running-or-complete (tool body-complete body-running)
   "Choose body fragment by TOOL status."
   (pcase (hermes-tool-status tool)
@@ -187,16 +201,13 @@ empty or nil.  The `#+name' line is placed immediately before the
 (defun hermes-tool-format-generic (tool)
   "Default formatter.  Mirrors the legacy layout but without status-in-heading."
   (let* ((name    (or (hermes-tool-name tool) "tool"))
-         (context (hermes-tool-context tool))
          (err     (hermes-tool-error tool))
          (out     (hermes-tool--output-or-preview tool))
          (diff    (hermes-tool-inline-diff tool))
          (todos   (hermes-tool-todos tool))
          (body
           (concat
-           (when (and (memq (hermes-tool-status tool) '(running generating))
-                      context)
-             (format ":CONTEXT:\n%s\n:END:\n" context))
+           (hermes-tool--context-block tool)
            (cond
             (err (hermes-tool--maybe-name tool "error" (hermes-tool--example err)))
             (out (hermes-tool--maybe-name tool "output" (hermes-tool--example out)))
@@ -226,6 +237,7 @@ empty or nil.  The `#+name' line is placed immediately before the
                         72))))
     (list :summary summary
           :body (concat
+                 (hermes-tool--context-block tool)
                  (unless (string-empty-p cmd)
                    (hermes-tool--src-block lang cmd))
                  (cond
@@ -260,13 +272,15 @@ empty or nil.  The `#+name' line is placed immediately before the
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool)))
     (list :summary summary
-          :body (cond
-                 (err (hermes-tool--maybe-name tool "error"
-                        (hermes-tool--example err)))
-                 (out (hermes-tool--maybe-name tool "output"
-                        (hermes-tool--src-block
-                         (hermes-tool--lang-from-path path) out)))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--src-block
+                          (hermes-tool--lang-from-path path) out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; Edit / Write
@@ -285,6 +299,7 @@ empty or nil.  The `#+name' line is placed immediately before the
                            70))))
     (list :summary summary
           :body (concat
+                 (hermes-tool--context-block tool)
                  (cond
                   (err (hermes-tool--maybe-name tool "error"
                          (hermes-tool--example err)))
@@ -328,12 +343,14 @@ empty or nil.  The `#+name' line is placed immediately before the
                       (hermes-tool--truncate
                        (or (hermes-tool-context tool) "") 60))))))
     (list :summary summary
-          :body (cond
-                 (err (hermes-tool--maybe-name tool "error"
-                        (hermes-tool--example err)))
-                 (out (hermes-tool--maybe-name tool "output"
-                        (hermes-tool--example out)))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; LS
@@ -348,12 +365,14 @@ empty or nil.  The `#+name' line is placed immediately before the
                             (if (string-empty-p path)
                                 (or (hermes-tool-context tool) "") path)
                             72))
-          :body (cond
-                 (err (hermes-tool--maybe-name tool "error"
-                        (hermes-tool--example err)))
-                 (out (hermes-tool--maybe-name tool "output"
-                        (hermes-tool--example out)))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; TodoWrite
@@ -366,7 +385,9 @@ empty or nil.  The `#+name' line is placed immediately before the
                       (format "Todos (%d/%d done)" done total)
                     "Todos")))
     (list :summary summary
-          :body (or (hermes-tool--format-todos-table tool todos) "")
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (or (hermes-tool--format-todos-table tool todos) ""))
           :fold nil)))
 
 ;;;; WebFetch / WebSearch
@@ -386,12 +407,14 @@ empty or nil.  The `#+name' line is placed immediately before the
                         (hermes-tool--truncate
                          (or (hermes-tool-context tool) "") 60))))))
     (list :summary summary
-          :body (cond
-                 (err (hermes-tool--maybe-name tool "error"
-                        (hermes-tool--example err)))
-                 (out (hermes-tool--maybe-name tool "output"
-                        (hermes-tool--example out)))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; Task / Agent
@@ -407,12 +430,14 @@ empty or nil.  The `#+name' line is placed immediately before the
                             (if (string-empty-p desc)
                                 (or (hermes-tool-context tool) "") desc)
                             70))
-          :body (cond
-                 (err (hermes-tool--maybe-name tool "error"
-                        (hermes-tool--example err)))
-                 (out (hermes-tool--maybe-name tool "output"
-                        (hermes-tool--example out)))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; Registration

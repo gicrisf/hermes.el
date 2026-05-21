@@ -117,12 +117,12 @@ hermes-tool
 ├── id          :: string (tool_id from gateway, or falls back to name)
 ├── name        :: string
 ├── status      :: 'generating | 'running | 'complete | 'error
-├── context     :: tool args preview from tool.start
+├── context     :: tool args preview from tool.start — body-canonical
 ├── preview     :: live preview from tool.progress
-├── inline-diff :: diff output from tool.complete
-├── todos       :: list of hash-tables ("content" "status" "id")
-├── output      :: string or nil
-├── error       :: string or nil
+├── inline-diff :: diff output from tool.complete — body-canonical
+├── todos       :: list of hash-tables ("content" "status" "id") — body-canonical
+├── output      :: string or nil — body-canonical
+├── error       :: string or nil — body-canonical
 └── duration    :: number or nil
 
 hermes-subagent

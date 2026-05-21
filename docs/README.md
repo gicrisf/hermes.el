@@ -13,7 +13,7 @@
 > - Tool rendering moved into segments (tool blocks are interleaved in arrival order, not appended after text)
 > - Reasoning rendered as typed segments (not separate marker-managed blocks); thinking is UI-only via header-line status
 > - Approval choices fixed to canonical `once`/`session`/`always`/`deny`
-> - Body-canonical tool fields: `:inline-diff`, `:output`, `:error` via `#+name`d blocks; `:todos` via `#+name`d Org table. `:HERMES_META:` now carries only `:context`, `:summary`, `:usage`, `:images`, `:subagents`.
+> - Body-canonical tool fields: `:inline-diff`, `:output`, `:error`, `:context` via `#+name`d blocks; `:todos` via `#+name`d Org table. `:HERMES_META:` now carries only `:summary`, `:usage`, `:images`, `:subagents`.
 
 ## Sections
 

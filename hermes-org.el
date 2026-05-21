@@ -389,7 +389,10 @@ nil if point is not on a recognized turn heading."
                                                           (hermes--extract-named-block
                                                            body
                                                            (format "hermes-tool-%s-output" slug)))
-                                             :context (hermes--strip-ansi (plist-get tc :context))
+                                             :context (and slug
+                                                           (hermes--extract-named-block
+                                                            body
+                                                            (format "hermes-tool-%s-context" slug)))
                                              :preview (hermes--strip-ansi (plist-get tc :preview))
                                              :inline-diff (and terminal-p slug
                                                                (hermes--extract-named-block

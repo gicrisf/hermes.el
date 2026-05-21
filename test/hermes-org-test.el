@@ -820,18 +820,18 @@ EDITED BY USER
 
 (ert-deftest hermes-org-test/parse-turn-child-kinds ()
   "Child headings are dispatched by :HERMES_KIND:, not by heading string.
-Unknown / missing kinds (e.g. SUBAGENT, plain headings) are skipped."
+SUBAGENT headings become `hermes-message-subagents'; unknown kinds skip."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: x
 :PROPERTIES:
 :HERMES_KIND: ASSISTANT
 :END:
-*** Foo
+*** fix bugs (running…)
 :PROPERTIES:
 :HERMES_KIND: SUBAGENT
+:ID:       sa-1
 :END:
-ignored
 *** Response
 :PROPERTIES:
 :HERMES_KIND: RESPONSE
@@ -844,7 +844,117 @@ visible answer
      (should (= 1 (length (hermes-message-segments msg))))
      (should (equal "visible answer"
                     (hermes-segment-content
-                     (aref (hermes-message-segments msg) 0)))))))
+                     (aref (hermes-message-segments msg) 0))))
+     (let ((sas (hermes-message-subagents msg)))
+       (should (= 1 (length sas)))
+       (should (equal "sa-1" (hermes-subagent-id (aref sas 0))))
+       (should (equal "fix bugs" (hermes-subagent-goal (aref sas 0))))
+       (should (eq 'running… (hermes-subagent-status (aref sas 0))))))))
+
+(ert-deftest hermes-org-test/parse-subagent-full ()
+  "A fully-populated subagent heading round-trips all fields."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** fix bugs (complete)
+:PROPERTIES:
+:HERMES_KIND: SUBAGENT
+:ID:       sa-42
+:END:
+#+begin_example Thinking
+let me think
+about it
+#+end_example
+- bash(ls -la)
+- write_file(foo.el)
+- searching repo
+- found three matches
+#+begin_example
+done well (2.5s)
+#+end_example
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (sas (hermes-message-subagents msg))
+          (sa  (aref sas 0)))
+     (should (= 1 (length sas)))
+     (should (equal "sa-42" (hermes-subagent-id sa)))
+     (should (equal "fix bugs" (hermes-subagent-goal sa)))
+     (should (eq 'complete (hermes-subagent-status sa)))
+     (should (equal "let me think\nabout it" (hermes-subagent-thinking sa)))
+     (let ((tools (hermes-subagent-tools sa)))
+       (should (= 2 (length tools)))
+       (should (equal "bash" (plist-get (aref tools 0) :name)))
+       (should (equal "ls -la" (plist-get (aref tools 0) :args)))
+       (should (equal "write_file" (plist-get (aref tools 1) :name)))
+       (should (equal "foo.el" (plist-get (aref tools 1) :args))))
+     (let ((notes (hermes-subagent-notes sa)))
+       (should (= 2 (length notes)))
+       (should (equal "searching repo" (aref notes 0)))
+       (should (equal "found three matches" (aref notes 1))))
+     (should (equal "done well" (hermes-subagent-summary sa)))
+     (should (equal 2.5 (hermes-subagent-duration sa))))))
+
+(ert-deftest hermes-org-test/parse-subagent-minimal ()
+  "A bare SUBAGENT heading with just id + status falls back gracefully."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: x
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** plain goal (queued)
+:PROPERTIES:
+:HERMES_KIND: SUBAGENT
+:ID:       sa-min
+:END:
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (sa (aref (hermes-message-subagents msg) 0)))
+     (should (equal "sa-min" (hermes-subagent-id sa)))
+     (should (equal "plain goal" (hermes-subagent-goal sa)))
+     (should (eq 'queued (hermes-subagent-status sa)))
+     (should (null (hermes-subagent-thinking sa)))
+     (should (equal [] (hermes-subagent-tools sa)))
+     (should (equal [] (hermes-subagent-notes sa)))
+     (should (null (hermes-subagent-summary sa)))
+     (should (null (hermes-subagent-duration sa))))))
+
+(ert-deftest hermes-org-test/round-trip-subagent-via-buffer ()
+  "Formatter → parser round-trip preserves subagent fields."
+  (require 'hermes-render)
+  (let* ((sa (make-hermes-subagent
+              :id "sa-rt" :goal "do thing" :status 'complete
+              :thinking "hmm"
+              :tools (vector (list :name "bash" :args "ls"))
+              :notes (vector "noted")
+              :summary "done" :duration 1.0))
+         (sa-str (hermes--format-subagents-block (vector sa))))
+    (hermes-org-test--with-buffer
+     (concat "* chat :hermes:\n"
+             "** A: x\n"
+             ":PROPERTIES:\n"
+             ":HERMES_KIND: ASSISTANT\n"
+             ":END:\n"
+             sa-str)
+     (hermes-org-test--at-first-turn)
+     (let* ((msg (hermes--parse-turn-at-point))
+            (sas (hermes-message-subagents msg))
+            (sa2 (and sas (> (length sas) 0) (aref sas 0))))
+       (should sa2)
+       (should (equal "sa-rt" (hermes-subagent-id sa2)))
+       (should (equal "do thing" (hermes-subagent-goal sa2)))
+       (should (eq 'complete (hermes-subagent-status sa2)))
+       (should (equal "hmm" (hermes-subagent-thinking sa2)))
+       (should (equal "bash" (plist-get (aref (hermes-subagent-tools sa2) 0) :name)))
+       (should (equal "ls" (plist-get (aref (hermes-subagent-tools sa2) 0) :args)))
+       (should (equal "noted" (aref (hermes-subagent-notes sa2) 0)))
+       (should (equal "done" (hermes-subagent-summary sa2)))
+       (should (equal 1.0 (hermes-subagent-duration sa2)))))))
 
 (ert-deftest hermes-org-test/parse-subtree-roundtrip-after-renderer ()
   "End-to-end: insert a committed turn via the renderer, then parse it

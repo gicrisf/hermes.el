@@ -304,12 +304,99 @@ Excludes child headings, :PROPERTIES:, and :HERMES_META: drawers."
           (let ((s (string-trim (buffer-substring-no-properties start end))))
             (and (not (string-empty-p s)) s)))))))
 
+(defun hermes--split-subagent-heading (text)
+  "Return (GOAL . STATUS) from \"goal (status)\" headline TEXT.
+STATUS is nil if no trailing parenthesized status is found."
+  (if (string-match "^\\(.+?\\)[ \t]+(\\([^)]+\\))$" text)
+      (cons (string-trim (match-string 1 text))
+            (intern (match-string 2 text)))
+    (cons text nil)))
+
+(defun hermes--extract-labeled-block (text label)
+  "Find #+begin_example LABEL in TEXT and return its content.
+LABEL is e.g. \"Thinking\".  Returns nil if absent."
+  (when (and text label)
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      (let ((case-fold-search t)
+            (pattern (format "^#\\+begin_example %s[ \t]*$"
+                             (regexp-quote label))))
+        (when (re-search-forward pattern nil t)
+          (let ((start (line-end-position)))
+            (when (re-search-forward "^#\\+end_example[ \t]*$" nil t)
+              (string-trim (buffer-substring-no-properties
+                            start (line-beginning-position))))))))))
+
+(defun hermes--extract-unlabeled-block (text type)
+  "Find a plain #+begin_TYPE block in TEXT with no label.
+Returns its content.  Matches #+begin_TYPE lines where the optional
+label is nil (e.g. #+begin_example Thinking is skipped)."
+  (when text
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      (let ((case-fold-search t)
+            (re (format "^#\\+begin_%s\\(?:[ \t]+\\(\\S-+\\)\\)?[ \t]*$"
+                        type)))
+        (catch 'found
+          (while (re-search-forward re nil t)
+            (when (null (match-string 1))
+              (let ((start (line-end-position)))
+                (when (re-search-forward (format "^#\\+end_%s[ \t]*$" type) nil t)
+                  (throw 'found (string-trim (buffer-substring-no-properties
+                                              start (line-beginning-position))))))))
+          nil)))))
+
+(defun hermes--parse-subagent-body (heading-text body id)
+  "Reconstruct a `hermes-subagent' from visible heading + body.
+HEADING-TEXT is the stripped headline (e.g. \"fix bugs (running…)\").
+BODY is the heading body string.  ID is the subagent id property.
+
+Contract: the formatter groups tools before notes as separate bullet
+blocks; if the reducer ever interleaves them, round-trip will silently
+reorder into tools-then-notes."
+  (when id
+    (let* ((goal-and-status (hermes--split-subagent-heading heading-text))
+           (goal (car goal-and-status))
+           (status (or (cdr goal-and-status) 'queued))
+           (thinking nil)
+           (tools [])
+           (notes [])
+           (summary nil)
+           (duration nil))
+      (when body
+        (setq thinking (hermes--extract-labeled-block body "Thinking"))
+        (let ((tool-items nil) (note-items nil))
+          (dolist (line (split-string body "\n" t))
+            (when (string-match "^[ \t]*-[ \t]+\\(.*\\)$" line)
+              (let ((rest (match-string 1 line)))
+                (if (string-match "^\\([^ ]+\\)(\\(.*\\))$" rest)
+                    (push (list :name (match-string 1 rest)
+                                :args (match-string 2 rest))
+                          tool-items)
+                  (push (string-trim rest) note-items)))))
+          (setq tools (vconcat (nreverse tool-items)))
+          (setq notes (vconcat (nreverse note-items))))
+        (let ((raw (hermes--extract-unlabeled-block body "example")))
+          (when raw
+            (when (string-match "\\(.*\\) (\\([0-9.]+\\)s)\\s-*$" raw)
+              (setq summary (string-trim (match-string 1 raw)))
+              (setq duration (ignore-errors (read (match-string 2 raw))))))))
+      (make-hermes-subagent
+       :id id :goal goal :status status
+       :thinking thinking
+       :tools tools :notes notes
+       :summary summary :duration duration))))
+
+(declare-function make-hermes-subagent "hermes-state" (&rest _))
+
 (defun hermes--parse-turn-at-point ()
   "Parse the turn heading at point into a `hermes-message' struct.
 Derives text segments from visible buffer structure (USER/SYSTEM body,
-or assistant child Response/Reasoning headings).  Reads tool segments,
-usage, images, and subagents from the :HERMES_META: drawer.  Returns
-nil if point is not on a recognized turn heading."
+or assistant child Response/Reasoning headings).  Reads usage from the
+:HERMES_META: drawer.  Subagents are parsed from visible child headings.
+Returns nil if point is not on a recognized turn heading."
   (when (and (derived-mode-p 'org-mode)
              (org-at-heading-p))
     (let* ((kind-prop (org-entry-get (point) "HERMES_KIND"))
@@ -320,7 +407,8 @@ nil if point is not on a recognized turn heading."
                    (_ nil)))
            (timestamp (org-entry-get (point) "HERMES_TIMESTAMP"))
            (meta (save-excursion (hermes--extract-meta-drawer)))
-           (segs ()))
+           (segs ())
+           (subagents ()))
       (when kind
         (cond
          ((memq kind '(user system))
@@ -411,35 +499,31 @@ nil if point is not on a recognized turn heading."
                                                           (format "hermes-tool-%s-error" slug))))
                                    :id (hermes--next-segment-id))
                                   segs)))
+                         ((equal child-kind "SUBAGENT")
+                          (let* ((id (org-entry-get (point) "ID"))
+                                 (heading-text (org-get-heading t t t t))
+                                 (body (hermes--parse-heading-body))
+                                 (sa (hermes--parse-subagent-body heading-text body id)))
+                            (when sa
+                              (push sa subagents))))
                          (t nil))))
                     (unless (and (outline-next-heading)
                                  (< (point) turn-end))
                       (setq continue nil))))))
             (ignore turn-pos)))
          (t nil))
-        (let* ((sa-raw (plist-get meta :subagents))
-               (subagents
-                (cond
-                 ((vectorp sa-raw)
-                  (apply #'vector
-                         (mapcar #'hermes--plist-to-subagent
-                                 (append sa-raw nil))))
-                 ((listp sa-raw)
-                  (apply #'vector
-                         (mapcar #'hermes--plist-to-subagent sa-raw)))
-                 (t []))))
-          (make-hermes-message
-           :kind kind
-           :segments (vconcat (nreverse segs))
-           :usage (plist-get meta :usage)
-           :subagents subagents
-           :timestamp timestamp))))))
+        (make-hermes-message
+         :kind kind
+         :segments (vconcat (nreverse segs))
+         :usage (plist-get meta :usage)
+         :subagents (vconcat (nreverse subagents))
+         :timestamp timestamp)))))
 
 (defun hermes--parse-subtree-messages ()
   "Parse turn headings under the container at point into a vector of
 `hermes-message' structs.  Scope is the current Org subtree only; the
-container heading itself is skipped.  Derives text from visible buffer
-structure, reads metadata from :HERMES_META: drawers."
+container heading itself is skipped.  Derives text and subagents from
+visible buffer structure; reads usage from :HERMES_META: drawers."
   (let (messages)
     (when (derived-mode-p 'org-mode)
       (save-excursion

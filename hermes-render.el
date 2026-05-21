@@ -488,12 +488,13 @@ and assistant turns are all siblings."
 (defun hermes--message-to-meta-plist (msg)
   "Extract irreplaceable metadata from MSG as a plist.
 Returns nil when there is no metadata to persist (text-only turn).
-Stores: usage, tool-calls (full tool struct minus segment id), images,
-subagents.  Text and reasoning live in the visible buffer and are not
+Stores: usage.  Subagents are body-canonical in child headings.  Images
+are written to the drawer but not yet parsed back (see backlog).
+Text and reasoning live in the visible buffer and are not
 duplicated here.
 
 Compactness rules:
-- Drops nil-valued keys from tool-call and subagent plists.
+- Drops nil-valued keys from tool-call plists.
 - Treats usage with all-zero numeric counters as nil (some providers
   never report tokens; serializing the zeroed snapshot is pure noise).
 - Returns nil when nothing meaningful would be written, so the caller
@@ -505,8 +506,7 @@ Compactness rules:
          (usage-plist (hermes--meta-usage-or-nil usage-plist))
          (segs (or (hermes-message-segments msg) []))
          (tool-calls nil)
-         (images nil)
-         (sas (or (hermes-message-subagents msg) [])))
+         (images nil))
     (dotimes (i (length segs))
       (let ((seg (aref segs i)))
         (pcase (hermes-segment-type seg)
@@ -538,14 +538,7 @@ Compactness rules:
                      images)))))))
     (let* ((tc-vec (vconcat (nreverse tool-calls)))
            (img-vec (vconcat (nreverse images)))
-           (sa-vec (apply #'vector
-                          (mapcar (lambda (sa)
-                                    (hermes--plist-drop-nils
-                                     (hermes--subagent-to-plist sa)))
-                                  (append sas nil))))
            (acc nil))
-      (when (> (length sa-vec) 0)
-        (setq acc (nconc (list :subagents sa-vec) acc)))
       (when (> (length img-vec) 0)
         (setq acc (nconc (list :images img-vec) acc)))
       (when (> (length tc-vec) 0)

@@ -770,39 +770,5 @@ options:
                  (hermes-branch-from-db sid))
     (_           (message "Cancelled"))))
 
-(defun hermes--resume-heading-session (sid)
-  "Attempt `session.resume' for SID; fall back to a fresh session on error.
-On success the in-memory state is rebuilt from the heading's drawers
-and any pre-send queue entry is drained.  On failure a new session is
-created via `hermes--create-fresh-session', which also drains.
-
-Note: as of the gateway-DB integration, this silent-resume path is no
-longer invoked by `M-x hermes' or `hermes-input-send' (which now prompt
-via `hermes--handle-stale-heading').  Kept for direct programmatic use."
-  (let ((marker (hermes--container-marker-at-point))
-        (buf (current-buffer)))
-    (unless (and marker (marker-position marker))
-      (user-error "No container marker for session %s" sid))
-    (hermes--install-hooks)
-    (unless (hermes-rpc-live-p)
-      (hermes-rpc-start))
-    (hermes-rpc-request
-     "session.resume" (list :session_id sid)
-     (lambda (_result error)
-       (when (buffer-live-p buf)
-         (with-current-buffer buf
-           (cond
-            (error
-             (message "hermes: resume %s failed (%S) — creating fresh session"
-                      sid error)
-             (hermes--create-fresh-session sid marker))
-            (t
-             (hermes--rebuild-session-state sid marker)
-             (when (and (boundp 'hermes--session-buffers)
-                        (hash-table-p hermes--session-buffers))
-               (puthash sid buf hermes--session-buffers))
-             (hermes--drain-pre-send-queue sid)
-             (message "hermes: resumed session %s" sid)))))))))
-
 (provide 'hermes-org)
 ;;; hermes-org.el ends here

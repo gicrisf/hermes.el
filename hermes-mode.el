@@ -376,11 +376,12 @@ background; for the user-facing entry that also pops the buffer, see
        (t
         (hermes--create-session-under-heading)))))
    (t
-    ;; No auto-resume from gateway DB by design: the org buffer is the
-    ;; canonical history. Resuming a gateway session whose org buffer was
-    ;; discarded would yield an empty buffer with a ghost session behind
-    ;; it. To resume, open the saved .org file and run `M-x hermes' from
-    ;; there — `hermes--resume-heading-session' picks up :HERMES_SESSION:.
+    ;; No auto-resume from gateway DB here by design: the org buffer is the
+    ;; canonical history.  To resume a DB session, open its `.org' file and
+    ;; run `M-x hermes' inside the `:hermes:' subtree — the stale-heading
+    ;; prompt (`hermes--handle-stale-heading') offers load-from-org,
+    ;; resume-from-DB, and branch-from-DB.  Or use the DB browser:
+    ;; `M-x hermes-sessions-db'.
     (let ((buf (hermes--primary-session-buffer)))
       (if buf
           (progn

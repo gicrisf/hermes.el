@@ -16,6 +16,7 @@
 
 (require 'cl-lib)
 (require 'org)
+(require 'hermes-state)
 
 (declare-function hermes-state-session-id "hermes-state" (state))
 (declare-function make-hermes-state "hermes-state" (&rest _))
@@ -294,13 +295,13 @@ nil if point is not on a recognized turn heading."
                                              :name name
                                              :status status
                                              :duration duration
-                                             :output (plist-get tc :output)
-                                             :context (plist-get tc :context)
-                                             :preview (plist-get tc :preview)
-                                             :inline-diff (plist-get tc :inline-diff)
+                                             :output (hermes--strip-ansi (plist-get tc :output))
+                                             :context (hermes--strip-ansi (plist-get tc :context))
+                                             :preview (hermes--strip-ansi (plist-get tc :preview))
+                                             :inline-diff (hermes--strip-ansi (plist-get tc :inline-diff))
                                              :todos (plist-get tc :todos)
-                                             :summary (plist-get tc :summary)
-                                             :error (plist-get tc :error))
+                                             :summary (hermes--strip-ansi (plist-get tc :summary))
+                                             :error (hermes--strip-ansi (plist-get tc :error)))
                                    :id (hermes--next-segment-id))
                                   segs)))
                          (t nil))))

@@ -1244,5 +1244,71 @@ and writes the error text to the log."
     (should (equal "/x/" (hermes-state-cwd s0)))
     (should (null (hermes-state-cwd s1)))))
 
+;;;; ANSI stripping at reducer boundary
+
+(ert-deftest hermes-state-test/strip-ansi-helper ()
+  "`hermes--strip-ansi' removes escape sequences and preserves nil/empty."
+  (should (null (hermes--strip-ansi nil)))
+  (should (equal "" (hermes--strip-ansi "")))
+  (should (equal "plain" (hermes--strip-ansi "plain")))
+  (should (equal "hello" (hermes--strip-ansi "\e[31mhello\e[0m")))
+  (should (equal "a/b" (hermes--strip-ansi "\e[38;2;218;165;32ma/b\e[0m"))))
+
+(ert-deftest hermes-state-test/tool-start-strips-ansi-context ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "bash"))
+             (cons "tool.start"
+                   (hermes-test--ht "tool_id" "t1"
+                                    "context" "\e[31mls /tmp\e[0m"))))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
+    (should (equal "ls /tmp" (hermes-tool-context tool)))))
+
+(ert-deftest hermes-state-test/tool-progress-strips-ansi-preview ()
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "bash"))
+             (cons "tool.progress"
+                   (hermes-test--ht "tool_id" "t1"
+                                    "preview" "\e[32mrunning\e[0m"))))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
+    (should (equal "running" (hermes-tool-preview tool)))))
+
+(ert-deftest hermes-state-test/tool-complete-strips-ansi ()
+  "Reducer strips ANSI from inline_diff, output, summary, and error."
+  (let* ((s (hermes-test--reduce*
+             nil
+             (cons "message.start" nil)
+             (cons "tool.generating"
+                   (hermes-test--ht "tool_id" "t1" "name" "write_file"))
+             (cons "tool.complete"
+                   (hermes-test--ht
+                    "tool_id" "t1"
+                    "inline_diff" "\e[38;2;218;165;32ma/foo\e[0m\n+line"
+                    "output" "\e[31mdone\e[0m"
+                    "summary" "\e[1mwrote 1 file\e[0m"
+                    "error" "\e[33mwarn\e[0m"))))
+         (seg (aref (hermes-stream-segments (hermes-state-stream s)) 0))
+         (tool (hermes-segment-content seg)))
+    (should (equal "a/foo\n+line" (hermes-tool-inline-diff tool)))
+    (should (equal "done" (hermes-tool-output tool)))
+    (should (equal "wrote 1 file" (hermes-tool-summary tool)))
+    (should (equal "warn" (hermes-tool-error tool)))))
+
+(ert-deftest hermes-state-test/ui-tool-progress-strips-ansi-preview ()
+  "UI reducer strips ANSI from preview before storing in tool-previews."
+  (let* ((s (hermes--ui-reduce nil
+              (cons "tool.progress"
+                    (hermes-test--ht "tool_id" "t1"
+                                     "preview" "\e[32mhello\e[0m"))))
+         (previews (hermes-ui-state-tool-previews s)))
+    (should (equal "hello" (cdr (assoc "t1" previews))))))
+
 (provide 'hermes-state-test)
 ;;; hermes-state-test.el ends here

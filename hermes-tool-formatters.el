@@ -18,7 +18,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'ansi-color)
 (require 'hermes-state)
 
 ;;;; Registry
@@ -122,16 +121,6 @@ failure.  Keys are downcased symbols, values are strings."
       (format "#+begin_example\n%s\n#+end_example\n" content)
     ""))
 
-(defun hermes-tool--strip-ansi (string)
-  "Remove ANSI escape sequences from STRING.
-Returns nil for nil input so callers can use `when' / `and' guards
-without spuriously matching on an empty result."
-  (when (and string (not (string-empty-p string)))
-    (with-temp-buffer
-      (insert string)
-      (ansi-color-filter-region (point-min) (point-max))
-      (buffer-string))))
-
 (defun hermes-tool--running-or-complete (tool body-complete body-running)
   "Choose body fragment by TOOL status."
   (pcase (hermes-tool-status tool)
@@ -156,7 +145,7 @@ without spuriously matching on an empty result."
          (context (hermes-tool-context tool))
          (err     (hermes-tool-error tool))
          (out     (hermes-tool--output-or-preview tool))
-         (diff    (hermes-tool--strip-ansi (hermes-tool-inline-diff tool)))
+         (diff    (hermes-tool-inline-diff tool))
          (todos   (hermes-tool-todos tool))
          (body
           (concat
@@ -242,7 +231,7 @@ without spuriously matching on an empty result."
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
          (path (or (hermes-tool--ctx-get ctx 'file_path 'path 'file) ""))
          (name (or (hermes-tool-name tool) "Edit"))
-         (diff (hermes-tool--strip-ansi (hermes-tool-inline-diff tool)))
+         (diff (hermes-tool-inline-diff tool))
          (out  (hermes-tool--output-or-preview tool))
          (err  (hermes-tool-error tool))
          (summary (format "%s %s" name

@@ -364,18 +364,40 @@ position right after the heading line."
                   (make-hermes-segment :type 'tool :content tool :id "s1"))))
     (should (string-match-p "\\[diff\\]" result))))
 
-(ert-deftest hermes-render-test/tool-diff-ansi-stripped ()
-  "ANSI escape sequences in `inline-diff' are stripped before rendering."
+(ert-deftest hermes-render-test/tool-diff-renders-clean ()
+  "Clean `inline-diff' renders verbatim inside a diff src block.
+ANSI stripping is the reducer/parser's job — the formatter is a pure
+pass-through and never adds escape sequences."
   (let* ((tool (make-hermes-tool :id "t1" :name "Write"
                                  :status 'complete
-                                 :inline-diff "\e[32m+ new\e[0m\n\e[31m- old\e[0m"))
+                                 :inline-diff "+ new\n- old"))
          (result (hermes--format-segment
                   (make-hermes-segment :type 'tool :content tool :id "s1"))))
     (should (string-match-p "#\\+begin_src diff" result))
     (should (string-match-p "^\\+ new$" result))
     (should (string-match-p "^- old$" result))
-    (should-not (string-match-p "\e\\[" result))
-    (should-not (string-match-p "\033\\[" result))))
+    (should-not (string-match-p "\e\\[" result))))
+
+(ert-deftest hermes-render-test/meta-drawer-contains-clean-text ()
+  "Written `:HERMES_META:' drawer contains no ANSI escape sequences.
+The struct is expected to already be clean (reducer strips on ingest);
+this test asserts the writer doesn't add escapes back."
+  (with-temp-buffer
+    (org-mode)
+    (let* ((tool (make-hermes-tool :id "t1" :name "write_file" :status 'complete
+                                   :inline-diff "a/foo\n+ line"
+                                   :output "ok"
+                                   :summary "wrote 1 file"))
+           (msg (make-hermes-message
+                 :kind 'assistant
+                 :segments (vector (make-hermes-segment
+                                    :type 'tool :content tool :id "s1")))))
+      (insert "* assistant\n")
+      (hermes--insert-meta-drawer msg))
+    (let ((buf (buffer-string)))
+      (should (string-match-p "^:HERMES_META:" buf))
+      (should-not (string-match-p "\e\\[" buf))
+      (should-not (string-match-p "\033\\[" buf)))))
 
 (ert-deftest hermes-render-test/tool-heading-todo-indicator ()
   "Heading carries a `[N todo]' indicator counting the todos list."

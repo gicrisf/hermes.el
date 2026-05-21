@@ -240,6 +240,12 @@ state itself remains buffer-local in slice B."
          (alist-get key payload nil nil #'equal))
         (t (plist-get payload key))))
 
+(defun hermes--strip-ansi (string)
+  "Remove ANSI escape sequences from STRING.
+Returns nil for nil input, the filtered string otherwise.
+Empty strings are preserved as empty strings."
+  (and string (ansi-color-filter-apply string)))
+
 (defmacro hermes--with-copy (struct copier place &rest body)
   "Bind PLACE to a fresh shallow copy of STRUCT and run BODY for side effects.
 BODY is expected to `setf' slots on PLACE.  Returns PLACE."
@@ -986,7 +992,7 @@ which case dispatch routes to the correct typed reconstructor."
       ("tool.start"
        (let ((str (hermes-state-stream state))
              (tid (hermes--get p "tool_id"))
-             (ctx (hermes--get p "context")))
+             (ctx (hermes--strip-ansi (hermes--get p "context"))))
          (if (or (null str) (null tid))
              state
            (let* ((segs (hermes-stream-segments str))
@@ -1009,7 +1015,7 @@ which case dispatch routes to the correct typed reconstructor."
       ("tool.progress"
        (let ((str (hermes-state-stream state))
              (tid (hermes--get p "tool_id"))
-             (preview (hermes--get p "preview")))
+             (preview (hermes--strip-ansi (hermes--get p "preview"))))
          (if (or (null str) (null tid))
              state
            (let* ((segs (hermes-stream-segments str))
@@ -1039,11 +1045,11 @@ which case dispatch routes to the correct typed reconstructor."
                                    (let ((last-seg (aref segs (1- (length segs)))))
                                      (and (eq 'tool (hermes-segment-type last-seg))
                                           (hermes-tool-id (hermes-segment-content last-seg)))))))))
-              (inline-diff (hermes--get p "inline_diff"))
+              (inline-diff (hermes--strip-ansi (hermes--get p "inline_diff")))
               (todos-raw (hermes--get p "todos"))
-              (output (hermes--get p "output"))
-              (summary (hermes--get p "summary"))
-              (err    (hermes--get p "error"))
+              (output (hermes--strip-ansi (hermes--get p "output")))
+              (summary (hermes--strip-ansi (hermes--get p "summary")))
+              (err    (hermes--strip-ansi (hermes--get p "error")))
               (dur    (hermes--get p "duration_s")))
          (if (or (null str) (null tid))
              state
@@ -1239,7 +1245,7 @@ which case dispatch routes to the correct typed reconstructor."
                   (hermes-ui-state-thinking-text s) nil))))
        ("tool.progress"
         (let ((tid (hermes--get p "tool_id"))
-              (preview (hermes--get p "preview")))
+              (preview (hermes--strip-ansi (hermes--get p "preview"))))
           (if (null tid)
               state
             (hermes--with-copy state hermes-ui-state-copy s

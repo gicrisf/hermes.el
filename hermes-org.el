@@ -568,10 +568,9 @@ not on a recognized turn heading."
                                  ;; :summary and :name/:status/:duration live
                                  ;; in heading properties.  :preview is
                                  ;; ephemeral and nil on resume.  The parser
-                                 ;; does not read :tool-calls from
-                                 ;; :HERMES_META: — meta carries only
-                                 ;; turn-level data (:usage, :images,
-                                 ;; :subagents).
+                                  ;; does not read :tool-calls from
+                                  ;; any meta drawer — all tool data is
+                                  ;; body-canonical or property-canonical.
                                  (body (hermes--parse-heading-body))
                                  (slug (hermes--slug-for-name tool-id))
                                  (terminal-p (memq status '(complete error))))
@@ -654,7 +653,7 @@ and usage from visible buffer structure."
   "Build a fresh `hermes-state' for SID and register it under MARKER.
 The state atom holds only ephemeral data (stream / queue / pending);
 committed history already lives in the Org subtree as visible text
-plus `:HERMES_META:' drawers, so there's nothing to seed.  Mirroring to `hermes--state'
+plus heading properties, so there's nothing to seed.  Mirroring to `hermes--state'
 keeps single-session readers coherent.  Also ensures `hermes-minor-mode'
 is on and the bench is visible so the user can interact with the
 resumed session.  Returns the new state."

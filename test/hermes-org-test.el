@@ -580,7 +580,7 @@ err
 
 (ert-deftest hermes-org-test/parse-tool-summary-from-properties ()
   "Parser reads :summary from the heading PROPERTIES drawer's
-:TOOL_SUMMARY: entry (body-canonical), not from :HERMES_META:."
+:TOOL_SUMMARY: entry (body-canonical), not from any meta drawer."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: list
@@ -663,8 +663,8 @@ and the rendered buffer contains :TOOL_SUMMARY: in the properties drawer."
 (ert-deftest hermes-org-test/parse-tool-render-parse-roundtrip-stable ()
   "Render a turn containing a tool, parse it, re-render — the result
 must be byte-identical.  Under v2.1 the canonical :output lives in the
-meta drawer, so the formatter-generated display body is regenerated
-faithfully on re-render."
+body-canonical block, so the formatter-generated display body is
+regenerated faithfully on re-render."
   (let* ((tool (make-hermes-tool
                 :id "t1" :name "terminal" :status 'complete
                 :duration 0.1
@@ -694,8 +694,8 @@ faithfully on re-render."
           (should (equal rendered1 rendered2)))))))
 
 (ert-deftest hermes-org-test/parse-tool-missing-meta-still-works ()
-  "Tool with no meta drawer: segment is still created from heading
-properties alone; output and other meta-only fields are nil."
+  "Tool with no body block for output/context: segment is still
+created from heading properties alone; output and other body fields are nil."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: ok
@@ -730,9 +730,9 @@ formatter-display
        (should (null (hermes-tool-todos tool)))))))
 
 (ert-deftest hermes-org-test/parse-tool-no-meta-fallback ()
-  "Parser never reads :tool-calls from :HERMES_META: — even when meta is
-present with stale :preview/:summary, the tool segment is built only
-from heading properties + body.  :preview is always nil on resume."
+  "Parser never reads :tool-calls from any meta drawer — even when a
+meta drawer is present with stale :preview/:summary, the tool segment
+is built only from heading properties + body.  :preview is always nil on resume."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: ok
@@ -762,7 +762,7 @@ from heading properties + body.  :preview is always nil on resume."
      (should (equal "from-property" (hermes-tool-summary tool))))))
 
 (ert-deftest hermes-org-test/parse-turn-no-meta ()
-  "Turn without a :HERMES_META: drawer parses with nil usage and empty subagents."
+  "Turn without usage properties parses with nil usage and empty subagents."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** U: hi
@@ -1281,8 +1281,8 @@ ls -la /tmp
 
 (ert-deftest hermes-org-test/parse-tool-context-resume-without-meta ()
   "Loading a saved buffer that has a `#+name'd context block but NO
-:HERMES_META: drawer still populates `hermes-tool-context'.  This
-proves context survives resume on the body channel alone."
+meta drawer still populates `hermes-tool-context'.  This proves
+context survives resume on the body channel alone."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: x

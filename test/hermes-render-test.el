@@ -579,7 +579,7 @@ the just-completed turn's deltas, not the running session total."
       (setq hermes--state new)
       (hermes--render old new))
     ;; Buffer now contains a `** U: ping' heading with the body.
-    ;; Text-only user turn → no :HERMES_META: drawer (intentional).
+    ;; Text-only user turn → no usage properties (intentional).
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       (should (string-match-p "^\\*\\* U: ping" body))
       (should (string-match-p ":HERMES_KIND: USER" body))
@@ -630,7 +630,7 @@ one assistant subtree."
     ;; the assistant turn uses an `A:' prefix instead.
     (should (= 1 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
-    ;; Text-only assistant turn → no :HERMES_META: drawer.
+    ;; Text-only assistant turn → no usage properties.
     (should (= 0 (hermes-render-test--count "^:HERMES_META:")))
     (should (= 0 (hermes-render-test--count "^:HERMES_RAW:")))
     (should (equal [] (hermes-state-pending-turns hermes--state)))))
@@ -638,7 +638,7 @@ one assistant subtree."
 (ert-deftest hermes-render-test/error-with-stream-no-duplicate ()
   "Error path pushes [assistant, system] and clears stream.
 After render: one assistant subtree, one system heading, system appears
-  *after* the assistant turn, and each subtree owns exactly one meta drawer."
+  *after* the assistant turn, and each committed turn is properly sealed."
   (with-temp-buffer
     (hermes-mode)
     ;; Stage 1: stream begins.
@@ -673,7 +673,7 @@ After render: one assistant subtree, one system heading, system appears
     (should (= 1 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
     (should (= 1 (hermes-render-test--count "^\\*\\* S: ")))
-    ;; Text-only turns → no :HERMES_META: drawers.
+    ;; Text-only turns → no usage properties.
     (should (= 0 (hermes-render-test--count "^:HERMES_META:")))
     (should (= 0 (hermes-render-test--count "^:HERMES_RAW:")))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))

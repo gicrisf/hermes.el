@@ -200,9 +200,9 @@ buffer) where the container's subtree spans the whole buffer."
         ;; pending-turns AND clears the stream in the same step.  If the
         ;; drain ran first, inserting a user/system message at point-max
         ;; would rear-advance `hermes--bench-end' past the new text, and
-         ;; `stream-commit' would then write the assistant's meta drawer
-         ;; into the wrong subtree.  Sealing the stream first keeps the
-        ;; bench-anchored writes contained.
+         ;; `stream-commit' would then write the assistant's usage
+         ;; properties into the wrong subtree.  Sealing the stream first
+         ;; keeps the bench-anchored writes contained.
         (let* ((os old-stream-snapshot)
                (ns (hermes-state-stream new))
                (bench-buf (and (fboundp 'hermes-bench-active-p)
@@ -299,7 +299,7 @@ buffer) where the container's subtree spans the whole buffer."
         (hermes--refresh-region (marker-position hermes--bench-start)
                                 (marker-position hermes--bench-end)))
       ;; Refresh the assistant region just sealed by `stream-commit'.
-      ;; The heading was rewritten and the meta drawer inserted inside
+      ;; The heading was rewritten and usage properties written inside
       ;; `with-silent-modifications', which strips/skips the org-indent
       ;; `line-prefix' properties and `hermes--hide-drawers' pass.
       (when committed-region
@@ -1309,8 +1309,8 @@ MSG is the committed `hermes-message'.  Replaces the line at
 
 (defun hermes--stream-commit (&optional old-stream)
   "Stream finished: stamp Org :ID:s on the trail, drop markers and bench.
-If OLD-STREAM is non-nil, write a :HERMES_META: drawer at the end of the
-`** assistant' subtree describing the just-completed message.
+If OLD-STREAM is non-nil, write `HERMES_USAGE_*' properties on the
+`** assistant' heading describing the just-completed message.
 Returns a cons (START . END) of the committed region for post-commit
 refresh by the caller, or nil if no bench was active."
   ;; Defensive: ensure no throttled paint can fire after the bench is gone.
@@ -1321,8 +1321,8 @@ refresh by the caller, or nil if no bench was active."
     (save-excursion
       (goto-char hermes--stream-headline-marker)
       (ignore-errors (org-id-get-create))))
-  ;; Write the meta drawer at the end of the assistant subtree before
-  ;; tearing down the markers — we still need bench-end to know where.
+  ;; Write usage properties on the assistant heading before tearing
+  ;; down the markers — we still need bench-end to know where.
   (when (and old-stream
              (hermes-stream-p old-stream)
              (markerp hermes--bench-end)
@@ -1366,7 +1366,7 @@ refresh by the caller, or nil if no bench was active."
   ;; Snapshot the committed region before clearing markers, so the
   ;; caller can run `hermes--refresh-region' on it (after the silent
   ;; block exits) to restore `line-prefix' on the rewritten heading and
-      ;; collapse the just-inserted meta drawer.
+      ;; collapse the just-finalized assistant subtree.
   (let ((committed-start (and (markerp hermes--bench-start)
                               (marker-position hermes--bench-start)))
         (committed-end   (and (markerp hermes--bench-end)

@@ -128,6 +128,22 @@ failure.  Keys are downcased symbols, values are strings."
     ('error    body-complete)
     (_         body-running)))
 
+(defun hermes-tool--maybe-name (tool field-suffix block)
+  "Prefix BLOCK with `#+name: hermes-tool-<slug>-FIELD-SUFFIX' when TOOL's
+status is terminal (`complete' or `error'); otherwise return BLOCK
+unchanged.  BLOCK is the rendered Org block string (already wrapped
+with `#+begin_…' / `#+end_…').  Returns BLOCK verbatim when it is
+empty or nil.  The `#+name' line is placed immediately before the
+`#+begin_' line with no intervening whitespace — the parser's
+`hermes--extract-named-block' relies on this adjacency."
+  (if (and block (not (string-empty-p block))
+           (memq (hermes-tool-status tool) '(complete error)))
+      (concat (format "#+name: hermes-tool-%s-%s\n"
+                      (hermes--slug-for-name (hermes-tool-id tool))
+                      field-suffix)
+              block)
+    block))
+
 (defun hermes-tool--output-or-preview (tool)
   "Return OUTPUT if present, else PREVIEW, else nil."
   (or (and (hermes-tool-output tool)
@@ -153,13 +169,13 @@ failure.  Keys are downcased symbols, values are strings."
                       context)
              (format ":CONTEXT:\n%s\n:END:\n" context))
            (cond
-            (err (hermes-tool--example err))
-            (out (hermes-tool--example out))
+            (err (hermes-tool--maybe-name tool "error" (hermes-tool--example err)))
+            (out (hermes-tool--maybe-name tool "output" (hermes-tool--example out)))
             (t ""))
            (when diff
-             (format "#+name: hermes-tool-%s-inline-diff\n#+begin_src diff\n%s\n#+end_src\n"
-                     (hermes--slug-for-name (hermes-tool-id tool))
-                     diff))
+             (hermes-tool--maybe-name
+              tool "inline-diff"
+              (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
            (when todos
              (concat ":TODOS:\n"
                      (mapconcat
@@ -192,8 +208,10 @@ failure.  Keys are downcased symbols, values are strings."
                  (unless (string-empty-p cmd)
                    (hermes-tool--src-block lang cmd))
                  (cond
-                  (err (hermes-tool--example err))
-                  (out (hermes-tool--example out))
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
                   (t "")))
           :fold nil)))
 
@@ -222,9 +240,11 @@ failure.  Keys are downcased symbols, values are strings."
          (err (hermes-tool-error tool)))
     (list :summary summary
           :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--src-block
-                       (hermes-tool--lang-from-path path) out))
+                 (err (hermes-tool--maybe-name tool "error"
+                        (hermes-tool--example err)))
+                 (out (hermes-tool--maybe-name tool "output"
+                        (hermes-tool--src-block
+                         (hermes-tool--lang-from-path path) out)))
                  (t ""))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
@@ -245,14 +265,18 @@ failure.  Keys are downcased symbols, values are strings."
     (list :summary summary
           :body (concat
                  (cond
-                  (err (hermes-tool--example err))
-                  (diff (format "#+name: hermes-tool-%s-inline-diff\n#+begin_src diff\n%s\n#+end_src\n"
-                                (hermes--slug-for-name (hermes-tool-id tool))
-                                diff))
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (diff (hermes-tool--maybe-name
+                         tool "inline-diff"
+                         (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
                   ((and (string-equal-ignore-case name "write") out)
-                   (hermes-tool--src-block
-                    (hermes-tool--lang-from-path path) out))
-                  (out (hermes-tool--example out))
+                   (hermes-tool--maybe-name
+                    tool "output"
+                    (hermes-tool--src-block
+                     (hermes-tool--lang-from-path path) out)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
                   (t "")))
           :fold nil)))
 
@@ -284,8 +308,10 @@ failure.  Keys are downcased symbols, values are strings."
                        (or (hermes-tool-context tool) "") 60))))))
     (list :summary summary
           :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
+                 (err (hermes-tool--maybe-name tool "error"
+                        (hermes-tool--example err)))
+                 (out (hermes-tool--maybe-name tool "output"
+                        (hermes-tool--example out)))
                  (t ""))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
@@ -302,8 +328,10 @@ failure.  Keys are downcased symbols, values are strings."
                                 (or (hermes-tool-context tool) "") path)
                             72))
           :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
+                 (err (hermes-tool--maybe-name tool "error"
+                        (hermes-tool--example err)))
+                 (out (hermes-tool--maybe-name tool "output"
+                        (hermes-tool--example out)))
                  (t ""))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
@@ -346,8 +374,10 @@ failure.  Keys are downcased symbols, values are strings."
                          (or (hermes-tool-context tool) "") 60))))))
     (list :summary summary
           :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
+                 (err (hermes-tool--maybe-name tool "error"
+                        (hermes-tool--example err)))
+                 (out (hermes-tool--maybe-name tool "output"
+                        (hermes-tool--example out)))
                  (t ""))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
@@ -365,8 +395,10 @@ failure.  Keys are downcased symbols, values are strings."
                                 (or (hermes-tool-context tool) "") desc)
                             70))
           :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
+                 (err (hermes-tool--maybe-name tool "error"
+                        (hermes-tool--example err)))
+                 (out (hermes-tool--maybe-name tool "output"
+                        (hermes-tool--example out)))
                  (t ""))
           :fold (eq (hermes-tool-status tool) 'complete))))
 

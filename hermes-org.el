@@ -309,11 +309,10 @@ nil if point is not on a recognized turn heading."
                                                 (ignore-errors (read dur-str))))
                                  ;; Meta is optional enrichment; the heading
                                  ;; alone is sufficient for a tool segment.
-                                 ;; :output is canonical in meta — the body
-                                 ;; is formatter-generated display only and
-                                 ;; is NOT used for round-trip.  :inline-diff
-                                 ;; is body-canonical: extracted from the
-                                 ;; #+name'd src block in the heading body.
+                                 ;; :inline-diff, :output, and :error are
+                                 ;; body-canonical at terminal status — they
+                                 ;; live in the heading body as #+name'd
+                                 ;; blocks.  Clean break: no meta fallback.
                                  (tcs (plist-get meta :tool-calls))
                                  (tc (and tcs tool-id
                                           (cl-find-if
@@ -321,10 +320,8 @@ nil if point is not on a recognized turn heading."
                                              (equal tool-id (plist-get x :id)))
                                            (append tcs nil))))
                                  (body (hermes--parse-heading-body))
-                                 (diff-block-name
-                                  (and tool-id
-                                       (format "hermes-tool-%s-inline-diff"
-                                               (hermes--slug-for-name tool-id)))))
+                                 (slug (hermes--slug-for-name tool-id))
+                                 (terminal-p (memq status '(complete error))))
                             (push (make-hermes-segment
                                    :type 'tool
                                    :content (make-hermes-tool
@@ -332,14 +329,22 @@ nil if point is not on a recognized turn heading."
                                              :name name
                                              :status status
                                              :duration duration
-                                             :output (hermes--strip-ansi (plist-get tc :output))
+                                             :output (and terminal-p slug
+                                                          (hermes--extract-named-block
+                                                           body
+                                                           (format "hermes-tool-%s-output" slug)))
                                              :context (hermes--strip-ansi (plist-get tc :context))
                                              :preview (hermes--strip-ansi (plist-get tc :preview))
-                                             :inline-diff (hermes--extract-named-block
-                                                           body diff-block-name)
+                                             :inline-diff (and terminal-p slug
+                                                               (hermes--extract-named-block
+                                                                body
+                                                                (format "hermes-tool-%s-inline-diff" slug)))
                                              :todos (plist-get tc :todos)
                                              :summary (hermes--strip-ansi (plist-get tc :summary))
-                                             :error (hermes--strip-ansi (plist-get tc :error)))
+                                             :error (and (eq status 'error) slug
+                                                         (hermes--extract-named-block
+                                                          body
+                                                          (format "hermes-tool-%s-error" slug))))
                                    :id (hermes--next-segment-id))
                                   segs)))
                          (t nil))))

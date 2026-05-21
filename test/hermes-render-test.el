@@ -471,8 +471,9 @@ property drawer — just heading + drawer."
 
 (ert-deftest hermes-render-test/meta-drawer-insert-and-extract ()
   "Insert a :HERMES_META: drawer for a turn with metadata and read it back.
-The slim meta carries :id, :output, and extended fields only;
-:name/:status/:duration live in heading properties."
+The slim meta carries :id and structured fields only; :name/:status/
+:duration live in heading properties, and :output/:error/:inline-diff
+are body-canonical (read from the heading body, not meta)."
   (with-temp-buffer
     (org-mode)
     (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
@@ -494,7 +495,8 @@ The slim meta carries :id, :output, and extended fields only;
         (should (and (vectorp tcs) (= 1 (length tcs))))
         (should (equal "t1" (plist-get (aref tcs 0) :id)))
         (should (equal "ls -la" (plist-get (aref tcs 0) :context)))
-        (should (equal "a\nb" (plist-get (aref tcs 0) :output)))
+        ;; :output is body-canonical, no longer in meta.
+        (should-not (plist-member (aref tcs 0) :output))
         ;; Scalars are still excluded from meta.
         (should-not (plist-member (aref tcs 0) :name))
         (should-not (plist-member (aref tcs 0) :status))
@@ -502,8 +504,8 @@ The slim meta carries :id, :output, and extended fields only;
 
 (ert-deftest hermes-render-test/meta-tool-calls-omit-name-status-duration ()
   "hermes--message-to-meta-plist strips :name/:status/:duration from
-tool-calls — those live in heading properties.  :output stays in meta
-as the canonical raw output."
+tool-calls — those live in heading properties.  :output/:error/
+:inline-diff are body-canonical and also excluded from meta."
   (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
                                  :duration 0.5 :output "a\nb" :context "-la"))
          (msg (make-hermes-message
@@ -515,8 +517,10 @@ as the canonical raw output."
     (should-not (plist-member tc :name))
     (should-not (plist-member tc :status))
     (should-not (plist-member tc :duration))
+    (should-not (plist-member tc :output))
+    (should-not (plist-member tc :error))
+    (should-not (plist-member tc :inline-diff))
     (should (equal "t1" (plist-get tc :id)))
-    (should (equal "a\nb" (plist-get tc :output)))
     (should (equal "-la" (plist-get tc :context)))))
 
 (ert-deftest hermes-render-test/meta-omitted-when-tool-has-no-data ()
@@ -1414,7 +1418,20 @@ the expected heading, properties, body, and `:HERMES_META:' drawer."
         (should (string-match-p "exploded" text))))
     (kill-buffer buf-name)))
 
-;;;; Body-canonical :inline-diff via #+name'd src blocks
+;;;; Body-canonical :inline-diff / :output / :error via #+name'd blocks
+
+(defun hermes-render-test--name-marker-tight-p (text)
+  "Return non-nil iff every #+name line in TEXT is immediately followed by
+#+begin_ with no blank line between."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (let ((ok t))
+      (while (and ok (re-search-forward "^#\\+name:" nil t))
+        (forward-line 1)
+        (unless (looking-at "^#\\+begin_")
+          (setq ok nil)))
+      ok)))
 
 (ert-deftest hermes-render-test/meta-drawer-omits-inline-diff ()
   "Meta drawer no longer carries :inline-diff — it is body-canonical."
@@ -1452,6 +1469,91 @@ the expected heading, properties, body, and `:HERMES_META:' drawer."
                 :inline-diff "x"))
          (out (plist-get (hermes-tool-format-edit tool) :body)))
     (should (string-match-p "^#\\+name: hermes-tool-a-b-c-inline-diff$" out))))
+
+(ert-deftest hermes-render-test/meta-drawer-omits-output ()
+  "Meta drawer no longer carries :output — it is body-canonical."
+  (let* ((tool (make-hermes-tool :id "t1" :name "bash" :status 'complete
+                                 :output "hi"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (meta (hermes--message-to-meta-plist msg))
+         (tcs (plist-get meta :tool-calls)))
+    (should (or (null tcs)
+                (let ((e (aref tcs 0))) (null (plist-get e :output)))))))
+
+(ert-deftest hermes-render-test/meta-drawer-omits-error ()
+  "Meta drawer no longer carries :error — it is body-canonical."
+  (let* ((tool (make-hermes-tool :id "t1" :name "bash" :status 'error
+                                 :error "boom"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "s1"))))
+         (meta (hermes--message-to-meta-plist msg))
+         (tcs (plist-get meta :tool-calls)))
+    (should (or (null tcs)
+                (let ((e (aref tcs 0))) (null (plist-get e :error)))))))
+
+(ert-deftest hermes-render-test/tool-format-includes-name-marker-output ()
+  "Bash output at terminal status carries `#+name: …-output' before block."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "bash-1" :name "bash" :status 'complete
+                :context "{\"command\":\"echo hi\"}"
+                :output "hi"))
+         (out (plist-get (hermes-tool-format-bash tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-bash-1-output$" out))
+    (should (string-match-p "#\\+begin_example" out))))
+
+(ert-deftest hermes-render-test/tool-format-includes-name-marker-error ()
+  "An error block at terminal status carries `#+name: …-error'."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "bash-1" :name "bash" :status 'error
+                :error "boom"))
+         (out (plist-get (hermes-tool-format-bash tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-bash-1-error$" out))
+    (should (string-match-p "#\\+begin_example" out))))
+
+(ert-deftest hermes-render-test/tool-format-no-name-on-preview ()
+  "Running tools render the preview block with NO `#+name' marker."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "bash-1" :name "bash" :status 'running
+                :context "{\"command\":\"echo hi\"}"
+                :preview "hi"))
+         (out (plist-get (hermes-tool-format-bash tool) :body)))
+    (should-not (string-match-p "^#\\+name: hermes-tool-bash-1-" out))))
+
+(ert-deftest hermes-render-test/name-marker-tight-to-block ()
+  "Every #+name line is immediately followed by #+begin_ (no blank line)
+across all formatters that emit body-canonical fields."
+  (require 'hermes-tool-formatters)
+  (dolist (case
+           `((,(make-hermes-tool :id "t" :name "Edit" :status 'complete
+                                 :inline-diff "x")
+              ,#'hermes-tool-format-edit)
+             (,(make-hermes-tool :id "t" :name "bash" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-bash)
+             (,(make-hermes-tool :id "t" :name "bash" :status 'error
+                                 :error "boom")
+              ,#'hermes-tool-format-bash)
+             (,(make-hermes-tool :id "t" :name "Read" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-read)
+             (,(make-hermes-tool :id "t" :name "Grep" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-grep)
+             (,(make-hermes-tool :id "t" :name "tool" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-generic)))
+    (let* ((tool (car case))
+           (fmt (cadr case))
+           (body (plist-get (funcall fmt tool) :body)))
+      (should (hermes-render-test--name-marker-tight-p body)))))
 
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

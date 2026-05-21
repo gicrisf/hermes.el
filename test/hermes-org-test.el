@@ -467,15 +467,16 @@ thinking it through
 :TOOL_STATUS: complete
 :TOOL_DURATION: 0.5
 :END:
-listing display
+#+name: hermes-tool-t1-output
+#+begin_example
+a
+b
+#+end_example
 *** Response
 :PROPERTIES:
 :HERMES_KIND: RESPONSE
 :END:
 the answer
-:HERMES_META:
-(:tool-calls [(:id \"t1\" :output \"a\\nb\")])
-:END:
 "
    (hermes-org-test--at-first-turn)
    (let ((msg (hermes--parse-turn-at-point)))
@@ -515,10 +516,10 @@ the answer
 :TOOL_STATUS: complete
 :TOOL_DURATION: 0.08558511734008789
 :END:
-formatter-display
-:HERMES_META:
-(:tool-calls [(:id \"terminal\" :output \"2 days, 22 hours.\")])
-:END:
+#+name: hermes-tool-terminal-output
+#+begin_example
+2 days, 22 hours.
+#+end_example
 "
    (hermes-org-test--at-first-turn)
    (let* ((msg (hermes--parse-turn-at-point))
@@ -530,32 +531,36 @@ formatter-display
        (should (equal "terminal" (hermes-tool-name tool)))
        (should (eq 'complete (hermes-tool-status tool)))
        (should (equal 0.08558511734008789 (hermes-tool-duration tool)))
-       ;; :output is read from meta (canonical), not the body.
+       ;; :output is body-canonical — extracted from the #+name'd block.
        (should (equal "2 days, 22 hours." (hermes-tool-output tool)))))))
 
 (ert-deftest hermes-org-test/parse-tool-extended-data-from-meta ()
-  "Parser reads context/summary/error/todos from meta and inline-diff
-from the heading body via the #+name'd src block."
+  "Parser reads context/summary/todos from meta; inline-diff and error
+are body-canonical (read from #+name'd blocks at terminal status)."
   (hermes-org-test--with-buffer
    "* chat :hermes:
 ** A: diff
 :PROPERTIES:
 :HERMES_KIND: ASSISTANT
 :END:
-*** DONE git-diff (1.2s)
+*** FAIL git-diff (1.2s)
 :PROPERTIES:
 :HERMES_KIND: TOOL
 :TOOL_ID: gd1
 :TOOL_NAME: git-diff
-:TOOL_STATUS: complete
+:TOOL_STATUS: error
 :TOOL_DURATION: 1.2
 :END:
 #+name: hermes-tool-gd1-inline-diff
 #+begin_src diff
 D
 #+end_src
+#+name: hermes-tool-gd1-error
+#+begin_example
+err
+#+end_example
 :HERMES_META:
-(:tool-calls [(:id \"gd1\" :context \"--cached\" :summary \"sum\" :error \"err\" :todos nil)])
+(:tool-calls [(:id \"gd1\" :context \"--cached\" :summary \"sum\" :todos nil)])
 :END:
 "
    (hermes-org-test--at-first-turn)
@@ -777,12 +782,161 @@ return a string (possibly truncated)."
     (should (stringp result))
     (should (equal "before" result))))
 
+(ert-deftest hermes-org-test/extract-named-block-unwraps-example ()
+  "Extracts content from a #+name'd #+begin_example block."
+  (let ((body "#+name: hermes-tool-t1-output\n#+begin_example\nline1\nline2\n#+end_example\n"))
+    (should (equal "line1\nline2"
+                   (hermes--extract-named-block
+                    body "hermes-tool-t1-output")))))
+
+(ert-deftest hermes-org-test/parse-tool-output-from-body ()
+  "Parser reads :output from the #+name'd block at TOOL_STATUS: complete."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: out
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** DONE bash (0.1s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: b1
+:TOOL_NAME: bash
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.1
+:END:
+#+name: hermes-tool-b1-output
+#+begin_example
+ok
+#+end_example
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (equal "ok" (hermes-tool-output tool))))))
+
+(ert-deftest hermes-org-test/parse-tool-error-from-body ()
+  "Parser reads :error from #+name'd block at TOOL_STATUS: error."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: err
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** FAIL bash (0.1s)
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: b1
+:TOOL_NAME: bash
+:TOOL_STATUS: error
+:TOOL_DURATION: 0.1
+:END:
+#+name: hermes-tool-b1-error
+#+begin_example
+boom
+#+end_example
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (equal "boom" (hermes-tool-error tool))))))
+
+(ert-deftest hermes-org-test/parse-tool-no-output-while-running ()
+  "A running tool whose body contains a plain (unnamed) preview block
+parses :output as nil — preview is never canonical."
+  (hermes-org-test--with-buffer
+   "* chat :hermes:
+** A: streaming
+:PROPERTIES:
+:HERMES_KIND: ASSISTANT
+:END:
+*** RUNNING bash
+:PROPERTIES:
+:HERMES_KIND: TOOL
+:TOOL_ID: b1
+:TOOL_NAME: bash
+:TOOL_STATUS: running
+:END:
+#+begin_example
+partial
+#+end_example
+"
+   (hermes-org-test--at-first-turn)
+   (let* ((msg (hermes--parse-turn-at-point))
+          (tool (hermes-segment-content
+                 (aref (hermes-message-segments msg) 0))))
+     (should (eq 'running (hermes-tool-status tool)))
+     (should (null (hermes-tool-output tool))))))
+
 (ert-deftest hermes-org-test/extract-named-block-handles-special-chars-in-name ()
   "regexp-quote shields special characters in NAME from regex interpretation."
   (let ((body "#+name: hermes-tool-a.b+c-inline-diff\n#+begin_src diff\ncontent\n#+end_src\n"))
     (should (equal "content"
                    (hermes--extract-named-block
                     body "hermes-tool-a.b+c-inline-diff")))))
+
+(ert-deftest hermes-org-test/roundtrip-body-canonical-fields ()
+  "Render→parse→render preserves bytes for :inline-diff, :output, and
+:error when they are body-canonical at terminal status."
+  (require 'hermes-render)
+  (let* ((render-msg
+          (lambda (m)
+            (with-temp-buffer
+              (org-mode)
+              (insert "* chat :hermes:\n** A: x\n:PROPERTIES:\n:HERMES_KIND: ASSISTANT\n:END:\n")
+              (let ((segs (hermes-message-segments m)))
+                (dotimes (i (length segs))
+                  (insert (hermes--format-segment (aref segs i)))))
+              (hermes--insert-meta-drawer m)
+              (buffer-substring-no-properties (point-min) (point-max)))))
+         (roundtrip
+          (lambda (msg)
+            (let ((rendered1 (funcall render-msg msg)))
+              (with-temp-buffer
+                (org-mode)
+                (insert rendered1)
+                (goto-char (point-min))
+                (re-search-forward "^\\*\\* A:" nil t)
+                (beginning-of-line)
+                (let* ((parsed (hermes--parse-turn-at-point))
+                       (rendered2 (funcall render-msg parsed)))
+                  (should (equal rendered1 rendered2))))))))
+    ;; :inline-diff round-trip
+    (funcall roundtrip
+             (make-hermes-message
+              :kind 'assistant
+              :segments
+              (vector (make-hermes-segment
+                       :type 'tool :id "s1"
+                       :content (make-hermes-tool
+                                 :id "t1" :name "Edit"
+                                 :status 'complete :duration 0.2
+                                 :inline-diff "+hello\n-world")))))
+    ;; :output round-trip (bash)
+    (funcall roundtrip
+             (make-hermes-message
+              :kind 'assistant
+              :segments
+              (vector (make-hermes-segment
+                       :type 'tool :id "s1"
+                       :content (make-hermes-tool
+                                 :id "b1" :name "bash"
+                                 :status 'complete :duration 0.1
+                                 :context "{\"command\":\"echo ok\"}"
+                                 :output "ok")))))
+    ;; :error round-trip
+    (funcall roundtrip
+             (make-hermes-message
+              :kind 'assistant
+              :segments
+              (vector (make-hermes-segment
+                       :type 'tool :id "s1"
+                       :content (make-hermes-tool
+                                 :id "b1" :name "bash"
+                                 :status 'error :duration 0.1
+                                 :error "boom")))))))
 
 (provide 'hermes-org-test)
 ;;; hermes-org-test.el ends here

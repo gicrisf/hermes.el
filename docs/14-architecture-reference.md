@@ -539,16 +539,62 @@ It's 6.
 
 ## Save, Load, and Resume
 
-Because the Org buffer is the canonical source of truth, saving a conversation
-is just `(write-region (point-min) (point-max) "chat.org")`.
+The Org buffer is the *snapshot* source of truth; the gateway's SQLite DB
+(`~/.hermes/state.db`) is the *live* shared cache used by all clients on
+the same machine.  Saving a snapshot is just
+`(write-region (point-min) (point-max) "chat.org")`.  Reopening that file
+gives a "stale heading" — a `:HERMES_SESSION:` property that no longer has
+a matching in-memory state.
+
+### Stale-heading prompt
+
+`M-x hermes` (or `hermes-input-send`) on a stale heading dispatches through
+`hermes--handle-stale-heading`, which prompts the user:
+
+1. **Load from org** — fresh gateway session, history seeded from the
+   visible buffer on the first prompt (`hermes--build-history-text`).
+   Current buffer keeps its identity.  Discards any DB turns that occurred
+   after the snapshot.
+2. **Resume from DB** — `session.resume` returns a NEW session id plus the
+   stored message list; a fresh `*hermes:<new-sid>*` buffer is rendered
+   from the response.  The history seed is stamped immediately so the next
+   prompt skips re-seeding.
+3. **Branch from DB** — `session.branch` forks the DB session, then
+   `session.resume` is called on the new id; same effect as resume but the
+   original DB session is preserved.
+
+When the gateway returns code `4007 "session not found"` (DB wiped, old
+SID format, etc.), the error message hints to pick "Load from org"
+instead.
 
 ### `hermes-load-org`
 
-`M-x hermes-load-org` (in a `hermes-mode` buffer) creates a fresh gateway
-session bound to the current buffer.  The gateway does not accept a `:history`
-parameter in `session.create`, so conversation context is restored on the first
-outgoing prompt via the history seed (`hermes--build-history-text`), which
-parses the visible buffer and prepends a formatted summary to the wire text.
+`M-x hermes-load-org` (in a `hermes-mode` buffer) is the direct entry point
+for option (1): creates a fresh gateway session bound to the current buffer.
+The gateway does not accept a `:history` parameter in `session.create`, so
+context is restored on the first outgoing prompt via the history seed
+(`hermes--build-history-text`).
+
+### `hermes-resume-from-db` / `hermes-branch-from-db`
+
+Programmatic entry points for options (2) and (3).  Also reachable from
+the DB browser (`M-x hermes-sessions-db`, keys `r` and `b`).  Both call
+`session.resume` and install the response via `hermes--db-install-into-buffer`,
+which activates `hermes-mode`, writes `HERMES_SESSION` / `HERMES_CWD`
+properties, appends the rendered body, and stamps `hermes--seeded-session-id`
+to suppress re-seeding.
+
+### DB-resumed buffers are lossy
+
+The gateway pre-flattens history via `_history_to_messages` for client
+display: assistant text → `{role:assistant, text}`; each tool call →
+its own `{role:tool, name, context}` row where `context` is a summarised
+argument string.  `tool_call_id`, reasoning fields, subagents, images,
+usage, and timestamps are NOT surfaced.  The Phase-3 renderer
+(`hermes--db-messages-to-org-body`) emits a flat structure reflecting
+exactly this — no `:HERMES_META:` drawers, no `*** Reasoning` headings,
+no `#+name:'d` tool blocks.  Users wanting full fidelity round-trips
+must save and reopen the `.org` snapshot rather than relying on the DB.
 
 ### Manual editing safety
 

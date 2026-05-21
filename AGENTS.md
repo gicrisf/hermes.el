@@ -17,20 +17,35 @@ hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
 hermes-bench.el      Persistent bottom bench for hermes-mode (user prompt, reasoning, answer, input)
 hermes-sessions.el   tabulated-list-mode sidebar of live sessions
+hermes-sessions-db.el  tabulated-list-mode browser of gateway-DB sessions (resume/branch/delete/save)
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
 hermes-config.el     Wrappers for config.get/set, toolsets.list, tools.configure (model/fast/reasoning/yolo/personality/skin/toolsets commands)
 hermes-bg.el         Background task buffers (`/bg` prompts run async in dedicated Org buffers)
 ```
 
-**Key design principle:** The visible Org buffer is the canonical source of
-truth for committed conversation history. The state atom (`hermes-state`)
-only holds ephemeral data: connection, in-flight stream, pending prompts,
-queue, and minibuffer history. Every turn heading carries `:HERMES_KIND:`
-(USER / ASSISTANT / SYSTEM) and `:HERMES_TIMESTAMP:` properties; assistant
-child headings (Response / Reasoning / Tool / Subagent) carry their own
-`:HERMES_KIND:` markers. Text content is parsed back from the visible
+**Key design principle:** The visible Org buffer is the *snapshot* source
+of truth — rich, editable, portable across machines.  The gateway's SQLite
+DB (`~/.hermes/state.db`) is the *live* shared cache — visible to all
+clients (TUI, CLI, Telegram, Emacs) on the same machine.  Both are valid
+authorities; the user picks which to use when reopening a stale heading
+via `hermes--handle-stale-heading` (load-from-org / resume-from-DB /
+branch-from-DB).
+
+The state atom (`hermes-state`) only holds ephemeral data: connection,
+in-flight stream, pending prompts, queue, and minibuffer history.  Every
+turn heading in the Org snapshot carries `:HERMES_KIND:` (USER /
+ASSISTANT / SYSTEM) and `:HERMES_TIMESTAMP:` properties; assistant child
+headings (Response / Reasoning / Tool / Subagent) carry their own
+`:HERMES_KIND:` markers.  Text content is parsed back from the visible
 buffer, so user edits to prose are preserved across resume.
+
+**DB-resumed buffers are intentionally lossy:** the gateway flattens
+history via `_history_to_messages` (no `tool_call_id`, no reasoning,
+no subagents, no images, no usage, no timestamps).  Tool arguments are
+collapsed to a `context` summary string.  Round-tripping a DB resume
+back into a canonical Org snapshot loses detail; for full fidelity
+across machines, sync the `.org` file rather than the DB.
 
 **Author preference:** Backward compatibility is not a priority. Obsolete
 functions, stale docstrings, and misleading feature names are removed

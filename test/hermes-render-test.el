@@ -1115,5 +1115,46 @@ rewritten heading and leaving the drawer body visible."
          (out (hermes--format-segment seg)))
     (should (string-match-p "image: ghost.png (not found)" out))))
 
+(require 'hermes-bg)
+
+(ert-deftest hermes-render-test/bg-task-buffer-created-on-complete ()
+  "`hermes--render-bg-task' creates a `*hermes-bg:sid:tid*' buffer with
+the expected heading, properties, body, and `:HERMES_RAW:' drawer."
+  (let* ((task (make-hermes-bg-task
+                :task-id "t42" :prompt "analyze logs"
+                :status 'complete :result "found 3 errors"
+                :created-at "2026-05-21T00:00:00+0000"
+                :completed-at "2026-05-21T00:00:01+0000"))
+         (buf-name "*hermes-bg:sid1:t42*"))
+    (when (get-buffer buf-name) (kill-buffer buf-name))
+    (hermes--render-bg-task "sid1" task)
+    (let ((buf (get-buffer buf-name)))
+      (should (buffer-live-p buf))
+      (with-current-buffer buf
+        (should (derived-mode-p 'hermes-bg-mode))
+        (let ((text (buffer-string)))
+          (should (string-match-p "^\\* Background: analyze logs" text))
+          (should (string-match-p ":HERMES_TASK_ID: t42" text))
+          (should (string-match-p ":HERMES_STATUS: complete" text))
+          (should (string-match-p "found 3 errors" text))
+          (should (string-match-p ":HERMES_RAW:" text))
+          (should (string-match-p ":task-id \"t42\"" text))))
+      (kill-buffer buf))))
+
+(ert-deftest hermes-render-test/bg-task-buffer-error-uses-example-block ()
+  (let* ((task (make-hermes-bg-task
+                :task-id "tE" :prompt "boom"
+                :status 'error :error "exploded"
+                :created-at "x" :completed-at "y"))
+         (buf-name "*hermes-bg:s:tE*"))
+    (when (get-buffer buf-name) (kill-buffer buf-name))
+    (hermes--render-bg-task "s" task)
+    (with-current-buffer buf-name
+      (let ((text (buffer-string)))
+        (should (string-match-p ":HERMES_STATUS: error" text))
+        (should (string-match-p "#\\+begin_example Error" text))
+        (should (string-match-p "exploded" text))))
+    (kill-buffer buf-name)))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

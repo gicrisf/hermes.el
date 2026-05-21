@@ -52,11 +52,6 @@ without this cache, the very first buffer would never see the skin.")
 
 (defun hermes--route-event (type session-id payload)
   "Dispatch event TYPE/PAYLOAD into the session buffer's atoms."
-  ;; TODO: remove debug log after tool pipeline is stable
-  (message "[hermes] event: %s keys=%S"
-           type
-           (and (hash-table-p payload)
-                (let (ks) (maphash (lambda (k _v) (push k ks)) payload) ks)))
   (when (or (equal type "gateway.ready") (equal type "skin.changed"))
     (setq hermes--last-gateway-ready payload))
   (let ((buf (and session-id (not (string-empty-p session-id))
@@ -651,6 +646,20 @@ reference.  Verify with the gateway spec before relying on resume."
         (goto-char (point-min)))
       (setq buffer-read-only t))
     (display-buffer buf)))
+
+(declare-function hermes-bg--list-for-sid "hermes-bg" (sid))
+
+;;;###autoload
+(defun hermes-bg-list ()
+  "Pop a tabulated list of background tasks for the current session."
+  (interactive)
+  (let ((sid (and (boundp 'hermes--state)
+                  hermes--state
+                  (hermes-state-session-id hermes--state))))
+    (if sid
+        (progn (require 'hermes-bg)
+               (hermes-bg--list-for-sid sid))
+      (user-error "No active Hermes session in this buffer"))))
 
 (provide 'hermes-mode)
 ;;; hermes-mode.el ends here

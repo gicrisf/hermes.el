@@ -886,14 +886,86 @@ and writes the error text to the log."
     (should (string-match-p "err2" log))
     (should (string-match-p "failed to start" (hermes-ui-state-status-text ui)))))
 
-(ert-deftest hermes-state-test/background-complete-logs-to-buffer ()
+(ert-deftest hermes-state-test/background-start-creates-running-task ()
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0
+                             (cons :background-start
+                                   (list :task-id "t1" :prompt "hello"))))
+         (tasks (hermes-state-bg-tasks s1)))
+    (should (vectorp tasks))
+    (should (= 1 (length tasks)))
+    (let ((task (aref tasks 0)))
+      (should (equal "t1" (hermes-bg-task-task-id task)))
+      (should (equal "hello" (hermes-bg-task-prompt task)))
+      (should (eq 'running (hermes-bg-task-status task)))
+      (should (null (hermes-bg-task-buffer-name task)))
+      (should (stringp (hermes-bg-task-created-at task))))))
+
+(ert-deftest hermes-state-test/background-start-deduplicates ()
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons :background-start
+                                      (list :task-id "t1" :prompt "a"))))
+         (s2 (hermes--reduce s1 (cons :background-start
+                                      (list :task-id "t1" :prompt "b")))))
+    (should (eq s1 s2))
+    (should (= 1 (length (hermes-state-bg-tasks s2))))))
+
+(ert-deftest hermes-state-test/background-complete-updates-task ()
   (hermes-test--clear-log)
   (let* ((s0 (hermes--reduce nil '(:connected)))
-         (s1 (hermes--reduce s0 (cons "background.complete"
+         (s1 (hermes--reduce s0 (cons :background-start
+                                      (list :task-id "t1" :prompt "hello"))))
+         (s2 (hermes--reduce s1 (cons "background.complete"
                                       (hermes-test--ht "task_id" "t1"
-                                                       "text" "done")))))
-    (should (eq s0 s1))
+                                                       "text" "done"))))
+         (tasks (hermes-state-bg-tasks s2)))
+    (should (= 1 (length tasks)))
+    (let ((task (aref tasks 0)))
+      (should (eq 'complete (hermes-bg-task-status task)))
+      (should (equal "done" (hermes-bg-task-result task)))
+      (should (null (hermes-bg-task-error task)))
+      (should (stringp (hermes-bg-task-completed-at task))))
     (should (string-match-p "\\[bg t1\\] done" (hermes-test--log-text)))))
+
+(ert-deftest hermes-state-test/background-complete-creates-task-if-missing ()
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons "background.complete"
+                                      (hermes-test--ht "task_id" "t99"
+                                                       "text" "orphan"))))
+         (tasks (hermes-state-bg-tasks s1)))
+    (should (= 1 (length tasks)))
+    (let ((task (aref tasks 0)))
+      (should (equal "t99" (hermes-bg-task-task-id task)))
+      (should (eq 'complete (hermes-bg-task-status task)))
+      (should (equal "orphan" (hermes-bg-task-result task))))))
+
+(ert-deftest hermes-state-test/background-error-marks-error-status ()
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons :background-start
+                                      (list :task-id "tE" :prompt "boom"))))
+         (s2 (hermes--reduce s1 (cons "background.complete"
+                                      (hermes-test--ht "task_id" "tE"
+                                                       "error" "kaboom"))))
+         (task (aref (hermes-state-bg-tasks s2) 0)))
+    (should (eq 'error (hermes-bg-task-status task)))
+    (should (equal "kaboom" (hermes-bg-task-error task)))))
+
+(ert-deftest hermes-state-test/bg-rendered-records-buffer-name ()
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons :background-start
+                                      (list :task-id "t1" :prompt "x"))))
+         (s2 (hermes--reduce s1 (cons :bg-rendered
+                                      (list :task-id "t1"
+                                            :buffer-name "*hermes-bg:s:t1*"))))
+         (task (aref (hermes-state-bg-tasks s2) 0)))
+    (should (equal "*hermes-bg:s:t1*" (hermes-bg-task-buffer-name task)))))
+
+(ert-deftest hermes-state-test/bg-rendered-noop-when-task-missing ()
+  (let* ((s0 (hermes--reduce nil '(:connected)))
+         (s1 (hermes--reduce s0 (cons :bg-rendered
+                                      (list :task-id "ghost"
+                                            :buffer-name "*x*")))))
+    (should (eq s0 s1))))
 
 (ert-deftest hermes-state-test/review-summary-logs-to-buffer ()
   (hermes-test--clear-log)

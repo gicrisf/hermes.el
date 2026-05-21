@@ -13,12 +13,12 @@
 ;;
 ;; Usage: `(require 'hermes-notifications)' after `hermes-mode' is loaded.
 ;;
-;; Known limitation: gateway `background.complete' events are not
-;; currently tracked in the state atom, so only turn completion and
-;; blocking prompts are surfaced.
+;; Turn completion, blocking prompts, and background task completion
+;; are all surfaced.
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'notifications)
 (require 'hermes-state)
 
@@ -67,7 +67,29 @@ Both OLD and NEW are `hermes-state' structs; OLD may be nil at init."
            ('clarify  "Clarification required")
            ('sudo     "Sudo password required")
            ('secret   "Secret required")
-           (_         "Action required")))))))
+           (_         "Action required"))))))
+  ;; Background task transitioned from running → complete/error.
+  (when new
+    (let ((old-bg (and old (hermes-state-bg-tasks old)))
+          (new-bg (hermes-state-bg-tasks new)))
+      (when (vectorp new-bg)
+        (dotimes (i (length new-bg))
+          (let* ((nt (aref new-bg i))
+                 (st (hermes-bg-task-status nt))
+                 (tid (hermes-bg-task-task-id nt)))
+            (when (memq st '(complete error))
+              (let ((ot (and (vectorp old-bg)
+                             (cl-find-if
+                              (lambda (bt)
+                                (equal tid (hermes-bg-task-task-id bt)))
+                              (append old-bg nil)))))
+                (when (or (null ot)
+                          (eq 'running (hermes-bg-task-status ot)))
+                  (hermes-notify--maybe-notify
+                   "Hermes Background"
+                   (if (eq 'error st)
+                       (format "Task %s failed" tid)
+                     (format "Task %s completed" tid))))))))))))
 
 (add-hook 'hermes-state-change-hook #'hermes-notify--on-state-change)
 

@@ -38,6 +38,39 @@
 (defvar-local hermes-input--history nil
   "Buffer-local mirror of `hermes-state-history' for `read-string' HISTORY.")
 
+;;;; Background task command (/bg, /background, /btw)
+
+(defconst hermes-input--bg-re
+  "\\`\\s-*/\\(bg\\|background\\|btw\\)\\(?:\\s-+\\|\\'\\)"
+  "Regex matching the background-task command prefix.
+Requires whitespace or end-of-string after the alias so `/background'
+matches but `/backgroundsomething' does not.  Used for both detection
+and stripping; keeping them on a single source avoids drift.")
+
+(defun hermes-input--is-background-p (text)
+  "Return non-nil if TEXT begins with a background-task command prefix."
+  (and text (string-match-p hermes-input--bg-re text)))
+
+(defun hermes-input--dispatch-background (text sid)
+  "Send TEXT as a `prompt.background' RPC for session SID.
+Strips the /bg prefix; on RPC response, dispatches `:background-start'
+into the local state so the bench can show `[bg: N running]'."
+  (let ((clean (replace-regexp-in-string hermes-input--bg-re "" text)))
+    (hermes-rpc-request
+     "prompt.background"
+     (list :session_id sid :text clean)
+     (lambda (result error)
+       (cond
+        (error (message "hermes: background prompt failed: %S" error))
+        (result
+         (let ((tid (hermes--get result "task_id")))
+           (when tid
+             (hermes-dispatch
+              (list :background-start
+                    :task-id (if (stringp tid) tid (format "%s" tid))
+                    :prompt clean)
+              sid)))))))))
+
 ;;;; History seed — prepend buffer-derived context to the first prompt
 ;;;; after the gateway connects against a buffer that already has turns.
 
@@ -446,6 +479,12 @@ Substitutions are applied right-to-left to preserve byte offsets."
      ((null sid)
       (hermes-dispatch (cons :user-submit (list :text text)))
       (hermes-dispatch (cons :enqueue     (list :text text))))
+     ;; Background task prefix — route to `prompt.background' rather than
+     ;; the slash dispatcher.  Bypasses the transcript: the result is
+     ;; rendered into a dedicated `*hermes-bg:<sid>:<tid>*' buffer when
+     ;; `background.complete' fires.
+     ((hermes-input--is-background-p text)
+      (hermes-input--dispatch-background text sid))
      ;; Slash command — fire immediately, no transcript, no history.
      ((eq (aref text 0) ?/)
       (let ((buf (current-buffer)))

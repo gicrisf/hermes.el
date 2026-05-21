@@ -207,6 +207,7 @@ Cleared after one paint cycle.")
     (define-key m (kbd "C-c C-s") #'hermes-bench-steer)
     (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
     (define-key m (kbd "C-c C-v") #'hermes-image-clipboard-paste)
+    (define-key m (kbd "C-c C-b") #'hermes-bench-bg-list)
     m)
   "Keymap for `hermes-bench-mode'.")
 
@@ -581,6 +582,60 @@ Used by `hermes-image' callbacks to refresh the attachment line(s)."
           (hermes-bench--paint-ephemeral nil reasoning answer))
       (hermes-bench--paint-ephemeral nil nil nil))))
 
+;;;; Background-task status zone
+
+(declare-function hermes-tool--truncate "hermes-tool-formatters" (s n))
+(declare-function hermes-bg--list-for-sid "hermes-bg" (sid))
+
+(defun hermes-bench--insert-bg-status ()
+  "Insert a one-line summary of background tasks into the bench.
+Shows `[bg: N running]' while any task is running, otherwise
+`[bg #ID complete] PROMPT' for the most recently completed task.
+No-op when the parent has no background tasks."
+  (let* ((parent hermes-bench--parent-buffer)
+         (state (and (buffer-live-p parent)
+                     (buffer-local-value 'hermes--state parent)))
+         (bg-tasks (and state (hermes-state-bg-tasks state)))
+         (running 0))
+    (when (and (vectorp bg-tasks) (> (length bg-tasks) 0))
+      (dotimes (i (length bg-tasks))
+        (when (eq 'running (hermes-bg-task-status (aref bg-tasks i)))
+          (cl-incf running)))
+      (cond
+       ((> running 0)
+        (insert (propertize (format "[bg: %d running]\n" running)
+                            'face 'hermes-bench-steer-face)))
+       (t
+        ;; Walk backward to find the most recently completed task.
+        (let* ((n (length bg-tasks))
+               (last
+                (catch 'found
+                  (dotimes (i n)
+                    (let ((bt (aref bg-tasks (- n 1 i))))
+                      (when (memq (hermes-bg-task-status bt) '(complete error))
+                        (throw 'found bt)))))))
+          (when last
+            (insert
+             (propertize
+              (format "[bg #%s %s] %s → C-c C-b to view\n"
+                      (hermes-bg-task-task-id last)
+                      (symbol-name (hermes-bg-task-status last))
+                      (hermes-tool--truncate
+                       (or (hermes-bg-task-prompt last) "") 40))
+              'face 'hermes-bench-steer-face)))))))))
+
+(defun hermes-bench-bg-list ()
+  "Pop the background-task list for the parent session."
+  (interactive)
+  (let* ((parent hermes-bench--parent-buffer)
+         (state (and (buffer-live-p parent)
+                     (buffer-local-value 'hermes--state parent)))
+         (sid (and state (hermes-state-session-id state))))
+    (if sid
+        (progn (require 'hermes-bg)
+               (hermes-bg--list-for-sid sid))
+      (message "hermes: no active session"))))
+
 ;;;; The single renderer
 
 (defun hermes-bench--paint-ephemeral (&optional user-text reasoning answer)
@@ -648,7 +703,9 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
           (insert (propertize text
                               'face (if err 'error 'hermes-bench-user-face))
                   "\n"))
-        (setq hermes-bench--status-message nil)))
+        (setq hermes-bench--status-message nil))
+      ;; Background task status — counts and most-recent-complete pointer.
+      (hermes-bench--insert-bg-status))
     ;; 3. Separator + prompt — input frame.
     (setq hermes-bench--input-boundary (copy-marker (point) nil))
     (insert (propertize (concat hermes-bench-separator "\n")

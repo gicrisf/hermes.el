@@ -164,6 +164,7 @@
                             (when e
                               (message "hermes: session.close error: %S" e)))))
     (remhash sid hermes--session-buffers)
+    (when (fboundp 'hermes-bg-kill-all) (hermes-bg-kill-all sid))
     (when (buffer-live-p buf) (kill-buffer buf))
     (hermes-sessions--refresh-if-open)))
 

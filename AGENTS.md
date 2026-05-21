@@ -19,6 +19,7 @@ hermes-sessions.el   tabulated-list-mode sidebar of live sessions
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
 hermes-config.el     Wrappers for config.get/set, toolsets.list, tools.configure (model/fast/reasoning/yolo/personality/skin/toolsets commands)
+hermes-bg.el         Background task buffers (`/bg` prompts run async in dedicated Org buffers)
 ```
 
 **Key design principle:** The Org buffer is the canonical source of truth for
@@ -137,7 +138,7 @@ its optional dependency (Evil, Transient) is absent.
 |--------|------|
 | `hermes-evil` | Normal-state Evil `C-c` bindings (works in any Emacs with Evil) |
 | `hermes-transient` | `C-c C-t` Transient popup (also bound under `SPC h .` in Doom) |
-| `hermes-notifications` | Desktop notifications on turn completion / blocking prompts |
+| `hermes-notifications` | Desktop notifications on turn completion / blocking prompts / background task completion |
 | `hermes-doom` | Doom `SPC h` leader prefix; also pulls in `hermes-evil`, `hermes-transient`, `hermes-notifications` |
 
 ### Doom Emacs
@@ -161,10 +162,10 @@ session is active.  Skills reload/list/search/install are always
 available and will auto-start the gateway if needed.
 
 Notifications fire via the built-in `notifications' library — DBus on
-Linux, Notification Center on macOS — when a turn finishes or a
-blocking prompt (approval/clarify/sudo/secret) appears while the
-Hermes buffer is hidden.  Disable at runtime with
-`(setq hermes-notifications-enabled nil)`.
+Linux, Notification Center on macOS — when a turn finishes, a
+blocking prompt (approval/clarify/sudo/secret) appears, or a
+background task completes while the Hermes buffer is hidden.
+Disable at runtime with `(setq hermes-notifications-enabled nil)`.
 
 ### Debugging
 
@@ -192,6 +193,8 @@ Hermes buffer is hidden.  Disable at runtime with
 | Bench | `RET` / `C-c C-c` | Send prompt |
 | Bench | `C-c C-k` | Interrupt parent session |
 | Bench | `C-c C-l` | Multi-line compose |
+| Bench | `C-c C-b` | List background tasks |
+| anywhere | `M-x hermes-bg-list` | List background tasks for current session |
 | Sessions sidebar | `RET` | Switch to session |
 | Sessions sidebar | `k` | Close session |
 | Sessions sidebar | `+` | New session |
@@ -216,6 +219,26 @@ Hermes buffer is hidden.  Disable at runtime with
 | hermes-mode `C-c C-k` | Interrupt |
 | hermes-mode `C-c C-l` | Multi-line compose |
 
+### Background tasks
+
+Send a prompt that runs asynchronously in a separate agent thread while
+you continue the main conversation.  Background tasks are initiated with
+the `/bg` prefix (also `/background` or `/btw`):
+
+```
+/bg analyze the test suite for slow tests
+```
+
+The bench shows `[bg: 1 running]` while the task executes and
+`[bg #N complete] …` when it finishes.  Results appear in a dedicated
+`*hermes-bg:<sid>:<task-id>*` Org buffer, not in the main conversation
+transcript.  `C-c C-b` from the bench (or `M-x hermes-bg-list`) opens a
+listing of all background tasks for the session; `RET` visits a task
+buffer and `k` kills it.  Background buffers are user-savable but are
+killed automatically when the parent session closes.
+
+---
+
 ## Development
 
 ### Nix shell
@@ -228,7 +251,7 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (191/191 green)
+eldev test                           # run all ERT tests (255/255 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
@@ -245,13 +268,13 @@ Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 
 | File | Tests | Scope |
 |------|-------|-------|
-| `test/hermes-state-test.el` | 66 | Reducers (persistent + UI) + serialization round-trip |
-| `test/hermes-render-test.el` | 28 | Segmented renderer + subagent blocks + raw drawer I/O + throttling + incremental diff + post-commit refresh |
+| `test/hermes-state-test.el` | 78 | Reducers (persistent + UI) + serialization round-trip + background tasks |
+| `test/hermes-render-test.el` | 30 | Segmented renderer + subagent blocks + raw drawer I/O + throttling + incremental diff + post-commit refresh + background task rendering |
 | `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
 | `test/hermes-input-test.el` | 7 | History seed: builder truncation, sid-based guard, slash-command exemption, all three prompt.submit paths |
-| `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
+| `test/hermes-bg-test.el` | 4 | Background task buffers, list mode, kill-all |
 
-**191/191 green, 0 unexpected** — all tests pass.
+**255/255 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

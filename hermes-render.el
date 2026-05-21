@@ -308,7 +308,19 @@ buffer) where the container's subtree spans the whole buffer."
     ;; Refresh mode-line after every render tick so status is always in
     ;; sync — covers edge cases where the reducer hands back an `eq' struct
     ;; and `hermes-state-change-hook' doesn't fire.
-    (hermes--mode-line-update)))
+    (hermes--mode-line-update)
+    ;; 4. Background tasks: any complete/error task without a buffer-name
+    ;; gets its dedicated *hermes-bg:<sid>:<tid>* buffer created and
+    ;; populated.  The render fn dispatches :bg-rendered back through
+    ;; `hermes-dispatch' so the buffer-name lands in state cleanly.
+    (let ((sid (and new (hermes-state-session-id new)))
+          (bg-tasks (and new (hermes-state-bg-tasks new))))
+      (when (vectorp bg-tasks)
+        (dotimes (i (length bg-tasks))
+          (let ((task (aref bg-tasks i)))
+            (when (and (memq (hermes-bg-task-status task) '(complete error))
+                       (null (hermes-bg-task-buffer-name task)))
+              (hermes--render-bg-task sid task))))))))
 
 (defun hermes--refresh-region (start end)
   "Run indent + drawer-hide + fold-repair passes over [START, END).
@@ -650,6 +662,62 @@ returns the empty string — turn kinds are expressed via the `U:' /
 (defun hermes--now-iso ()
   "Return current time as an ISO-8601 string."
   (format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+
+(declare-function hermes-bg-mode "hermes-bg")
+(declare-function hermes-md-to-org "hermes-md" (text))
+
+(defun hermes--render-bg-task (sid task)
+  "Create and populate a background task buffer for TASK in session SID.
+Dispatches a synthetic `:bg-rendered' message (deferred via
+`run-at-time' to break re-entrancy with the calling render hook) so
+the reducer records the buffer name in state.  SID is captured in the
+deferred closure because `hermes-dispatch' reads
+`hermes--current-session-id' dynamically — the dynamic binding is
+gone by the time the timer fires."
+  (require 'hermes-bg)
+  (require 'hermes-md)
+  (let* ((tid    (hermes-bg-task-task-id task))
+         (prompt (or (hermes-bg-task-prompt task) ""))
+         (result (hermes-bg-task-result task))
+         (err    (hermes-bg-task-error task))
+         (buf-name (format "*hermes-bg:%s:%s*" (or sid "?") tid))
+         (buf (get-buffer-create buf-name)))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'hermes-bg-mode)
+        (hermes-bg-mode))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "* Background: %s\n\n" prompt))
+        (insert ":PROPERTIES:\n")
+        (insert (format ":HERMES_TASK_ID: %s\n" tid))
+        (insert (format ":HERMES_STATUS: %s\n" (if err "error" "complete")))
+        (insert ":END:\n\n")
+        (if err
+            (insert (format "#+begin_example Error\n%s\n#+end_example\n" err))
+          (insert (hermes-md-to-org (or result "")))
+          (unless (eq (char-before) ?\n) (insert "\n")))
+        (insert ":HERMES_RAW:\n")
+        (let ((print-length nil)
+              (print-level nil)
+              (print-quoted t))
+          (insert (prin1-to-string
+                   (list :task-id tid
+                         :prompt prompt
+                         :status (if err 'error 'complete)
+                         :result result
+                         :error err))))
+        (insert "\n:END:\n")
+        (goto-char (point-min))))
+    (let ((sid-capture sid)
+          (tid-capture tid)
+          (bname buf-name))
+      (run-at-time 0 nil
+                   (lambda ()
+                     (hermes-dispatch
+                      (list :bg-rendered
+                            :task-id tid-capture
+                            :buffer-name bname)
+                      sid-capture))))))
 
 (defun hermes--insert-properties (alist)
   "Insert a :PROPERTIES: drawer from ALIST ((prop . value) …) at point."

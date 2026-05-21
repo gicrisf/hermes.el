@@ -78,6 +78,7 @@
     "session.interrupt"      ; {session_id}
     ;; Conversation
     "prompt.submit"          ; {session_id, text}
+    "prompt.background"      ; {session_id, text}            → {task_id}
     "session.steer"          ; {session_id, text}            → {status, text}
     ;; Blocking prompt responses (echo request_id)
     "approval.respond"       ; {session_id, request_id, choice, all?}

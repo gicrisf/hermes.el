@@ -115,10 +115,21 @@
   busy-mode          ; string from gateway `busy' config: "queue" | "steer" | "interrupt" | nil
   (cwd nil)          ; string or nil — detected project root (local tracking only;
                      ; gateway-side cwd is process-global, set at session.create)
-  (attachments nil)) ; list of plists (:attach-id :path :name :width :height :token-estimate :status)
+  (attachments nil)  ; list of plists (:attach-id :path :name :width :height :token-estimate :status)
                      ; client-side MIRROR of gateway's session["attached_images"] — never authoritative.
                      ; :attach-id is a client-generated identifier used to match RPC callbacks back to
                      ; their optimistic placeholder entry.  :status is 'pending | 'attached | 'error.
+  (bg-tasks []))     ; vector of hermes-bg-task — background prompt tasks for this session
+
+(cl-defstruct (hermes-bg-task (:copier hermes-bg-task-copy))
+  task-id          ; string — gateway-assigned task id
+  prompt           ; string — original user prompt (sans /bg prefix)
+  status           ; symbol: 'running | 'complete | 'error
+  buffer-name      ; string or nil — name of the rendered *hermes-bg:…* buffer
+  result           ; string or nil — final response text
+  error            ; string or nil — error message
+  created-at       ; string — ISO-8601 timestamp
+  completed-at)    ; string or nil — ISO-8601 timestamp
 
 ;;;; Ephemeral UI state — never persisted to the buffer
 
@@ -664,6 +675,43 @@ which case dispatch routes to the correct typed reconstructor."
       (:pending-turns-clear
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-pending-turns s) [])))
+      ;; --- Background tasks (client-side synthetic events) ---------------
+      (:background-start
+       (let* ((tid (plist-get p :task-id))
+              (prompt (plist-get p :prompt))
+              (bg-tasks (or (hermes-state-bg-tasks state) []))
+              (existing (cl-find-if (lambda (bt)
+                                      (equal tid (hermes-bg-task-task-id bt)))
+                                    (append bg-tasks nil))))
+         (if existing
+             state
+           (let ((new-task (make-hermes-bg-task
+                            :task-id tid
+                            :prompt prompt
+                            :status 'running
+                            :created-at (format-time-string "%Y-%m-%dT%H:%M:%S%z"))))
+             (hermes--with-copy state hermes-state-copy s
+               (setf (hermes-state-bg-tasks s)
+                     (vconcat bg-tasks (vector new-task))))))))
+      (:bg-rendered
+       (let* ((tid (plist-get p :task-id))
+              (bname (plist-get p :buffer-name))
+              (bg-tasks (hermes-state-bg-tasks state))
+              (existing (and (vectorp bg-tasks)
+                             (cl-find-if (lambda (bt)
+                                           (equal tid (hermes-bg-task-task-id bt)))
+                                         (append bg-tasks nil)))))
+         (if (and existing bname)
+             (let ((updated (hermes-bg-task-copy existing)))
+               (setf (hermes-bg-task-buffer-name updated) bname)
+               (let ((new-vec (vconcat
+                               (cl-remove-if (lambda (bt)
+                                               (equal tid (hermes-bg-task-task-id bt)))
+                                             (append bg-tasks nil))
+                               (vector updated))))
+                 (hermes--with-copy state hermes-state-copy s
+                   (setf (hermes-state-bg-tasks s) new-vec))))
+           state)))
       ;; --- Gateway lifecycle ---------------------------------------------
       ("gateway.ready"
        (hermes--with-copy state hermes-state-copy s
@@ -1099,10 +1147,43 @@ which case dispatch routes to the correct typed reconstructor."
          state))
       ;; --- Background / review -------------------------------------------
       ("background.complete"
-       (let ((tid (hermes--get p "task_id"))
-             (txt (hermes--get p "text")))
-         (hermes--log-write "[bg %s] %s" (or tid "?") (or txt ""))
-         state))
+       (let* ((tid (hermes--get p "task_id"))
+              (txt (hermes--get p "text"))
+              (err (hermes--get p "error"))
+              (bg-tasks (hermes-state-bg-tasks state))
+              (existing (and (vectorp bg-tasks)
+                             (cl-find-if (lambda (bt)
+                                           (equal tid (hermes-bg-task-task-id bt)))
+                                         (append bg-tasks nil)))))
+         (hermes--log-write "[bg %s] %s" (or tid "?") (or txt err ""))
+         (cond
+          (existing
+           (let ((updated (hermes-bg-task-copy existing)))
+             (setf (hermes-bg-task-status updated) (if err 'error 'complete)
+                   (hermes-bg-task-result updated) txt
+                   (hermes-bg-task-error updated) err
+                   (hermes-bg-task-completed-at updated)
+                   (format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+             (let ((new-vec (vconcat
+                             (cl-remove-if (lambda (bt)
+                                             (equal tid (hermes-bg-task-task-id bt)))
+                                           (append bg-tasks nil))
+                             (vector updated))))
+               (hermes--with-copy state hermes-state-copy s
+                 (setf (hermes-state-bg-tasks s) new-vec)))))
+          (t
+           (let* ((now (format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+                  (new-task (make-hermes-bg-task
+                             :task-id tid
+                             :prompt (or txt "")
+                             :status (if err 'error 'complete)
+                             :result txt
+                             :error err
+                             :created-at now
+                             :completed-at now)))
+             (hermes--with-copy state hermes-state-copy s
+               (setf (hermes-state-bg-tasks s)
+                     (vconcat (or bg-tasks []) (vector new-task)))))))))
       ("review.summary"
        (let ((txt (hermes--get p "text")))
          (hermes--log-write "[review] %s" (or txt ""))

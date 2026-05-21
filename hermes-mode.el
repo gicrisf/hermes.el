@@ -567,31 +567,23 @@ subagents."
        nil nil 'file))
     (vconcat (nreverse messages))))
 
-(defun hermes-resume-buffer ()
-  "Connect to gateway and resume conversation from the current buffer.
-Parses buffer turns; attempts to seed history into a fresh session.
-
-FIXME: The Hermes gateway may not currently accept a history list in
-`session.create'.  If gateway rejects the `history' field, this will
-silently fall back to a cold start (session created with no seeded
-context).  The parsed history is still useful as a local read-only
-reference.  Verify with the gateway spec before relying on resume."
+(defun hermes-load-org ()
+  "Create a fresh gateway session bound to the current buffer.
+The gateway does not accept a history parameter, so conversation
+context is restored via the history seed on the first outgoing
+prompt (see `hermes--build-history-text')."
   (interactive)
   (unless (derived-mode-p 'hermes-mode)
     (user-error "Not in a Hermes buffer"))
-  (let* ((history (hermes--parse-buffer-messages))
-         (history-plists (mapcar #'hermes--message-to-plist
-                                 (append history nil))))
+  (let* ((history (hermes--parse-buffer-messages)))
     (hermes--install-hooks)
     (unless (hermes-rpc-live-p)
       (hermes-rpc-start))
     (hermes-rpc-request
-     "session.create"
-     ;; FIXME: gateway may ignore :history — confirm protocol support.
-     (list :cols 100 :history (vconcat history-plists))
+     "session.create" '(:cols 100)
      (lambda (result error)
        (cond
-        (error (message "hermes: resume session.create failed: %S" error))
+        (error (message "hermes: load-org session.create failed: %S" error))
         (result
          (let ((sid (gethash "session_id" result)))
            (when sid
@@ -601,7 +593,9 @@ reference.  Verify with the gateway spec before relying on resume."
               sid hermes--state
               (save-excursion
                 (goto-char (point-min)) (copy-marker (point) nil)))
-             (message "hermes: resumed as %s (%d turns parsed)"
+             ;; Reset the seed stamp so the next prompt restores context.
+             (setq hermes--seeded-session-id nil)
+             (message "hermes: loaded org as %s (%d turns parsed)"
                       sid (length history))))))))))
 
 ;;;; Debug inspectors

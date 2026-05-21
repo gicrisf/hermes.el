@@ -542,26 +542,13 @@ It's 6.
 Because the Org buffer is the canonical source of truth, saving a conversation
 is just `(write-region (point-min) (point-max) "chat.org")`.
 
-### `hermes-resume-buffer`
+### `hermes-load-org`
 
-`M-x hermes-resume-buffer` (in a `hermes-mode` buffer) parses all turn
-headings, derives text from the visible buffer structure (Response / Reasoning
-bodies), reads `:HERMES_META:` drawers for usage, derives subagents from child headings, and
-reconstructs `hermes-message` structs for the `:history` field in `session.create`:
-
-```elisp
-(let* ((history (hermes--parse-buffer-messages))
-       (history-plists (mapcar #'hermes--message-to-plist (append history nil))))
-  (hermes-rpc-request
-   "session.create"
-   (list :cols 100 :history (vconcat history-plists))
-   ...))
-```
-
-**Caveat:** The gateway may not currently accept `:history` in `session.create`.
-If ignored, the session starts cold (no seeded context) but the buffer still
-contains the full conversation for local reference. Verify with the gateway spec
-before relying on resume.
+`M-x hermes-load-org` (in a `hermes-mode` buffer) creates a fresh gateway
+session bound to the current buffer.  The gateway does not accept a `:history`
+parameter in `session.create`, so conversation context is restored on the first
+outgoing prompt via the history seed (`hermes--build-history-text`), which
+parses the visible buffer and prepends a formatted summary to the wire text.
 
 ### Manual editing safety
 
@@ -647,8 +634,8 @@ drawer entirely. Benefits:
 - No split-brain — user edits to visible text are preserved on resume.
 - No duplication — conversation text exists only once (in the buffer).
 - Natural persistence — save the `.org` file, close Emacs, reopen it.
-- Resume — `hermes-resume-buffer` parses visible headings and meta drawers,
-  reconstructs `hermes-message` structs, and seeds history into the gateway.
+- Load org — `hermes-load-org` parses visible headings, reconstructs
+  `hermes-message` structs, and seeds history into a fresh gateway session.
 
 Trade-off: `hermes-md-to-org` is one-way (markdown→Org). The gateway receives
 Org-formatted text in the history payload. This drift is acceptable for v1

@@ -32,6 +32,10 @@ child headings (Response / Reasoning / Tool / Subagent) carry their own
 `:HERMES_KIND:` markers. Text content is parsed back from the visible
 buffer, so user edits to prose are preserved across resume.
 
+**Author preference:** Backward compatibility is not a priority. Obsolete
+functions, stale docstrings, and misleading feature names are removed
+rather than deprecated or kept as aliases.
+
 A `:HERMES_META:` drawer at the end of each turn subtree carries only the
 irreplaceable structured data: image metadata and usage.  Tool segments
 are body-canonical in `#+name:'d blocks and heading properties; subagents

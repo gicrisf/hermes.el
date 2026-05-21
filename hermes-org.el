@@ -363,18 +363,18 @@ nil if point is not on a recognized turn heading."
                                  (dur-str (org-entry-get (point) "TOOL_DURATION"))
                                  (duration (and dur-str
                                                 (ignore-errors (read dur-str))))
-                                 ;; Meta is optional enrichment; the heading
-                                 ;; alone is sufficient for a tool segment.
-                                 ;; :inline-diff, :output, and :error are
-                                 ;; body-canonical at terminal status — they
-                                 ;; live in the heading body as #+name'd
-                                 ;; blocks.  Clean break: no meta fallback.
-                                 (tcs (plist-get meta :tool-calls))
-                                 (tc (and tcs tool-id
-                                          (cl-find-if
-                                           (lambda (x)
-                                             (equal tool-id (plist-get x :id)))
-                                           (append tcs nil))))
+                                 ;; The heading alone is the sole source of
+                                 ;; truth for a tool segment.  :inline-diff /
+                                 ;; :output / :error / :context are
+                                 ;; body-canonical in #+name'd blocks; :todos
+                                 ;; is body-canonical in a #+name'd Org table;
+                                 ;; :summary and :name/:status/:duration live
+                                 ;; in heading properties.  :preview is
+                                 ;; ephemeral and nil on resume.  The parser
+                                 ;; does not read :tool-calls from
+                                 ;; :HERMES_META: — meta carries only
+                                 ;; turn-level data (:usage, :images,
+                                 ;; :subagents).
                                  (body (hermes--parse-heading-body))
                                  (slug (hermes--slug-for-name tool-id))
                                  (terminal-p (memq status '(complete error))))
@@ -393,7 +393,7 @@ nil if point is not on a recognized turn heading."
                                                            (hermes--extract-named-block
                                                             body
                                                             (format "hermes-tool-%s-context" slug)))
-                                             :preview (hermes--strip-ansi (plist-get tc :preview))
+                                             :preview nil
                                              :inline-diff (and terminal-p slug
                                                                (hermes--extract-named-block
                                                                 body

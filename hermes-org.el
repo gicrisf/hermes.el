@@ -343,6 +343,11 @@ Looks back up to two lines from each `[[file:PATH]]' link for
          ((looking-at "\\[\\[file:\\([^]]+\\)\\]\\]")
           (let ((path (match-string-no-properties 1))
                 (img nil))
+            ;; Walk back over attr lines.  attr_hermes is read first
+            ;; (immediately above the link) and provides canonical
+            ;; metadata; attr_org is read second (one above) and only
+            ;; fills keys attr_hermes did not set — so display-only
+            ;; dimensions from attr_org cannot overwrite real ones.
             (save-excursion
               (dotimes (_ 2)
                 (when (zerop (forward-line -1))
@@ -351,7 +356,9 @@ Looks back up to two lines from each `[[file:PATH]]' link for
                     (let ((plist (hermes--parse-attr-line
                                   (match-string-no-properties 1))))
                       (while plist
-                        (setq img (plist-put img (car plist) (cadr plist)))
+                        (let ((k (car plist)) (v (cadr plist)))
+                          (unless (plist-member img k)
+                            (setq img (plist-put img k v))))
                         (setq plist (cddr plist))))))))
             (setq img (plist-put img :path path))
             (push (cons 'image img) segs))

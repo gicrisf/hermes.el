@@ -1394,9 +1394,8 @@ omit the drawer entirely under v2)."
       (delete-file tmp))))
 
 (ert-deftest hermes-render-test/format-image-segment-emits-attr-lines ()
-  "When width/height/name/token-estimate are present, the formatter
-emits `#+attr_org:' (width/height) and `#+attr_hermes:' (name/tokens)
-before the file link."
+  "Small image (under the display cap): attr_org mirrors natural dims;
+attr_hermes carries canonical metadata including real width/height."
   (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
          (seg (make-hermes-segment
                :type 'image
@@ -1409,10 +1408,48 @@ before the file link."
           (should (string-match-p "^#\\+attr_org: :width 100 :height 50$"
                                   out))
           (should (string-match-p
-                   "^#\\+attr_hermes: :name \"x.png\" :token-estimate 150$"
+                   (concat "^#\\+attr_hermes: :name \"x.png\""
+                           " :width 100 :height 50 :token-estimate 150$")
                    out))
           (should (string-match-p (regexp-quote (format "[[file:%s]]" tmp))
                                   out)))
+      (delete-file tmp))))
+
+(ert-deftest hermes-render-test/format-image-segment-scales-large-image ()
+  "Large image: attr_org carries scaled display dims (longest side at
+cap); attr_hermes preserves the real pixel dimensions."
+  (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
+         (seg (make-hermes-segment
+               :type 'image
+               :content (list :path tmp :name "big.png"
+                              :width 1200 :height 800
+                              :token-estimate 999)
+               :id "s1"))
+         (hermes-image-display-max-dim 600))
+    (unwind-protect
+        (let ((out (hermes--format-segment seg)))
+          ;; 1200x800 scaled so longest=600 → 600x400.
+          (should (string-match-p "^#\\+attr_org: :width 600 :height 400$"
+                                  out))
+          (should (string-match-p
+                   (concat "^#\\+attr_hermes: :name \"big.png\""
+                           " :width 1200 :height 800 :token-estimate 999$")
+                   out)))
+      (delete-file tmp))))
+
+(ert-deftest hermes-render-test/format-image-segment-omits-attr-org-when-dims-unknown ()
+  "Unknown dimensions: attr_org omitted, attr_hermes still emitted with name."
+  (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
+         (seg (make-hermes-segment
+               :type 'image
+               :content (list :path tmp :name "y.png" :token-estimate 50)
+               :id "s1")))
+    (unwind-protect
+        (let ((out (hermes--format-segment seg)))
+          (should-not (string-match-p "^#\\+attr_org:" out))
+          (should (string-match-p
+                   "^#\\+attr_hermes: :name \"y.png\" :token-estimate 50$"
+                   out)))
       (delete-file tmp))))
 
 (ert-deftest hermes-render-test/format-image-segment-missing-file ()

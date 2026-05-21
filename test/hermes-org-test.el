@@ -1404,6 +1404,23 @@ re-render must be byte-identical to the first render."
     (should (null (plist-get img :width)))
     (should (null (plist-get img :name)))))
 
+(ert-deftest hermes-org-test/parse-image-attr-hermes-wins-over-attr-org ()
+  "When attr_hermes carries real width/height and attr_org carries
+different display dims, the parsed segment reflects the canonical
+attr_hermes values."
+  (let* ((body (concat "#+attr_org: :width 600 :height 400\n"
+                       "#+attr_hermes: :name \"big.png\""
+                       " :width 1200 :height 800 :token-estimate 999\n"
+                       "[[file:/tmp/big.png]]"))
+         (parts (hermes--parse-body-segments body))
+         (img (cdr (nth 0 parts))))
+    (should (= 1 (length parts)))
+    (should (eq 'image (car (nth 0 parts))))
+    (should (equal 1200 (plist-get img :width)))
+    (should (equal 800 (plist-get img :height)))
+    (should (equal "big.png" (plist-get img :name)))
+    (should (equal 999 (plist-get img :token-estimate)))))
+
 (ert-deftest hermes-org-test/parse-image-attr-org-only ()
   "User-edited `#+attr_org:' alone (no Hermes side-line) still round-trips."
   (let* ((body (concat "#+attr_org: :width 200\n"

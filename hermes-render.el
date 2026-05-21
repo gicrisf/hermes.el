@@ -79,6 +79,16 @@ Updated by `hermes--mode-line-update' whenever the ephemeral state changes.")
 ;; latest snapshot when it fires.  Lifecycle transitions (stream-begin,
 ;; stream-commit, error) always paint synchronously — see `hermes--render'.
 
+(defcustom hermes-image-display-max-dim 600
+  "Maximum pixel size for the longest side of a displayed image.
+Inline images larger than this are scaled down for display via
+`#+attr_org:' while their real dimensions remain canonical in
+`#+attr_hermes:'.  Set to nil to disable display scaling (images
+will then either honor `#+attr_org:' from the buffer or fall back
+to the window width)."
+  :type '(choice (integer :tag "Pixels") (const :tag "Disable" nil))
+  :group 'hermes)
+
 (defcustom hermes-render-stream-throttle 0.04
   "Floor (minimum seconds) between consecutive stream re-renders.
 Acts as a lower bound on the *adaptive* interval computed by
@@ -1019,6 +1029,22 @@ from `hermes-tool-formatters' and only inserted when non-empty."
       ('image (hermes--format-image-segment content))
       (_ ""))))
 
+(defun hermes--image-display-dims (width height)
+  "Return (W . H) display dimensions for an image of natural size WIDTH x HEIGHT.
+Longest side is capped at `hermes-image-display-max-dim' (aspect
+ratio preserved).  Returns natural dims when already within the
+cap.  Returns nil when WIDTH or HEIGHT is missing/invalid."
+  (when (and (integerp width) (integerp height) (> width 0) (> height 0))
+    (let ((max-dim hermes-image-display-max-dim))
+      (cond
+       ((null max-dim) (cons width height))
+       (t (let ((longest (max width height)))
+            (if (<= longest max-dim)
+                (cons width height)
+              (let ((scale (/ (float max-dim) longest)))
+                (cons (round (* width scale))
+                      (round (* height scale)))))))))))
+
 (defun hermes--format-attr-line (keyword plist)
   "Return `#+attr_KEYWORD: :k1 v1 :k2 v2\\n' for the non-nil entries of PLIST.
 Strings are printed with `prin1' (so they keep their quotes); numbers
@@ -1039,22 +1065,33 @@ PLIST has no non-nil values."
 
 (defun hermes--format-image-segment (content)
   "Return an Org `file:' link (or placeholder) for image segment CONTENT.
-Precedes the link with:
-- #+attr_org:    :width / :height  (when present — Org honors these natively)
-- #+attr_hermes: :name / :token-estimate  (when present — Hermes-private)
-The path is used verbatim — no expansion or canonicalization."
-  (let* ((path   (and (listp content) (plist-get content :path)))
-         (name   (and (listp content) (plist-get content :name)))
-         (width  (and (listp content) (plist-get content :width)))
-         (height (and (listp content) (plist-get content :height)))
-         (tokens (and (listp content) (plist-get content :token-estimate)))
-         (label  (or (and path (file-name-nondirectory path)) name "image")))
+Precedes the link with two attr lines:
+- #+attr_org:    :width / :height  — *display* dimensions (scaled down
+  so longest side ≤ `hermes-image-display-max-dim'; Org honors these).
+- #+attr_hermes: :name / :width / :height / :token-estimate — canonical
+  metadata (real pixel dimensions; Hermes-private namespace).
+
+When real dimensions are unknown, attr_org is omitted (the window-width
+fallback in `org-image-actual-width' applies).  attr_hermes is emitted
+whenever any of its fields are non-nil.  The path is used verbatim — no
+expansion or canonicalization."
+  (let* ((path    (and (listp content) (plist-get content :path)))
+         (name    (and (listp content) (plist-get content :name)))
+         (width   (and (listp content) (plist-get content :width)))
+         (height  (and (listp content) (plist-get content :height)))
+         (tokens  (and (listp content) (plist-get content :token-estimate)))
+         (display (hermes--image-display-dims width height))
+         (label   (or (and path (file-name-nondirectory path)) name "image")))
     (cond
      ((and path (file-readable-p path))
-      (concat (hermes--format-attr-line "org"
-                                        (list :width width :height height))
+      (concat (if display
+                  (hermes--format-attr-line
+                   "org" (list :width (car display) :height (cdr display)))
+                "")
               (hermes--format-attr-line "hermes"
-                                        (list :name name :token-estimate tokens))
+                                        (list :name name
+                                              :width width :height height
+                                              :token-estimate tokens))
               (format "[[file:%s]]\n" path)))
      (t (format "[image: %s (not found)]\n" label)))))
 

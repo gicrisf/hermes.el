@@ -25,8 +25,16 @@
 
 (require 'cl-lib)
 (require 'tabulated-list)
+(require 'org)
 (require 'hermes-rpc)
 (require 'hermes-project)
+(require 'hermes-state)
+
+(defvar hermes--session-buffers)        ; defined in hermes-mode.el
+(defvar hermes--seeded-session-id)      ; defined in hermes-input.el (buffer-local)
+(declare-function hermes-mode "hermes-mode" ())
+(declare-function hermes--install-hooks "hermes-mode" ())
+(declare-function hermes--register-session "hermes-org" (sid state marker))
 
 (defconst hermes-sessions-db-buffer-name "*Hermes DB Sessions*")
 
@@ -155,6 +163,42 @@ THEN, if non-nil, is invoked with no args after the print completes."
   "Return MSG's role as a string, or empty."
   (or (hermes--db-msg-field msg "role") ""))
 
+(defun hermes--db-messages-to-org-body (messages)
+  "Render MESSAGES (list/vector of hashtables) as the **body** org string.
+Emits only the per-turn headings (no `* Hermes session' container).
+Used when inserting into a buffer where `hermes-mode' has already
+created the container."
+  (let ((msgs (cond
+               ((vectorp messages) (append messages nil))
+               ((listp messages) messages)
+               (t nil)))
+        (parts nil)
+        (last-assistant-depth 2))
+    (dolist (msg msgs)
+      (let ((role (hermes--db-msg-role msg)))
+        (pcase role
+          ("user"
+           (setq last-assistant-depth 2)
+           (push (format "\n** User\n:PROPERTIES:\n:HERMES_KIND: USER\n:END:\n%s\n"
+                         (hermes--db-msg-text msg))
+                 parts))
+          ("assistant"
+           (setq last-assistant-depth 2)
+           (push (format "\n** Assistant\n:PROPERTIES:\n:HERMES_KIND: ASSISTANT\n:END:\n%s\n"
+                         (hermes--db-msg-text msg))
+                 parts))
+          ("tool"
+           (let* ((name (or (hermes--db-msg-field msg "name") "tool"))
+                  (ctx  (or (hermes--db-msg-field msg "context")
+                            (hermes--db-msg-text msg)))
+                  (stars (make-string (1+ last-assistant-depth) ?*)))
+             (push (format "\n%s Tool (%s)\n:PROPERTIES:\n:HERMES_KIND: TOOL\n:TOOL_NAME: %s\n:END:\n%s\n"
+                           stars name name ctx)
+                   parts)))
+          (_
+           (push (format "\n# skipped role: %s\n" role) parts)))))
+    (mapconcat #'identity (nreverse parts) "")))
+
 (defun hermes--db-messages-to-org (messages sid)
   "Render MESSAGES (list/vector of hashtables) for SID as an org string.
 
@@ -183,39 +227,9 @@ Format:
   :TOOL_NAME: <name>
   :END:
   <context>"
-  (let ((msgs (cond
-               ((vectorp messages) (append messages nil))
-               ((listp messages) messages)
-               (t nil)))
-        (parts (list (format "* Hermes session :hermes:\n:PROPERTIES:\n:HERMES_SESSION: %s\n:END:\n"
-                             (or sid ""))))
-        (last-assistant-depth 2))
-    (dolist (msg msgs)
-      (let ((role (hermes--db-msg-role msg)))
-        (pcase role
-          ("user"
-           (setq last-assistant-depth 2)
-           (push (format "\n** User\n:PROPERTIES:\n:HERMES_KIND: USER\n:END:\n%s\n"
-                         (hermes--db-msg-text msg))
-                 parts))
-          ("assistant"
-           (setq last-assistant-depth 2)
-           (push (format "\n** Assistant\n:PROPERTIES:\n:HERMES_KIND: ASSISTANT\n:END:\n%s\n"
-                         (hermes--db-msg-text msg))
-                 parts))
-          ("tool"
-           (let* ((name (or (hermes--db-msg-field msg "name") "tool"))
-                  (ctx  (or (hermes--db-msg-field msg "context")
-                            (hermes--db-msg-text msg)))
-                  (stars (make-string (1+ last-assistant-depth) ?*)))
-             (push (format "\n%s Tool (%s)\n:PROPERTIES:\n:HERMES_KIND: TOOL\n:TOOL_NAME: %s\n:END:\n%s\n"
-                           stars name name ctx)
-                   parts)))
-          (_
-           ;; Unknown role: skip with a comment so the user knows something
-           ;; was filtered.  Defensive — gateway shouldn't emit other roles.
-           (push (format "\n# skipped role: %s\n" role) parts)))))
-    (mapconcat #'identity (nreverse parts) "")))
+  (concat (format "* Hermes session :hermes:\n:PROPERTIES:\n:HERMES_SESSION: %s\n:END:\n"
+                  (or sid ""))
+          (hermes--db-messages-to-org-body messages)))
 
 (defun hermes--render-db-messages-to-buffer (messages sid)
   "Insert the org rendering of MESSAGES (for SID) into the current buffer.
@@ -224,6 +238,137 @@ Erases the buffer first.  Returns no useful value."
     (erase-buffer)
     (insert (hermes--db-messages-to-org messages sid))
     (goto-char (point-min))))
+
+;;;; Phase 4: live resume / branch from DB
+
+(defun hermes--db-install-into-buffer (buf new-sid messages info)
+  "Activate `hermes-mode' in BUF, render MESSAGES, register NEW-SID.
+INFO is the `info' hash-table from the server response (may be nil).
+On return, BUF is a fully-armed Hermes session buffer with the history
+seed already stamped (no re-seeding on next prompt)."
+  (with-current-buffer buf
+    ;; `hermes-mode' inserts its own `* Hermes session :hermes:' container
+    ;; heading; we add the per-turn bodies after it.
+    (hermes-mode)
+    (let ((cwd (and (hash-table-p info) (gethash "cwd" info))))
+      (when cwd
+        (setq-local default-directory (file-name-as-directory cwd))
+        (setf (hermes-state-cwd hermes--state) cwd)))
+    (setf (hermes-state-session-id hermes--state) new-sid)
+    (when (hash-table-p info)
+      (setf (hermes-state-session-info hermes--state) info))
+    (save-excursion
+      (goto-char (point-min))
+      (when (org-at-heading-p)
+        (org-set-property "HERMES_SESSION" new-sid)
+        (when-let ((cwd (and (hash-table-p info) (gethash "cwd" info))))
+          (org-set-property "HERMES_CWD" (abbreviate-file-name cwd))))
+      (goto-char (point-max))
+      (let ((body (hermes--db-messages-to-org-body messages)))
+        (unless (string-empty-p body)
+          (unless (bolp) (insert "\n"))
+          (insert body))))
+    (puthash new-sid buf hermes--session-buffers)
+    (hermes--register-session
+     new-sid hermes--state
+     (save-excursion (goto-char (point-min)) (copy-marker (point) nil)))
+    ;; Gateway already has the full conversation — suppress the history seed.
+    (setq hermes--seeded-session-id new-sid)
+    (goto-char (point-min))))
+
+(defun hermes--db-handle-resume-response (result error orig-sid then)
+  "Common handler for `session.resume' responses.
+ORIG-SID is the SID the user asked to resume; the response carries a
+NEW SID under `session_id'.  THEN, if non-nil, is called with BUF after
+install."
+  (cond
+   (error
+    (let* ((code (and (hash-table-p error) (gethash "code" error)))
+           (msg  (and (hash-table-p error) (gethash "message" error)))
+           (not-found (eql code 4007)))
+      (message "hermes: resume %s failed: %s%s"
+               orig-sid
+               (or msg (format "%S" error))
+               (if not-found
+                   " — session not in gateway DB; pick `Load from org' instead"
+                 ""))))
+   ((not (hash-table-p result))
+    (message "hermes: resume %s: unexpected response shape"
+             (hermes-sessions-db--short-sid orig-sid)))
+   (t
+    (let* ((new-sid  (gethash "session_id" result))
+           (messages (gethash "messages" result))
+           (info     (gethash "info" result))
+           (buf      (and new-sid
+                          (generate-new-buffer
+                           (format "*hermes:%s*" new-sid)))))
+      (cond
+       ((not new-sid)
+        (message "hermes: resume %s: no session_id in response"
+                 (hermes-sessions-db--short-sid orig-sid)))
+       (t
+        (hermes--db-install-into-buffer buf new-sid messages info)
+        (pop-to-buffer buf)
+        (message "hermes: resumed %s as %s (%d msgs)"
+                 (hermes-sessions-db--short-sid orig-sid)
+                 (hermes-sessions-db--short-sid new-sid)
+                 (length (cond ((vectorp messages) (append messages nil))
+                               ((listp messages) messages)
+                               (t nil))))
+        (when then (funcall then buf))))))))
+
+;;;###autoload
+(defun hermes-resume-from-db (sid)
+  "Resume the gateway-DB session SID into a fresh Hermes buffer.
+The gateway returns a NEW session id (distinct from SID); the new buffer
+is named `*hermes:<new-sid>*' and its history seed is suppressed since
+the gateway already has full context."
+  (interactive
+   (list (read-string "Session id to resume: ")))
+  (unless (and sid (not (string-empty-p sid)))
+    (user-error "No session id given"))
+  (unless (hermes-rpc-live-p)
+    (hermes--install-hooks)
+    (hermes-rpc-start))
+  (hermes-rpc-request
+   "session.resume" (list :session_id sid)
+   (lambda (result error)
+     (hermes--db-handle-resume-response result error sid nil))))
+
+;;;###autoload
+(defun hermes-branch-from-db (sid)
+  "Branch the gateway-DB session SID into a new session and open it.
+Chains `session.branch' → `session.resume' so the new buffer is ready
+to receive prompts, identical to a resume."
+  (interactive
+   (list (read-string "Session id to branch: ")))
+  (unless (and sid (not (string-empty-p sid)))
+    (user-error "No session id given"))
+  (unless (hermes-rpc-live-p)
+    (hermes--install-hooks)
+    (hermes-rpc-start))
+  (hermes-rpc-request
+   "session.branch" (list :session_id sid)
+   (lambda (result error)
+     (cond
+      (error
+       (let ((msg (and (hash-table-p error) (gethash "message" error))))
+         (message "hermes: branch %s failed: %s"
+                  sid (or msg (format "%S" error)))))
+      ((not (hash-table-p result))
+       (message "hermes: branch %s: unexpected response shape"
+                (hermes-sessions-db--short-sid sid)))
+      (t
+       (let ((new-sid (gethash "session_id" result)))
+         (cond
+          ((not new-sid)
+           (message "hermes: branch %s: no session_id in response"
+                    (hermes-sessions-db--short-sid sid)))
+          (t
+           (hermes-rpc-request
+            "session.resume" (list :session_id new-sid)
+            (lambda (r2 e2)
+              (hermes--db-handle-resume-response r2 e2 new-sid nil)))))))))))
 
 ;;;; Mode
 

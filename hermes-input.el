@@ -33,6 +33,8 @@
 (declare-function hermes--buffer-message-count "hermes-mode" ())
 (declare-function hermes--message-text-for-display "hermes-render" (msg))
 (declare-function hermes-interrupt "hermes-mode" ())
+(declare-function hermes-resume-from-db "hermes-sessions-db" (sid))
+(declare-function hermes-branch-from-db "hermes-sessions-db" (sid))
 (declare-function hermes-bench-add-steer "hermes-bench" (parent text))
 
 (defvar-local hermes-input--history nil
@@ -353,13 +355,26 @@ ends."
      ((null target)
       (user-error "No Hermes session at point — use `M-x hermes' from an Org heading or move into a `:hermes:' subtree"))
      ;; Stale: heading has a session id but the registry has no entry
-     ;; (file was reopened, gateway restarted, etc.).  Stash the text
-     ;; and trigger an async resume; the callback drains and submits.
+     ;; (file was reopened, gateway restarted, etc.).  Prompt the user
+     ;; rather than silently resuming — see PLAN_SUPPORT_GATEWAY_DB_SESSIONS.
      ((null target-state)
-      (when (and text (not (string-empty-p text)))
-        (push (cons target-sid text) hermes--pre-send-queue)
-        (hermes--resume-heading-session target-sid)
-        (message "Hermes: resuming session %s…" target-sid)))
+      (let ((choice (hermes--prompt-stale-heading target-sid))
+            (marker (hermes--container-marker-at-point)))
+        (pcase choice
+          ('load-org
+           (when (and text (not (string-empty-p text)))
+             (push (cons target-sid text) hermes--pre-send-queue))
+           (hermes--create-fresh-session target-sid marker)
+           (message "Hermes: loading fresh session from org…"))
+          ('resume-db
+           (require 'hermes-sessions-db)
+           (hermes-resume-from-db target-sid)
+           (message "Hermes: resumed into new buffer — resend prompt there"))
+          ('branch-db
+           (require 'hermes-sessions-db)
+           (hermes-branch-from-db target-sid)
+           (message "Hermes: branched into new buffer — resend prompt there"))
+          (_ (message "Cancelled")))))
      ;; Live state → send directly.  Only let-bind `hermes--state' when
      ;; the resolved state differs from the buffer-local — otherwise the
      ;; dynamic binding shadows the buffer-local and dispatch mutations

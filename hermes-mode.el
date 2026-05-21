@@ -372,7 +372,7 @@ background; for the user-facing entry that also pops the buffer, see
             (select-window win)
             (goto-char (point-max)))))
        (sid
-        (hermes--resume-heading-session sid))
+        (hermes--handle-stale-heading sid marker))
        (t
         (hermes--create-session-under-heading)))))
    (t

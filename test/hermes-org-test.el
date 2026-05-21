@@ -4,6 +4,72 @@
 (require 'org)
 (require 'hermes-org)
 
+;;;; Stale-heading prompt (Phase 5)
+
+(ert-deftest hermes-org-test/short-sid-truncates ()
+  (should (equal (hermes--short-sid "abcdef0123456789") "abcdef01"))
+  (should (equal (hermes--short-sid "short") "short"))
+  (should (equal (hermes--short-sid nil) "?")))
+
+(ert-deftest hermes-org-test/prompt-stale-heading-load-org-on-1 ()
+  (cl-letf (((symbol-function 'read-char-choice) (lambda (_p _c) ?1)))
+    (should (eq 'load-org (hermes--prompt-stale-heading "abc")))))
+
+(ert-deftest hermes-org-test/prompt-stale-heading-load-org-on-RET ()
+  (cl-letf (((symbol-function 'read-char-choice) (lambda (_p _c) ?\r)))
+    (should (eq 'load-org (hermes--prompt-stale-heading "abc")))))
+
+(ert-deftest hermes-org-test/prompt-stale-heading-resume-on-2 ()
+  (cl-letf (((symbol-function 'read-char-choice) (lambda (_p _c) ?2)))
+    (should (eq 'resume-db (hermes--prompt-stale-heading "abc")))))
+
+(ert-deftest hermes-org-test/prompt-stale-heading-branch-on-3 ()
+  (cl-letf (((symbol-function 'read-char-choice) (lambda (_p _c) ?3)))
+    (should (eq 'branch-db (hermes--prompt-stale-heading "abc")))))
+
+(ert-deftest hermes-org-test/prompt-stale-heading-cancel-on-q ()
+  (cl-letf (((symbol-function 'read-char-choice) (lambda (_p _c) ?q)))
+    (should (null (hermes--prompt-stale-heading "abc")))))
+
+(ert-deftest hermes-org-test/handle-stale-heading-dispatches-load-org ()
+  (let ((called nil))
+    (cl-letf (((symbol-function 'hermes--prompt-stale-heading) (lambda (_s) 'load-org))
+              ((symbol-function 'hermes--create-fresh-session)
+               (lambda (sid marker) (setq called (list 'load sid marker)))))
+      (hermes--handle-stale-heading "S1" 'mk)
+      (should (equal called '(load "S1" mk))))))
+
+(ert-deftest hermes-org-test/handle-stale-heading-dispatches-resume-db ()
+  (let ((called nil))
+    (cl-letf (((symbol-function 'hermes--prompt-stale-heading) (lambda (_s) 'resume-db))
+              ((symbol-function 'require) (lambda (&rest _) nil))
+              ((symbol-function 'hermes-resume-from-db)
+               (lambda (sid) (setq called (list 'resume sid)))))
+      (hermes--handle-stale-heading "S2" 'mk)
+      (should (equal called '(resume "S2"))))))
+
+(ert-deftest hermes-org-test/handle-stale-heading-dispatches-branch-db ()
+  (let ((called nil))
+    (cl-letf (((symbol-function 'hermes--prompt-stale-heading) (lambda (_s) 'branch-db))
+              ((symbol-function 'require) (lambda (&rest _) nil))
+              ((symbol-function 'hermes-branch-from-db)
+               (lambda (sid) (setq called (list 'branch sid)))))
+      (hermes--handle-stale-heading "S3" 'mk)
+      (should (equal called '(branch "S3"))))))
+
+(ert-deftest hermes-org-test/handle-stale-heading-cancel-is-noop ()
+  (let ((called nil))
+    (cl-letf (((symbol-function 'hermes--prompt-stale-heading) (lambda (_s) nil))
+              ((symbol-function 'hermes--create-fresh-session)
+               (lambda (&rest _) (setq called 'create)))
+              ((symbol-function 'hermes-resume-from-db)
+               (lambda (&rest _) (setq called 'resume)))
+              ((symbol-function 'hermes-branch-from-db)
+               (lambda (&rest _) (setq called 'branch))))
+      (hermes--handle-stale-heading "S4" 'mk)
+      (should (null called)))))
+
+
 (defmacro hermes-org-test--with-buffer (body &rest rest)
   "Run REST in a temp Org buffer pre-loaded with BODY."
   (declare (indent 1))

@@ -108,5 +108,18 @@
     (should (string-match-p ":HERMES_SESSION: SID" (buffer-string)))
     (should-not (string-match-p "stale content" (buffer-string)))))
 
+;;;; Body-only renderer (Phase 4 integration helper)
+
+(ert-deftest hermes-sessions-db-test/body-renderer-no-container ()
+  (let* ((msgs (list (hermes-sessions-db-test--ht "role" "user" "text" "ping")))
+         (out (hermes--db-messages-to-org-body msgs)))
+    (should-not (string-match-p "^\\* Hermes session" out))
+    (should-not (string-match-p ":HERMES_SESSION:" out))
+    (should (string-match-p ":HERMES_KIND: USER" out))
+    (should (string-match-p "^\\*\\* User" out))))
+
+(ert-deftest hermes-sessions-db-test/body-renderer-empty ()
+  (should (equal "" (hermes--db-messages-to-org-body nil))))
+
 (provide 'hermes-sessions-db-test)
 ;;; hermes-sessions-db-test.el ends here

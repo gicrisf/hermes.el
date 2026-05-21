@@ -729,11 +729,56 @@ keyed by OLD-SID are drained against the new session."
                (message "hermes: replaced stale %s with fresh %s"
                         old-sid new-sid))))))))))
 
+(defun hermes--short-sid (sid)
+  "Return the first 8 chars of SID for prompt display."
+  (if (and (stringp sid) (> (length sid) 8))
+      (substring sid 0 8)
+    (or sid "?")))
+
+(defun hermes--prompt-stale-heading (sid)
+  "Prompt the user how to handle the stale SID heading.
+Returns one of the symbols `load-org', `resume-db', `branch-db', or nil
+when the user cancels.  Default (RET) is `load-org' — the snapshot path."
+  (let ((c (read-char-choice
+            (format "Stale session %s — [1] load from org / [2] resume from DB / [3] branch from DB / [q]uit (default 1): "
+                    (hermes--short-sid sid))
+            '(?1 ?2 ?3 ?q ?\r ?\n))))
+    (pcase c
+      ((or ?1 ?\r ?\n) 'load-org)
+      (?2 'resume-db)
+      (?3 'branch-db)
+      (?q nil))))
+
+(declare-function hermes-resume-from-db "hermes-sessions-db" (sid))
+(declare-function hermes-branch-from-db "hermes-sessions-db" (sid))
+
+(defun hermes--handle-stale-heading (sid marker)
+  "Dispatch the user's choice for the stale SID heading at MARKER.
+MARKER pinpoints the container heading in the current buffer.  Action
+options:
+- `load-org'  → `hermes--create-fresh-session' (current buffer; the
+                 history seed will fire on the next prompt).
+- `resume-db' → `hermes-resume-from-db' (opens a new buffer with the
+                 gateway's stored history; current buffer untouched).
+- `branch-db' → `hermes-branch-from-db' (forks the DB session, opens
+                 the branched copy in a new buffer)."
+  (pcase (hermes--prompt-stale-heading sid)
+    ('load-org   (hermes--create-fresh-session sid marker))
+    ('resume-db  (require 'hermes-sessions-db)
+                 (hermes-resume-from-db sid))
+    ('branch-db  (require 'hermes-sessions-db)
+                 (hermes-branch-from-db sid))
+    (_           (message "Cancelled"))))
+
 (defun hermes--resume-heading-session (sid)
   "Attempt `session.resume' for SID; fall back to a fresh session on error.
 On success the in-memory state is rebuilt from the heading's drawers
 and any pre-send queue entry is drained.  On failure a new session is
-created via `hermes--create-fresh-session', which also drains."
+created via `hermes--create-fresh-session', which also drains.
+
+Note: as of the gateway-DB integration, this silent-resume path is no
+longer invoked by `M-x hermes' or `hermes-input-send' (which now prompt
+via `hermes--handle-stale-heading').  Kept for direct programmatic use."
   (let ((marker (hermes--container-marker-at-point))
         (buf (current-buffer)))
     (unless (and marker (marker-position marker))

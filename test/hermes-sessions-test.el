@@ -140,6 +140,44 @@
     (should (string-match-p ":HERMES_SESSION: SID" (buffer-string)))
     (should-not (string-match-p "stale content" (buffer-string)))))
 
+;;;; Parent SID slot + annotation
+
+(ert-deftest hermes-sessions-test/parent-sid-slot-default-nil ()
+  (let ((s (make-hermes-state)))
+    (should (null (hermes-state-parent-sid s)))))
+
+(ert-deftest hermes-sessions-test/parent-sid-slot-settable ()
+  (let ((s (make-hermes-state)))
+    (setf (hermes-state-parent-sid s) "parent-123")
+    (should (equal "parent-123" (hermes-state-parent-sid s)))))
+
+(ert-deftest hermes-sessions-test/current-annot-shows-parent-arrow ()
+  (with-temp-buffer
+    (let ((hermes--state (make-hermes-state
+                          :session-id "child-1"
+                          :parent-sid "parentXX")))
+      (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 3)))
+        (let ((out (hermes--current-annot (current-buffer))))
+          (should (string-match-p "←parentXX" out)))))))
+
+(ert-deftest hermes-sessions-test/current-annot-shows-title-bracket ()
+  (with-temp-buffer
+    (let* ((info (hermes-sessions-test--ht "model" "claude" "title" "My chat"))
+           (hermes--state (make-hermes-state
+                           :session-id "s1"
+                           :session-info info)))
+      (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 0)))
+        (let ((out (hermes--current-annot (current-buffer))))
+          (should (string-match-p "\\[My chat\\]" out)))))))
+
+(ert-deftest hermes-sessions-test/current-annot-omits-empty-title-and-parent ()
+  (with-temp-buffer
+    (let ((hermes--state (make-hermes-state :session-id "s1")))
+      (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 0)))
+        (let ((out (hermes--current-annot (current-buffer))))
+          (should-not (string-match-p "\\[" out))
+          (should-not (string-match-p "←" out)))))))
+
 ;;;; Public commands exist
 
 (ert-deftest hermes-sessions-test/public-commands-defined ()

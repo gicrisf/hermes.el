@@ -289,19 +289,7 @@ nix-shell --run 'eldev emacs --batch -L . -l hermes-mode -l hermes-render \
 
 Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 
-### Test suite
-
-| File | Tests | Scope |
-|------|-------|-------|
-| `test/hermes-state-test.el` | 79 | Reducers (persistent + UI) + serialization round-trip + background tasks |
-| `test/hermes-render-test.el` | 33 | Segmented renderer + subagent blocks + throttling + incremental diff + post-commit refresh + background task rendering |
-| `test/hermes-md-test.el` | 16 | Markdown→Org conversion |
-| `test/hermes-input-test.el` | 7 | History seed: builder truncation, sid-based guard, slash-command exemption, all three prompt.submit paths |
-| `test/hermes-org-test.el` | 31 | Session lookup + heading containers + v2 turn parser + stale-heading prompt |
-| `test/hermes-bg-test.el` | 4 | Background task buffers, list mode, kill-all |
-| `test/hermes-sessions-test.el` | 15 | Field accessors, row coercion, annotations, DB→Org renderer, public-command surface |
-
-**361/361 green, 0 unexpected** — all tests pass.
+**377/377 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

@@ -121,7 +121,9 @@
                      ; client-side MIRROR of gateway's session["attached_images"] — never authoritative.
                      ; :attach-id is a client-generated identifier used to match RPC callbacks back to
                      ; their optimistic placeholder entry.  :status is 'pending | 'attached | 'error.
-  (bg-tasks []))     ; vector of hermes-bg-task — background prompt tasks for this session
+  (bg-tasks [])      ; vector of hermes-bg-task — background prompt tasks for this session
+  (parent-sid nil))  ; string or nil — sid of the session this one was branched from
+                     ; (set from `session.branch' response; informational only).
 
 (cl-defstruct (hermes-bg-task (:copier hermes-bg-task-copy))
   task-id          ; string — gateway-assigned task id

@@ -77,16 +77,26 @@
    (t "?")))
 
 (defun hermes--current-annot (buf)
-  "Build the annotation string for live session BUF."
+  "Build the annotation string for live session BUF.
+Shows model, status, message count, title (if set via `session.title'),
+parent SID (if the session was branched), and project basename."
   (with-current-buffer buf
-    (let* ((st    hermes--state)
-           (info  (and st (hermes-state-session-info st)))
-           (model (or (and (hash-table-p info) (gethash "model" info)) "?"))
-           (msgs  (hermes--buffer-message-count))
+    (let* ((st     hermes--state)
+           (info   (and st (hermes-state-session-info st)))
+           (model  (or (and (hash-table-p info) (gethash "model" info)) "?"))
+           (title  (and (hash-table-p info) (gethash "title" info)))
+           (msgs   (hermes--buffer-message-count))
            (status (hermes--current-status st))
-           (cwd   (and st (hermes-state-cwd st))))
-      (format "  %-12s  %-8s  %5d msgs%s"
+           (parent (and st (hermes-state-parent-sid st)))
+           (cwd    (and st (hermes-state-cwd st))))
+      (format "  %-12s  %-8s  %5d msgs%s%s%s"
               model status msgs
+              (if (and title (not (string-empty-p title)))
+                  (format "  [%s]" (truncate-string-to-width title 30 nil nil "…"))
+                "")
+              (if parent
+                  (format "  ←%s" (hermes--sessions-short-sid parent))
+                "")
               (if cwd (format "  %s" (file-name-nondirectory
                                       (directory-file-name cwd)))
                 "")))))
@@ -109,7 +119,8 @@ CANDS is a list of SIDs; ANNOT-FN maps a candidate to its annotation."
 ;;;###autoload
 (defun hermes-current-sessions ()
   "Switch to a live Hermes session selected from the minibuffer.
-Annotations show model, status, message count, and project."
+Annotations show model, status, message count, title (when set),
+parent SID (when branched), and project basename."
   (interactive)
   (let* ((coll (hermes--current-collection))
          (cands (car coll))
@@ -337,9 +348,11 @@ Erases the buffer first."
 
 ;;;; Resume / branch install path
 
-(defun hermes--db-install-into-buffer (buf new-sid messages info)
+(defun hermes--db-install-into-buffer (buf new-sid messages info &optional parent-sid)
   "Activate `hermes-mode' in BUF, render MESSAGES, register NEW-SID.
 INFO is the `info' hash-table from the server response (may be nil).
+PARENT-SID, when non-nil, is recorded on the state's `parent-sid' slot
+— set this for branch installs, leave nil for plain resume.
 On return, BUF is a fully-armed Hermes session buffer with the history
 seed already stamped (no re-seeding on next prompt)."
   (with-current-buffer buf
@@ -349,6 +362,8 @@ seed already stamped (no re-seeding on next prompt)."
         (setq-local default-directory (file-name-as-directory cwd))
         (setf (hermes-state-cwd hermes--state) cwd)))
     (setf (hermes-state-session-id hermes--state) new-sid)
+    (when parent-sid
+      (setf (hermes-state-parent-sid hermes--state) parent-sid))
     (when (hash-table-p info)
       (setf (hermes-state-session-info hermes--state) info))
     (save-excursion
@@ -369,11 +384,12 @@ seed already stamped (no re-seeding on next prompt)."
     (setq hermes--seeded-session-id new-sid)
     (goto-char (point-min))))
 
-(defun hermes--db-handle-resume-response (result error orig-sid then)
+(defun hermes--db-handle-resume-response (result error orig-sid then &optional parent-sid)
   "Common handler for `session.resume' responses.
 ORIG-SID is the SID the user asked to resume; the response carries a
 NEW SID under `session_id'.  THEN, if non-nil, is called with BUF after
-install."
+install.  PARENT-SID, when non-nil, is threaded into the install step
+(branch installs only — plain resume passes nil)."
   (cond
    (error
     (let* ((code (and (hash-table-p error) (gethash "code" error)))
@@ -398,7 +414,7 @@ install."
        ((not new-sid)
         (message "hermes: resume %s: no session_id in response" orig-sid))
        (t
-        (hermes--db-install-into-buffer buf new-sid messages info)
+        (hermes--db-install-into-buffer buf new-sid messages info parent-sid)
         (pop-to-buffer buf)
         ;; Mirror the normal `M-x hermes' entry path: ensure the bench is
         ;; visible and cursor lands in the input zone.
@@ -460,7 +476,8 @@ to receive prompts."
       ((not (hash-table-p result))
        (message "hermes: branch %s: unexpected response shape" sid))
       (t
-       (let ((new-sid (gethash "session_id" result)))
+       (let ((new-sid (gethash "session_id" result))
+             (parent  (or (gethash "parent" result) sid)))
          (cond
           ((not new-sid)
            (message "hermes: branch %s: no session_id in response" sid))
@@ -468,7 +485,7 @@ to receive prompts."
            (hermes-rpc-request
             "session.resume" (list :session_id new-sid)
             (lambda (r2 e2)
-              (hermes--db-handle-resume-response r2 e2 new-sid nil)))))))))))
+              (hermes--db-handle-resume-response r2 e2 new-sid nil parent)))))))))))
 
 (provide 'hermes-sessions)
 ;;; hermes-sessions.el ends here

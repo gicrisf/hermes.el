@@ -97,6 +97,30 @@
     (should (equal "input: (no input)\nresult: out\n"
                    (hermes-section--tool-body t1)))))
 
+;;;; markdown fontification (plan 09)
+
+(ert-deftest hermes-section-test/fontify-markdown-applies-font-lock-face ()
+  ;; A bold span gets a font-lock-face (not face) somewhere inside.
+  (let* ((out (hermes-section--fontify-markdown "hello **world**"))
+         (found nil))
+    (let ((i 0) (n (length out)))
+      (while (< i n)
+        (when (get-text-property i 'font-lock-face out)
+          (setq found t))
+        (setq i (1+ i))))
+    (should found)
+    ;; Plain face should be cleared in favor of font-lock-face.
+    (let ((i 0) (n (length out)) (face-leaked nil))
+      (while (< i n)
+        (when (get-text-property i 'face out)
+          (setq face-leaked t))
+        (setq i (1+ i)))
+      (should-not face-leaked))))
+
+(ert-deftest hermes-section-test/fontify-markdown-empty-noop ()
+  (should (equal "" (hermes-section--fontify-markdown "")))
+  (should (equal "" (hermes-section--fontify-markdown nil))))
+
 (ert-deftest hermes-section-test/subagent-body-omits-empties ()
   (let ((sa (make-hermes-subagent
              :id "s" :goal "g" :status 'complete

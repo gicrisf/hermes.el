@@ -4,9 +4,12 @@
 (eldev-use-package-archive 'nongnu)
 (eldev-use-package-archive 'melpa)
 
-;; hermes-section.el is an optional viewer that depends on magit-section.
+;; hermes-section.el is an optional viewer that depends on magit-section
+;; and markdown-mode (for body fontification).
 (eldev-add-extra-dependencies 'build 'magit-section)
 (eldev-add-extra-dependencies 'test  'magit-section)
+(eldev-add-extra-dependencies 'build 'markdown-mode)
+(eldev-add-extra-dependencies 'test  'markdown-mode)
 
 (setf eldev-main-fileset
       '("hermes-events.el"

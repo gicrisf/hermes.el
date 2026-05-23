@@ -540,6 +540,9 @@ Nil when no stream is active.")
 (defvar-local hermes-section--stream-pending nil
   "Latest un-flushed `hermes-state' snapshot waiting for the cooldown.")
 
+(defvar-local hermes-section--stream-last-length 0
+  "Total stream text length at the last paint, for delta-based throttling.")
+
 (defun hermes-section--stream-text-length (stream)
   "Total character count of string segments in STREAM."
   (let ((len 0)
@@ -551,14 +554,17 @@ Nil when no stream is active.")
     len))
 
 (defun hermes-section--stream-throttle-interval (stream)
-  "Adaptive cooldown in seconds, scaled by STREAM text length.
-Matches the thresholds used by the Org renderer
-\(see `hermes--adaptive-throttle-interval')."
-  (let ((len (hermes-section--stream-text-length stream)))
-    (cond ((< len 1000)  0.04)
-          ((< len 5000)  0.20)
-          ((< len 10000) 1.00)
-          (t             2.00))))
+  "Adaptive cooldown in seconds, scaled by chars *added since the last paint*.
+The section viewer rebuilds only the in-flight turn, so render cost
+tracks delta-per-paint, not total stream length.  Normal token flow
+\(tens of chars per delta) stays in the 40ms bucket; only an
+unusually fat gateway delta (thousands of chars at once) steps up."
+  (let* ((total (hermes-section--stream-text-length stream))
+         (delta (max 0 (- total hermes-section--stream-last-length))))
+    (cond ((< delta 1000)  0.04)
+          ((< delta 5000)  0.20)
+          ((< delta 10000) 1.00)
+          (t               2.00))))
 
 (defun hermes-section--stream-cancel-timer ()
   "Cancel any pending throttle timer and drop the stashed snapshot."
@@ -585,6 +591,8 @@ into a synthetic `hermes-message', then runs it through the normal
     (goto-char (point-max))
     (hermes-section--insert-turn msg index)
     (goto-char (point-max))
+    (setq hermes-section--stream-last-length
+          (hermes-section--stream-text-length stream))
     (dolist (win tail-windows)
       (when (window-live-p win)
         (set-window-point win (point-max))))))
@@ -616,7 +624,8 @@ up there."
   (let ((inhibit-read-only t))
     (goto-char (point-max))
     (unless (bolp) (insert "\n"))
-    (setq hermes-section--stream-sentinel (copy-marker (point) nil))
+    (setq hermes-section--stream-sentinel (copy-marker (point) nil)
+          hermes-section--stream-last-length 0)
     (hermes-section--paint-stream new)))
 
 (defun hermes-section--stream-update (new)
@@ -641,19 +650,38 @@ and `--stream-commit' will rebuild from state when the turn finishes."
    (t
     (setq hermes-section--stream-pending new))))
 
+(defun hermes-section--rebuild-keeping-tail (state)
+  "Run `--rebuild' for STATE while keeping tail-pinned windows at point-max.
+After `--rebuild' erases and re-inserts the buffer, window-points for
+non-selected windows do not follow buffer-point.  Snapshotting which
+windows sit at `point-max' before the rebuild and re-pointing them
+afterwards keeps the user's view glued to the latest content."
+  (let ((tail-windows nil))
+    (dolist (win (get-buffer-window-list (current-buffer) nil t))
+      (when (= (window-point win) (point-max))
+        (push win tail-windows)))
+    (hermes-section--rebuild state)
+    (dolist (win tail-windows)
+      (when (window-live-p win)
+        (set-window-point win (point-max))))))
+
 (defun hermes-section--stream-commit (new)
   "End streaming: cancel timer, drop the region, rebuild from NEW.
 The reducer has already pushed the in-flight message into `turns'
 before clearing the stream, so a full rebuild surfaces the new
 committed turn.  Visibility cache restores any folds the user
-made during streaming."
+made during streaming.  Tail-window tracking happens AFTER the
+streaming region is deleted: window-points that were inside the
+deleted range collapse to the deletion start, which equals the new
+`point-max', so users viewing the streaming tail get correctly
+re-anchored to the freshly committed turn."
   (hermes-section--stream-cancel-timer)
   (when (markerp hermes-section--stream-sentinel)
     (let ((inhibit-read-only t))
       (delete-region hermes-section--stream-sentinel (point-max)))
     (set-marker hermes-section--stream-sentinel nil)
     (setq hermes-section--stream-sentinel nil))
-  (hermes-section--rebuild new))
+  (hermes-section--rebuild-keeping-tail new))
 
 (defun hermes-section--refresh (old new)
   "Dispatch state diffs to streaming or committed-rebuild paths.
@@ -676,14 +704,7 @@ session via `hermes--on-session-buffer'."
        ;; Turns changed with no stream involved.
        ((not (eq (hermes-state-turns new)
                  hermes-section--turns-snapshot))
-        (let ((tail-windows nil))
-          (dolist (win (get-buffer-window-list (current-buffer) nil t))
-            (when (= (window-point win) (point-max))
-              (push win tail-windows)))
-          (hermes-section--rebuild new)
-          (dolist (win tail-windows)
-            (when (window-live-p win)
-              (set-window-point win (point-max))))))))))
+        (hermes-section--rebuild-keeping-tail new))))))
 
 (defun hermes-section-refresh ()
   "Manually rebuild the current conversation buffer from state."

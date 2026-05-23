@@ -31,15 +31,15 @@
 ;;;; Faces — turn headings
 
 (defface hermes-section-face-user
-  '((t :inherit font-lock-keyword-face :weight bold))
+  '((t :inherit default :weight normal :height 0.9))
   "Face for user turn heading text.")
 
 (defface hermes-section-face-assistant
-  '((t :inherit font-lock-function-name-face :weight bold))
+  '((t :inherit default :weight normal :height 0.9))
   "Face for assistant turn heading text.")
 
 (defface hermes-section-face-system
-  '((t :inherit font-lock-builtin-face))
+  '((t :inherit default :weight normal :height 0.9))
   "Face for system turn heading text.")
 
 ;;;; Faces — child headings
@@ -147,17 +147,25 @@
 
 (defun hermes-section--heading-text (msg index)
   "Return turn-number heading for MSG at 1-based INDEX."
-  (let ((kind (hermes-message-kind msg)))
+  (let* ((kind (hermes-message-kind msg))
+         (ts   (hermes-message-timestamp msg))
+         (time (and ts
+                    (ignore-errors
+                      (format-time-string "%H:%M" (date-to-time ts))))))
     (pcase kind
-      ('user (format "#%d · User" index))
+      ('user (concat (format "#%d · User" index)
+                     (and time (concat " · " time))))
       ('assistant
-       (if (hermes-section--has-segment-type-p msg 'text)
-           (format "#%d · Assistant · %s" index
-                   (or (hermes-section--session-model
-                        hermes--current-session-id)
-                       "?"))
-         (format "#%d · Assistant · (tool-only)" index)))
-      (_ (format "#%d · System" index)))))
+       (concat
+        (if (hermes-section--has-segment-type-p msg 'text)
+            (format "#%d · Assistant · %s" index
+                    (or (hermes-section--session-model
+                         hermes--current-session-id)
+                        "?"))
+          (format "#%d · Assistant · (tool-only)" index))
+        (and time (concat " · " time))))
+      (_ (concat (format "#%d · System" index)
+                 (and time (concat " · " time)))))))
 
 (defun hermes-section--bg-face (kind)
   (pcase kind
@@ -272,21 +280,8 @@ Heading is turn-number based (per plan 11), so no dedup needed."
 
 (defun hermes-section--insert-user-body (msg bg-face)
   (hermes-section--insert-full-text msg bg-face)
-  (let* ((sid hermes--current-session-id)
-         (ts  (hermes-section--format-timestamp
-               (hermes-message-timestamp msg)))
-         (model (hermes-section--session-model sid))
-         (usage (hermes-section--usage-tokens (hermes-message-usage msg)))
-         (imgs (hermes-section--image-lines msg))
-         (meta nil))
-    (unless (string-empty-p ts) (push (format "submitted at %s" ts) meta))
-    (when model (push (format "model: %s" model) meta))
-    (when usage (push (format "tokens: %d sent, %d received"
-                              (car usage) (cdr usage))
-                      meta))
-    (when (or meta imgs)
-      (insert "---\n")
-      (hermes-section--insert-lines (nreverse meta) bg-face)
+  (let ((imgs (hermes-section--image-lines msg)))
+    (when imgs
       (hermes-section--insert-lines imgs bg-face))))
 
 (defun hermes-section--insert-system-body (msg bg-face)
@@ -311,14 +306,14 @@ Heading is turn-number based (per plan 11), so no dedup needed."
     (magit-insert-section (hermes-section-reasoning-section id t)
       (magit-insert-heading
         (propertize "Reasoning"
-                    'face (list 'hermes-section-face-reasoning bg-face)))
+                     'font-lock-face (list 'hermes-section-face-reasoning bg-face)))
       (magit-insert-section-body
         (insert (propertize
                  (hermes-section--fontify-org
                   (concat c (if (or (string-empty-p c)
                                     (string-suffix-p "\n" c))
                                 "" "\n")))
-                 'face 'hermes-section-face-reasoning))))))
+                 'font-lock-face 'hermes-section-face-reasoning))))))
 
 (defun hermes-section--tool-status-keyword (tool)
   (pcase (hermes-tool-status tool)
@@ -362,9 +357,9 @@ structural labels and the context line as plain text."
                      "(no result)")))
     (magit-insert-section (hermes-section-tool-section id hide)
       (magit-insert-heading
-        (propertize (car kw) 'face (list (cdr kw) bg-face))
+        (propertize (car kw) 'font-lock-face (list (cdr kw) bg-face))
         (propertize (format " %s%s%s" name dur summ)
-                    'face (list 'hermes-section-face-tool bg-face)))
+                    'font-lock-face (list 'hermes-section-face-tool bg-face)))
       (magit-insert-section-body
         (insert (format "input: %s\n" ctx))
         (if err
@@ -422,7 +417,7 @@ structural labels and the context line as plain text."
     (magit-insert-section (hermes-section-subagent-section id t)
       (magit-insert-heading
         (propertize (format "%s (%s)" goal status)
-                    'face (list 'hermes-section-face-subagent bg-face)))
+                    'font-lock-face (list 'hermes-section-face-subagent bg-face)))
       (magit-insert-section-body
         (when (and thinking (stringp thinking) (> (length thinking) 0))
           (insert "thinking: "
@@ -487,10 +482,10 @@ structural labels and the context line as plain text."
          (heading (hermes-section--heading-text msg index))
          (id    (or (hermes-message-id msg)
                     (format "anon-%d" (sxhash-equal msg))))
-         (hide  (eq kind 'user)))
+         (hide  nil))
     (magit-insert-section ((eval class) id hide)
       (magit-insert-heading
-        (propertize heading 'face (list head-face bg-face)))
+        (propertize heading 'font-lock-face (list head-face bg-face)))
       (magit-insert-section-body
         (pcase kind
           ('user      (hermes-section--insert-user-body msg bg-face))
@@ -596,6 +591,7 @@ Reads from `turns' in the global `hermes--sessions' table.
 Read-only; input via `hermes-send' (minibuffer)."
   (setq-local buffer-read-only t)
   (setq-local magit-section-cache-visibility t)
+  (visual-line-mode 1)
   (add-hook 'kill-buffer-hook #'hermes-section--detach nil t)
   (add-hook 'hermes-state-change-hook
             #'hermes-section--refresh t))

@@ -193,6 +193,85 @@ has the latest `hermes-message-timestamp' on its last entry."
      hermes--sessions)
     best-id))
 
+(defun hermes--list-active-sessions ()
+  "Return an alist (SID . STATE) of live sessions, most-recent first.
+Recency is measured by the timestamp of the last committed turn;
+sessions with no turns sort to the end (in arbitrary order)."
+  (let (acc)
+    (maphash (lambda (sid st) (push (cons sid st) acc)) hermes--sessions)
+    (sort acc
+          (lambda (a b)
+            (let* ((ta (let ((turns (hermes-state-turns (cdr a))))
+                         (and (> (length turns) 0)
+                              (hermes-message-timestamp
+                               (aref turns (1- (length turns)))))))
+                   (tb (let ((turns (hermes-state-turns (cdr b))))
+                         (and (> (length turns) 0)
+                              (hermes-message-timestamp
+                               (aref turns (1- (length turns))))))))
+              (cond
+               ((and ta tb) (time-less-p tb ta))
+               (ta t)
+               (tb nil)
+               (t nil)))))))
+
+(defun hermes--message-plain-text (msg)
+  "Concatenate text/reasoning segments of MSG into a flat string."
+  (let ((segs (hermes-message-segments msg))
+        parts)
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (let* ((seg (aref segs i))
+               (type (hermes-segment-type seg))
+               (c    (hermes-segment-content seg)))
+          (when (and (memq type '(text reasoning))
+                     (stringp c)
+                     (> (length c) 0))
+            (push c parts)))))
+    (mapconcat #'identity (nreverse parts) "")))
+
+(defun hermes--session-completion-table (sessions)
+  "Build an alist (SID . DISPLAY) for completing-read over SESSIONS.
+SESSIONS is an alist (SID . STATE) as returned by
+`hermes--list-active-sessions'.  DISPLAY shows a short sid prefix,
+an excerpt of the most recent user message, and a relative age."
+  (mapcar
+   (lambda (entry)
+     (let* ((sid    (car entry))
+            (state  (cdr entry))
+            (turns  (hermes-state-turns state))
+            (n      (length turns))
+            (last-user (let ((i (1- n)) found)
+                         (while (and (>= i 0) (not found))
+                           (let ((m (aref turns i)))
+                             (when (eq (hermes-message-kind m) 'user)
+                               (setq found m)))
+                           (setq i (1- i)))
+                         found))
+            (excerpt (if last-user
+                         (let ((s (hermes--message-plain-text last-user)))
+                           (replace-regexp-in-string
+                            "\n+" " "
+                            (if (> (length s) 50) (substring s 0 50) s)))
+                       "(empty)"))
+            (last-ts (and (> n 0)
+                          (hermes-message-timestamp (aref turns (1- n)))))
+            (age (if last-ts
+                     (hermes--format-age (float-time (time-since last-ts)))
+                   "new"))
+            (short-sid (if (> (length sid) 8) (substring sid 0 8) sid))
+            (display (format "%s  %-50s  (%s)" short-sid excerpt age)))
+       (cons sid display)))
+   sessions))
+
+(defun hermes--format-age (secs)
+  "Format SECS as a short human-readable age string."
+  (cond
+   ((< secs 60)    (format "%ds ago" (truncate secs)))
+   ((< secs 3600)  (format "%dm ago" (truncate (/ secs 60))))
+   ((< secs 86400) (format "%dh ago" (truncate (/ secs 3600))))
+   (t              (format "%dd ago" (truncate (/ secs 86400))))))
+
 (defvar-local hermes--ui-state nil
   "Current ephemeral UI state (a `hermes-ui-state').")
 

@@ -244,21 +244,52 @@ by `hermes-new-session'); otherwise a fresh buffer is generated."
     (pop-to-buffer buf)
     buf))
 
+(defun hermes--maybe-pick-session ()
+  "Offer a session picker over live sessions; return the chosen sid or nil."
+  (let* ((sessions (hermes--list-active-sessions))
+         (choices  (hermes--session-completion-table sessions))
+         (display->sid (mapcar (lambda (c) (cons (cdr c) (car c))) choices))
+         (def-sid (hermes--most-recent-session-id))
+         (def-display (and def-sid
+                           (car (rassoc def-sid display->sid))))
+         (name (completing-read "Session: "
+                                (mapcar #'cdr choices)
+                                nil t nil nil def-display)))
+    (unless (or (null name) (string-empty-p name))
+      (cdr (assoc name display->sid)))))
+
+(defun hermes-section--open-or-focus (sid)
+  "Open SID in a section view, or focus the existing one if any."
+  (if-let ((existing (gethash sid hermes-section--buffers)))
+      (if (buffer-live-p existing)
+          (pop-to-buffer existing)
+        (remhash sid hermes-section--buffers)
+        (hermes-section--open sid))
+    (hermes-section--open sid)))
+
 ;;;###autoload
 (defun hermes-section (&optional arg)
   "Open a magit-section conversation viewer.
 
-With prefix ARG, always create a new session.  Otherwise reuse the
-most recently active session if one exists.  If no live sessions
-exist, create a fresh one (starting the gateway if needed)."
+With prefix ARG, always create a new session.  Otherwise, if live
+sessions exist, offer a session picker (defaulting to the most
+recent).  If no live sessions exist, create a fresh one (starting
+the gateway if needed)."
   (interactive "P")
   (hermes--install-hooks)
   (unless (hermes-rpc-live-p) (hermes-rpc-start))
   (cond
    ((derived-mode-p 'hermes-section-mode)
     (message "Already in a Hermes conversation buffer"))
-   ((and (not arg) (hermes--session-exists-p))
-    (hermes-section--open (hermes--most-recent-session-id)))
+   (arg
+    (hermes-new-session
+     (lambda (buf)
+       (when buf
+         (hermes-section--open
+          (buffer-local-value 'hermes--current-session-id buf))))))
+   ((hermes--session-exists-p)
+    (let ((sid (hermes--maybe-pick-session)))
+      (when sid (hermes-section--open-or-focus sid))))
    (t
     (hermes-new-session
      (lambda (buf)

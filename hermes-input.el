@@ -28,6 +28,7 @@
 (require 'hermes-state)
 (require 'hermes-org)
 
+(declare-function hermes-new-session "hermes-mode" (&optional callback))
 (declare-function hermes-reconnect "hermes-mode" ())
 (declare-function hermes--parse-buffer-messages "hermes-mode" ())
 (declare-function hermes--buffer-message-count "hermes-mode" ())
@@ -353,10 +354,11 @@ Minibuffer context only — reads catalog from
 ;;;; Public entry — replaces the M2 `hermes-send'.
 
 (defun hermes-send (text)
-  "Submit TEXT to the current Hermes session.
-Slash commands bypass the queue and transcript; idle text is committed
-immediately, while busy text is queued silently and sent when the turn
-ends."
+  "Submit TEXT to a Hermes session.
+Resolves the target session from buffer context (section view, org
+minor-mode, bench).  When no session is reachable from the current
+buffer, offers a minibuffer picker over all live sessions; if none
+exist, creates a headless session and sends to it."
   (interactive
    (let* ((hermes-input--catalog-from-minibuffer
            (and (hermes--current-state) (hermes-state-slash-catalog (hermes--current-state))))
@@ -368,41 +370,79 @@ ends."
            (add-hook 'completion-at-point-functions
                      #'hermes-input-completion-at-point nil t))
        (list (read-string "Hermes> " nil sym)))))
-  (unless (bound-and-true-p hermes-org-minor-mode)
-    (user-error "Not in a Hermes buffer (enable `hermes-org-minor-mode' in this Org buffer first)"))
-  ;; Resolve which session this send targets and bind
-  ;; `hermes--current-session-id' so dispatch routes to the right slot.
-  (let* ((target (hermes--resolve-session-target))
-         (target-sid (car target))
-         (target-state (cdr target))
-         (hermes--current-session-id target-sid))
-    (cond
-     ;; No container at all → user must create one first.
-     ((null target)
-      (user-error "No Hermes session at point — use `M-x hermes' from an Org heading or move into a `:hermes:' subtree"))
-     ;; Stale: heading has a session id but the registry has no entry
-     ;; (file was reopened, gateway restarted, etc.).  Prompt the user
-     ;; rather than silently resuming.
-     ((null target-state)
-      (let ((choice (hermes--prompt-stale-heading target-sid))
-            (marker (hermes--container-marker-at-point)))
-        (pcase choice
-          ('load-org
-           (when (and text (not (string-empty-p text)))
-             (push (cons target-sid text) hermes--pre-send-queue))
-           (hermes--create-fresh-session target-sid marker)
-           (message "Hermes: loading fresh session from org…"))
-          ('resume-db
-           (require 'hermes-sessions)
-           (hermes-resume-from-db target-sid)
-           (message "Hermes: resumed into new buffer — resend prompt there"))
-          ('branch-db
-           (require 'hermes-sessions)
-           (hermes-branch-from-db target-sid)
-           (message "Hermes: branched into new buffer — resend prompt there"))
-          (_ (message "Cancelled")))))
-     ;; Live state → send directly.
-     (t (hermes-input--send-1 text)))))
+  ;; Short-circuit empty/whitespace early — no-op, no target resolution.
+  (unless (or (null text) (string-empty-p (string-trim text)))
+    (let* ((target (hermes--resolve-session-target))
+           (target-sid (car target))
+           (target-state (cdr target)))
+      (cond
+       ;; Stale heading (has sid but no in-memory state) — prompt the user
+       ;; with the existing load-org / resume-from-DB / branch-from-DB flow.
+       ;; Kept inline because the four branches have heterogeneous side
+       ;; effects that don't fit a clean return contract.
+       ((and target-sid (null target-state))
+        (let ((hermes--current-session-id target-sid)
+              (choice (hermes--prompt-stale-heading target-sid))
+              (marker (hermes--container-marker-at-point)))
+          (pcase choice
+            ('load-org
+             (push (cons target-sid text) hermes--pre-send-queue)
+             (hermes--create-fresh-session target-sid marker)
+             (message "Hermes: loading fresh session from org…"))
+            ('resume-db
+             (require 'hermes-sessions)
+             (hermes-resume-from-db target-sid)
+             (message "Hermes: resumed into new buffer — resend prompt there"))
+            ('branch-db
+             (require 'hermes-sessions)
+             (hermes-branch-from-db target-sid)
+             (message "Hermes: branched into new buffer — resend prompt there"))
+            (_ (message "Cancelled")))))
+       ;; Live target from buffer context → send directly.
+       ((and target-sid target-state)
+        (let ((hermes--current-session-id target-sid))
+          (hermes-input--send-1 text)))
+       ;; No target — pick from live sessions or auto-create headless.
+       (t (hermes--select-or-create-session text))))))
+
+(defun hermes--select-or-create-session (text)
+  "Pick a live session or create a headless one; then send TEXT.
+If live sessions exist, prompt the user via minibuffer completion.
+Otherwise create a headless session (starting the gateway if
+needed) and send TEXT once `session.create' resolves."
+  (let ((sessions (hermes--list-active-sessions)))
+    (if (null sessions)
+        (hermes--create-and-send-headless text)
+      (hermes--select-session-and-send sessions text))))
+
+(defun hermes--select-session-and-send (sessions text)
+  "Prompt for a session over SESSIONS via completing-read, then send TEXT."
+  (let* ((choices (hermes--session-completion-table sessions))
+         (display->sid (mapcar (lambda (c) (cons (cdr c) (car c))) choices))
+         (def-sid (hermes--most-recent-session-id))
+         (def-display (and def-sid
+                           (car (rassoc def-sid display->sid))))
+         (name (completing-read "Session: "
+                                (mapcar #'cdr choices)
+                                nil t nil nil def-display)))
+    (unless (or (null name) (string-empty-p name))
+      (let ((sid (cdr (assoc name display->sid))))
+        (when sid
+          (let ((hermes--current-session-id sid))
+            (hermes-input--send-1 text)))))))
+
+(defun hermes--create-and-send-headless (text)
+  "Create a headless session and send TEXT once it's ready.
+Returns immediately; the send happens asynchronously when
+`session.create' resolves.  The org buffer is created but not
+popped — the user can later attach via `hermes' or `hermes-section'."
+  (hermes-new-session
+   (lambda (buf)
+     (when (buffer-live-p buf)
+       (with-current-buffer buf
+         (let ((hermes--current-session-id
+                (buffer-local-value 'hermes--current-session-id buf)))
+           (hermes-input--send-1 text)))))))
 
 ;;;; Shell interpolation — !cmd and $(cmd)
 

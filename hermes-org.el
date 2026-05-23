@@ -200,7 +200,16 @@ Returns nil when no session is reachable."
          hermes-bench--parent-buffer
          (buffer-live-p hermes-bench--parent-buffer))
     (with-current-buffer hermes-bench--parent-buffer
-      (hermes--resolve-session-target)))))
+      (hermes--resolve-session-target)))
+   ;; Section view: read session-id from the buffer-local variable.
+   ;; Section buffers are always created with a live session, so look
+   ;; the state up directly in `hermes--sessions' (not via
+   ;; `hermes--state-slot-read', which would mask absence by returning
+   ;; `hermes--global-state').
+   ((derived-mode-p 'hermes-section-mode)
+    (let ((sid (buffer-local-value 'hermes--current-session-id
+                                   (current-buffer))))
+      (and sid (cons sid (gethash sid hermes--sessions)))))))
 
 ;;;; Resume / rehydration
 

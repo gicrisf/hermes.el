@@ -529,20 +529,20 @@ the just-completed turn's deltas, not the running session total."
   (with-temp-buffer
     (hermes-mode)
     ;; Pre-seed session-cumulative usage as if a prior turn ran.
-    (setq hermes--state
-          (hermes--with-copy hermes--state hermes-state-copy s
+    (setf (hermes-test--cur)
+          (hermes--with-copy (hermes-test--cur) hermes-state-copy s
             (let ((acc (make-hash-table :test 'equal)))
               (puthash "tokens_sent" 999 acc)
               (puthash "tokens_received" 999 acc)
               (setf (hermes-state-usage s) acc))))
     ;; Stream begins.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
                                        :type 'text :content "Hi" :id "s1"))))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; message.complete with per-turn deltas of 7/3.
     (hermes-dispatch (cons "message.complete"
@@ -558,7 +558,7 @@ the just-completed turn's deltas, not the running session total."
       (should (= 7 (plist-get u :tokens_sent)))
       (should (= 3 (plist-get u :tokens_received)))
       ;; Session-cumulative is still tracked separately, not on the heading.
-      (should (= 1006 (gethash "tokens_sent" (hermes-state-usage hermes--state)))))))
+      (should (= 1006 (gethash "tokens_sent" (hermes-state-usage (hermes-test--cur))))))))
 
 (ert-deftest hermes-render-test/pending-turns-drained-correctly ()
   "Render writes pending-turn messages into the buffer and dispatches a clear."
@@ -569,14 +569,14 @@ the just-completed turn's deltas, not the running session total."
                  :segments (vector (make-hermes-segment
                                     :type 'text :content "ping" :id "s1"))
                  :timestamp "2024-01-15T10:00:00+0000"))
-           (old hermes--state)
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (old (hermes-test--cur))
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s)
                         (vector msg)))))
       ;; Mirror how the state-change hook is invoked: state is swapped
       ;; first, then the renderer runs.  The renderer's own dispatch
       ;; of :pending-turns-clear then operates on the swapped state.
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Buffer now contains a `** U: ping' heading with the body.
     ;; Text-only user turn → no usage properties (intentional).
@@ -585,7 +585,7 @@ the just-completed turn's deltas, not the running session total."
       (should (string-match-p ":HERMES_KIND: USER" body))
       (should-not (string-match-p ":HERMES_RAW:" body)))
     ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
-    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+    (should (equal [] (hermes-state-pending-turns (hermes-test--cur))))))
 
 ;;;; Pending-turns drain vs stream-commit interaction
 
@@ -606,24 +606,24 @@ one assistant subtree."
   (with-temp-buffer
     (hermes-mode)
     ;; Stage 1: stream begins and accumulates text.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
                                        :type 'text :content "Hello"
                                        :id "s1"))))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Stage 2: message.complete fires — assistant msg pushed to
     ;; pending-turns AND stream cleared, atomically.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (hermes-state-stream old))
            (msg (hermes--message-from-stream stream nil))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)
                         (hermes-state-stream s) nil))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     (should (= 1 (hermes-render-test--count "^\\*\\* ")))
     ;; Only the session container heading carries the `:hermes:' tag now;
@@ -633,7 +633,7 @@ one assistant subtree."
     ;; Text-only assistant turn → no usage properties.
     (should (= 0 (hermes-render-test--count "^:HERMES_META:")))
     (should (= 0 (hermes-render-test--count "^:HERMES_RAW:")))
-    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+    (should (equal [] (hermes-state-pending-turns (hermes-test--cur))))))
 
 (ert-deftest hermes-render-test/error-with-stream-no-duplicate ()
   "Error path pushes [assistant, system] and clears stream.
@@ -642,17 +642,17 @@ After render: one assistant subtree, one system heading, system appears
   (with-temp-buffer
     (hermes-mode)
     ;; Stage 1: stream begins.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
                                        :type 'text :content "partial"
                                        :id "s1"))))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Stage 2: error — [assistant, system] pushed, stream cleared.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (hermes-state-stream old))
            (amsg (hermes--message-from-stream stream nil))
            (sysmsg (make-hermes-message
@@ -661,10 +661,10 @@ After render: one assistant subtree, one system heading, system appears
                                        :type 'text :content "boom"
                                        :id "sys1"))
                     :timestamp (current-time)))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector amsg sysmsg)
                         (hermes-state-stream s) nil))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Two level-2 headings now: the assistant turn and the system turn
     ;; (both are siblings under the level-1 session container).
@@ -685,18 +685,18 @@ After render: one assistant subtree, one system heading, system appears
 but still clears the vector via :pending-turns-clear."
   (with-temp-buffer
     (hermes-mode)
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (msg (make-hermes-message
                  :kind 'assistant
                  :segments (vector (make-hermes-segment
                                     :type 'text :content "x" :id "s1"))
                  :timestamp (current-time)))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     (should (= 0 (hermes-render-test--count "^\\*\\* ")))
-    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+    (should (equal [] (hermes-state-pending-turns (hermes-test--cur))))))
 
 ;;;; Queue drain ordering — see PLAN.md "Debug: Queue Drain Corrupts Buffer Structure"
 
@@ -710,12 +710,15 @@ subtree has been fully committed (heading + body), not interleaved."
              (lambda (&rest _) nil))
             ((symbol-function 'hermes-rpc-live-p)
              (lambda () t)))
+    (hermes-test--reset-global-state)
     (with-temp-buffer
       (hermes-mode)
-      ;; Stage 1 — session id + initial user msg (idle path).
-      (setq hermes--state
-            (hermes--with-copy hermes--state hermes-state-copy s
-              (setf (hermes-state-session-id s) "sess-1")))
+      ;; Stage 1 — register session id (idle path).
+      (hermes--register-session
+       "sess-1"
+       (make-hermes-state :session-id "sess-1" :connection 'connected)
+       (copy-marker (point-min) nil))
+      (let ((hermes--current-session-id "sess-1"))
       (hermes-send "hi")
       ;; Stage 2 — stream begins, accumulates one chunk.
       (hermes-dispatch (cons "message.start" nil))
@@ -725,7 +728,7 @@ subtree has been fully committed (heading + body), not interleaved."
                                h)))
       ;; Stage 3 — user types "next" while busy → silently queued.
       (hermes-send "next")
-      (should (equal '("next") (hermes-state-queue hermes--state)))
+      (should (equal '("next") (hermes-state-queue (hermes-test--cur))))
       ;; Stage 4 — message.complete: stream-commit, then drain hook fires
       ;; and dequeues + sends "next" (which renders as a `* user:' heading).
       (hermes-dispatch (cons "message.complete" nil))
@@ -741,7 +744,7 @@ subtree has been fully committed (heading + body), not interleaved."
         (should user-next)
         (should resp-body)
         (should (< assist-head resp-body))
-        (should (< resp-body user-next))))))
+        (should (< resp-body user-next)))))))
 
 ;;;; Relative turn levels
 
@@ -763,10 +766,10 @@ and they shift to level 4."
                    :segments (vector (make-hermes-segment
                                       :type 'text :content "hello" :id "s1"))
                    :timestamp "2024-01-15T10:00:00+0000"))
-             (old hermes--state)
-             (new (hermes--with-copy hermes--state hermes-state-copy s
+             (old (hermes-test--cur))
+             (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                     (setf (hermes-state-pending-turns s) (vector msg)))))
-        (setq hermes--state new)
+        (setf (hermes-test--cur) new)
         (hermes--render old new))
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
              (expected-stars (make-string (1+ clevel) ?*)))
@@ -777,11 +780,11 @@ and they shift to level 4."
 ;;;; Stream paint throttling (Phase 1)
 
 (defun hermes-render-test--apply-stream (stream)
-  "Push STREAM into `hermes--state' and run the renderer with old/new diff."
-  (let* ((old hermes--state)
-         (new (hermes--with-copy hermes--state hermes-state-copy s
+  "Push STREAM into `(hermes-test--cur)' and run the renderer with old/new diff."
+  (let* ((old (hermes-test--cur))
+         (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                 (setf (hermes-state-stream s) stream))))
-    (setq hermes--state new)
+    (setf (hermes-test--cur) new)
     (hermes--render old new)))
 
 (ert-deftest hermes-render-test/throttle-defers-subsequent-deltas ()
@@ -814,7 +817,7 @@ during cooldown stash a pending snapshot instead of painting.
         (should (= tick (buffer-modified-tick)))
         (should hermes--stream-render-pending)
         (should (eq hermes--stream-render-pending
-                    (hermes-state-stream hermes--state)))))
+                    (hermes-state-stream (hermes-test--cur))))))
     ;; Cancel the far-future timer so it can't fire into the dead buffer.
     (hermes--stream-flush-cancel)))
 
@@ -862,13 +865,13 @@ down the bench, so the final tokens never get dropped."
         :segments (vector (make-hermes-segment
                            :type 'text :content "Hi world" :id "s1"))))
       ;; Commit: stream → nil with a pending assistant in pending-turns.
-      (let* ((old hermes--state)
+      (let* ((old (hermes-test--cur))
              (stream (hermes-state-stream old))
              (msg (hermes--message-from-stream stream nil))
-             (new (hermes--with-copy hermes--state hermes-state-copy s
+             (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                     (setf (hermes-state-pending-turns s) (vector msg)
                           (hermes-state-stream s) nil))))
-        (setq hermes--state new)
+        (setf (hermes-test--cur) new)
         (hermes--render old new))
       ;; Buffer must contain the latest text, timer must be gone.
       (should (null hermes--stream-render-timer))
@@ -1047,7 +1050,7 @@ rewritten heading."
     (hermes-mode)
     (org-indent-mode 1)
     ;; Stage 1: stream begins.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
             (tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
                                     :output "out" :summary "Listed files"
                                     :duration 0.1 :context "-la"))
@@ -1056,19 +1059,19 @@ rewritten heading."
                                        :type 'text :content "Hello" :id "s1")
                                       (make-hermes-segment
                                        :type 'tool :content tool :id "s2"))))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Stage 2: commit (message.complete).
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (hermes-state-stream old))
            (msg (hermes--message-from-stream
                  stream '(:tokens_sent 10 :tokens_received 20)))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)
                         (hermes-state-stream s) nil))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; The assistant heading line should have a `line-prefix' property,
     ;; proving `org-indent-add-properties' ran on the rewritten heading.
@@ -1087,14 +1090,14 @@ rewritten heading."
           (with-current-buffer buf
             (hermes-mode)
             ;; Stage 1 — stream begins.
-            (let* ((old hermes--state)
+            (let* ((old (hermes-test--cur))
                    (stream (make-hermes-stream
                             :segments (vector (make-hermes-segment
                                                :type 'text :content "Hello"
                                                :id "s1"))))
-                   (new (hermes--with-copy hermes--state hermes-state-copy s
+                   (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                           (setf (hermes-state-stream s) stream))))
-              (setq hermes--state new)
+              (setf (hermes-test--cur) new)
               (hermes--render old new))
             ;; Pin the window to point-max and remember it.
             (let ((win (selected-window))
@@ -1104,10 +1107,10 @@ rewritten heading."
               ;; Stage 2 — message.complete: stream cleared, no pending-turn
               ;; (assistant commit goes through `hermes--stream-commit',
               ;; which sets `committed-region').
-              (let* ((old hermes--state)
-                     (new (hermes--with-copy hermes--state hermes-state-copy s
+              (let* ((old (hermes-test--cur))
+                     (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                             (setf (hermes-state-stream s) nil))))
-                (setq hermes--state new)
+                (setf (hermes-test--cur) new)
                 (hermes--render old new))
               (should (> (point-max) pre-pmax))
               (should (= (window-point win) (point-max))))))
@@ -1121,22 +1124,22 @@ rewritten heading."
           (set-window-buffer (selected-window) buf)
           (with-current-buffer buf
             (hermes-mode)
-            (let* ((old hermes--state)
+            (let* ((old (hermes-test--cur))
                    (stream (make-hermes-stream
                             :segments (vector (make-hermes-segment
                                                :type 'text :content "Hello"
                                                :id "s1"))))
-                   (new (hermes--with-copy hermes--state hermes-state-copy s
+                   (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                           (setf (hermes-state-stream s) stream))))
-              (setq hermes--state new)
+              (setf (hermes-test--cur) new)
               (hermes--render old new))
             (let* ((win (selected-window))
                    (parked (point-min)))
               (set-window-point win parked)
-              (let* ((old hermes--state)
-                     (new (hermes--with-copy hermes--state hermes-state-copy s
+              (let* ((old (hermes-test--cur))
+                     (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                             (setf (hermes-state-stream s) nil))))
-                (setq hermes--state new)
+                (setf (hermes-test--cur) new)
                 (hermes--render old new))
               (should (= (window-point win) parked)))))
       (kill-buffer buf))))

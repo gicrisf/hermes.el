@@ -6,11 +6,14 @@
 
 ;;; Commentary:
 
-;; Two buffer-local atoms per session: `hermes--state' (ephemeral; the
-;; canonical history lives in the Org buffer) and `hermes--ui-state'
-;; (ephemeral).  Mutations go through `hermes-dispatch' /
-;; `hermes-ui-dispatch', which call a pure reducer and swap the var
-;; atomically, then run a change hook for the renderer to subscribe to.
+;; Persistent per-session state lives in the global `hermes--sessions'
+;; hash table (session-id → `hermes-state').  Process-wide events
+;; without a session-id (e.g. `gateway.ready', connection-state
+;; broadcasts) update `hermes--global-state'.  Ephemeral UI state
+;; (`hermes--ui-state') remains buffer-local.  Mutations go through
+;; `hermes-dispatch' / `hermes-ui-dispatch', which call a pure
+;; reducer and swap the slot atomically, then run a change hook for
+;; renderers to subscribe to.
 
 ;;; Code:
 
@@ -145,12 +148,22 @@
 
 ;;;; Atoms and dispatchers
 
-(defvar-local hermes--state nil
-  "Current persistent state (a `hermes-state').
-In a multi-session buffer this mirrors the most recently dispatched
-session's slot in `hermes--buffer-sessions' — kept in sync so older
-code reading `hermes--state' directly still sees coherent values
-during the slice-B transition.")
+(defvar hermes--sessions (make-hash-table :test 'equal)
+  "Global map: session-id (string) → `hermes-state' struct.
+Sole canonical store for per-session persistent state.")
+
+(defvar hermes--global-state (make-hermes-state :connection 'disconnected)
+  "State for process-wide events before any session exists.
+Receives `gateway.ready', `skin.changed', connection-state changes,
+and diagnostic events (`gateway.stderr', `gateway.protocol_error',
+`gateway.start_timeout') that fire via `hermes--broadcast-dispatch'
+or `hermes--route-connection' without a session-id argument.")
+
+(defvar hermes--org-buffers (make-hash-table :test 'equal)
+  "Map session-id (string) → org-mode conversation buffer.")
+
+(defvar hermes--bench-buffers (make-hash-table :test 'equal)
+  "Map session-id (string) → bench buffer.")
 
 (defvar-local hermes--ui-state nil
   "Current ephemeral UI state (a `hermes-ui-state').")
@@ -162,7 +175,7 @@ calls by the event router.  Hook handlers consult it to discover
 which session a change applies to.")
 
 (defvar hermes-state-change-hook nil
-  "Hook of (OLD NEW) called after `hermes--state' is swapped.
+  "Hook of (OLD NEW) called after a session's persistent state is swapped.
 Both arguments are `hermes-state' structs; OLD may be nil at init.
 The active session id is available via `hermes--current-session-id'.")
 
@@ -170,52 +183,79 @@ The active session id is available via `hermes--current-session-id'.")
   "Hook of (OLD NEW) called after `hermes--ui-state' is swapped.")
 
 (defun hermes-state-init ()
-  "Initialise the buffer-local atoms.  Safe to call on an existing buffer."
-  (unless hermes--state
-    (setq hermes--state (make-hermes-state :connection 'disconnected)))
+  "Initialise the buffer-local UI state.  Safe to call on an existing buffer."
   (unless hermes--ui-state
     (setq hermes--ui-state (make-hermes-ui-state))))
 
 (defun hermes--state-slot-read (session-id)
-  "Return the persistent state for SESSION-ID, or `hermes--state' as fallback.
-Resolves to the per-session registry entry when SESSION-ID is non-nil
-and `hermes--buffer-sessions' carries a struct for it; otherwise
-hands back the buffer-local `hermes--state'."
-  (or (and session-id
-           (boundp 'hermes--buffer-sessions)
-           (hash-table-p hermes--buffer-sessions)
-           (gethash session-id hermes--buffer-sessions))
-      hermes--state))
+  "Return state for SESSION-ID, or `hermes--global-state' when SESSION-ID is nil."
+  (if session-id
+      (or (gethash session-id hermes--sessions)
+          hermes--global-state)
+    hermes--global-state))
 
 (defun hermes--state-slot-write (session-id new-state)
-  "Persist NEW-STATE under SESSION-ID and mirror to `hermes--state'.
-When SESSION-ID is non-nil and present in `hermes--buffer-sessions',
-that entry is replaced.  The buffer-local `hermes--state' is always
-updated.  Additionally, if NEW-STATE carries a session-id that differs
-from SESSION-ID, the registry entry for that active session is also
-updated — this prevents stale data when global events (e.g.
-`gateway.ready') update `hermes--state' without touching the registry."
-  (when (and session-id
-             (boundp 'hermes--buffer-sessions)
-             (hash-table-p hermes--buffer-sessions)
-             (gethash session-id hermes--buffer-sessions))
-    (puthash session-id new-state hermes--buffer-sessions))
-  (let ((active-sid (and new-state (hermes-state-session-id new-state))))
-    (when (and active-sid
-               (not (equal active-sid session-id))
-               (boundp 'hermes--buffer-sessions)
-               (hash-table-p hermes--buffer-sessions)
-               (gethash active-sid hermes--buffer-sessions))
-      (puthash active-sid new-state hermes--buffer-sessions)))
-  (setq hermes--state new-state))
+  "Store NEW-STATE for SESSION-ID, or into `hermes--global-state' when nil."
+  (if session-id
+      (puthash session-id new-state hermes--sessions)
+    (setq hermes--global-state new-state)))
+
+(defun hermes--current-state ()
+  "Return the active persistent `hermes-state' struct.
+Prefers `hermes--current-session-id' (dynamically bound by dispatch);
+otherwise resolves the current buffer through `hermes--org-buffers'
+and falls back to `hermes--global-state'."
+  (or (and hermes--current-session-id
+           (gethash hermes--current-session-id hermes--sessions))
+      (let* ((buf (current-buffer))
+             (sid (catch 'found
+                    (maphash (lambda (k b)
+                               (when (eq b buf) (throw 'found k)))
+                             hermes--org-buffers)
+                    nil)))
+        (and sid (gethash sid hermes--sessions)))
+      hermes--global-state))
+
+(defun hermes--buffer-session-state (buffer)
+  "Return the persistent state for the session hosted in BUFFER, or nil.
+Looks BUFFER up in `hermes--org-buffers' and returns the matching
+entry from `hermes--sessions'."
+  (when (buffer-live-p buffer)
+    (let ((sid (catch 'found
+                 (maphash (lambda (k b)
+                            (when (eq b buffer) (throw 'found k)))
+                          hermes--org-buffers)
+                 nil)))
+      (and sid (gethash sid hermes--sessions)))))
+
+(defun hermes--current-sid ()
+  "Return the active session id, or nil.
+Same resolution as `hermes--current-state' but returns the id."
+  (or hermes--current-session-id
+      (let ((buf (current-buffer)))
+        (catch 'found
+          (maphash (lambda (k b) (when (eq b buf) (throw 'found k)))
+                   hermes--org-buffers)
+          nil))))
+
+(defmacro hermes--on-session-buffer (registry &rest body)
+  "If the current session has a live buffer in REGISTRY, run BODY there.
+Reads `hermes--current-session-id', looks up REGISTRY (a hash-table
+expression), and executes BODY with the matching buffer current when
+it is live.  No-op otherwise."
+  (declare (indent 1))
+  `(let ((sid hermes--current-session-id))
+     (when sid
+       (let ((buf (gethash sid ,registry)))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf ,@body))))))
 
 (defun hermes-dispatch (msg &optional session-id)
   "Reduce MSG into the persistent state and notify subscribers.
-If SESSION-ID is provided and present in `hermes--buffer-sessions',
-the reduction targets that session's slot; otherwise it targets the
-buffer-local `hermes--state'.  `hermes--current-session-id' is bound
-to SESSION-ID for the duration so hook handlers can see which
-session changed."
+When SESSION-ID is non-nil the reduction targets that session's entry
+in `hermes--sessions'; otherwise it targets `hermes--global-state'.
+`hermes--current-session-id' is bound to SESSION-ID for the duration
+so hook handlers can see which session changed."
   (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
          (old (hermes--state-slot-read hermes--current-session-id))
          (new (hermes--reduce old msg)))
@@ -227,7 +267,7 @@ session changed."
   "Reduce MSG into the ephemeral state and notify subscribers.
 SESSION-ID is accepted for symmetry with `hermes-dispatch' and bound
 into `hermes--current-session-id' for the hook run; the ephemeral
-state itself remains buffer-local in slice B."
+state itself remains buffer-local."
   (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
          (old hermes--ui-state)
          (new (hermes--ui-reduce old msg)))

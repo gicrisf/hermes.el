@@ -71,7 +71,7 @@ Updated by `hermes--mode-line-update' whenever the ephemeral state changes.")
 ;;;; Stream paint throttling
 ;;
 ;; The reducer applies every `message.delta' / `reasoning.delta' to
-;; `hermes--state' synchronously, but the buffer paint is rate-limited so
+;; `(hermes--current-state)' synchronously, but the buffer paint is rate-limited so
 ;; high-frequency token streams (>25 Hz) don't saturate the UI thread.
 ;; The first delta after a cooldown gap paints immediately and starts a
 ;; cooldown timer; deltas arriving while the timer is active stash their
@@ -167,7 +167,23 @@ buffer) where the container's subtree spans the whole buffer."
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
-  "Diff OLD vs NEW (both `hermes-state') and update the buffer."
+  "Dispatch wrapper: route to the org buffer for the active session.
+The state-change-hook is global; this resolves
+`hermes--current-session-id' through `hermes--org-buffers' and runs
+`hermes--render-1' inside the target buffer.  Falls back to the
+current buffer when it is itself a Hermes buffer (direct-call paths
+such as tests, or in-buffer dispatch loops)."
+  (let* ((sid hermes--current-session-id)
+         (buf (and sid (gethash sid hermes--org-buffers))))
+    (cond
+     ((buffer-live-p buf)
+      (with-current-buffer buf (hermes--render-1 old new)))
+     ((or (derived-mode-p 'hermes-mode)
+          (bound-and-true-p hermes-minor-mode))
+      (hermes--render-1 old new)))))
+
+(defun hermes--render-1 (old new)
+  "Diff OLD vs NEW (both `hermes-state') and update the current buffer."
   ;; Two scopes for post-passes:
   ;;   * msg-append-start  → start of just-inserted user/system message(s).
   ;;   * bench-touched-p   → bench markers/content changed this tick.
@@ -461,9 +477,9 @@ subtree and writes usage as heading properties."
     ('user      (hermes--insert-turn-headline msg 'hermes-user-face))
     ('system    (hermes--insert-turn-headline msg 'hermes-system-face))
     ('assistant
-     (let* ((info    (hermes-state-session-info hermes--state))
+     (let* ((info    (hermes-state-session-info (hermes--current-state)))
             (model   (and (hash-table-p info) (gethash "model" info)))
-            (sid     (or (hermes-state-session-id hermes--state) ""))
+            (sid     (or (hermes-state-session-id (hermes--current-state)) ""))
             (text    (hermes--message-text-for-display msg))
             (excerpt (concat "A: " (hermes--heading-excerpt text)))
             (tags    (hermes--turn-tags 'assistant model))
@@ -518,8 +534,8 @@ and assistant turns are all siblings."
          (excerpt  (concat prefix (hermes--heading-excerpt text)))
          (heading  (format "%s %s" (hermes--stars 1) excerpt))
          (tags     (hermes--turn-tags kind))
-         (sid      (or (hermes-state-session-id hermes--state) ""))
-         (info     (hermes-state-session-info hermes--state))
+         (sid      (or (hermes-state-session-id (hermes--current-state)) ""))
+         (info     (hermes-state-session-info (hermes--current-state)))
          (model    (and (hash-table-p info) (gethash "model" info))))
     (goto-char (hermes--session-insert-point))
     (unless (bolp) (insert "\n"))
@@ -1223,9 +1239,8 @@ Also opens a bench overlay tinting the live region."
         hermes--bench-end   (copy-marker (point) t))
   (setq hermes--stream-headline-marker (point-marker))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
-  (let* ((info    (and (boundp 'hermes--state)
-                       hermes--state
-                       (hermes-state-session-info hermes--state)))
+  (let* ((info    (let ((st (hermes--current-state)))
+                    (and st (hermes-state-session-info st))))
          (model   (and (hash-table-p info) (gethash "model" info)))
          (short   (or (hermes--model-short-name model) ""))
          (prefix  (if (string-empty-p short) "A:" (concat "A: " short)))
@@ -1284,9 +1299,8 @@ MSG is the committed `hermes-message'.  Replaces the line at
              (marker-position hermes--stream-headline-marker))
     (let* ((text     (hermes--message-text-for-display msg))
            (excerpt  (concat "A: " (hermes--heading-excerpt text)))
-           (info     (and (boundp 'hermes--state)
-                          hermes--state
-                          (hermes-state-session-info hermes--state)))
+           (info     (let ((st (hermes--current-state)))
+                       (and st (hermes-state-session-info st))))
            (model    (and (hash-table-p info) (gethash "model" info)))
            (tags     (hermes--turn-tags 'assistant model))
            (heading  (format "%s %s" (hermes--stars 1) excerpt))
@@ -1332,8 +1346,8 @@ refresh by the caller, or nil if no bench was active."
             ;; reducer just pushed to pending-turns (message.complete).
             ;; Session-cumulative `hermes-state-usage' would leak the
             ;; running total into every drawer; avoid that.
-            (let ((tt (and (boundp 'hermes--state) hermes--state
-                           (hermes-state-pending-turns hermes--state))))
+            (let ((tt (let ((st (hermes--current-state)))
+                        (and st (hermes-state-pending-turns st)))))
               (when (and (vectorp tt) (> (length tt) 0))
                 (let ((last (aref tt (1- (length tt)))))
                   (when (eq 'assistant (hermes-message-kind last))
@@ -1436,8 +1450,8 @@ happens, re-arms the cooldown so further deltas continue to throttle."
                             (hermes-bench-active-p (current-buffer)))))
         (setq hermes--stream-render-pending nil)
         (when (and ns
-                   hermes--state
-                   (eq ns (hermes-state-stream hermes--state))
+                   (hermes--current-state)
+                   (eq ns (hermes-state-stream (hermes--current-state)))
                    (or bench-buf
                        (and (markerp hermes--bench-start)
                             (marker-position hermes--bench-start))))
@@ -1472,72 +1486,53 @@ happens, re-arms the cooldown so further deltas continue to throttle."
 ;;;; Mode line
 
 (defun hermes--mode-line-update (&optional _old _new)
-  "Recompute `hermes--mode-line-status' from the current state.
-Installed on `hermes-state-change-hook' so connection/model/token
-changes refresh the mode-line immediately.  Hook arguments are ignored
-\(state is read live from buffer-local `hermes--state').
-
-We trust the buffer-local state here.  Earlier we hit a bug where the
-mode-line showed `disconnected' throughout a live streaming session
-because `gateway.ready' updated `hermes--state' but left the entry in
-`hermes--buffer-sessions' pointing at the stale struct, and subsequent
-session-scoped dispatches read that stale entry back.  The proper fix
-landed in `hermes--state-slot-write' (it now mirrors writes into the
-registry entry of the active session-id).  If that ever regresses, a
-defensive fallback that reads `hermes-rpc--state' here as ground-truth
-will paper over it — see the commented block below."
-  ;; --- Defensive fallback (currently disabled).  Uncomment if the
-  ;; mode-line is observed to lie again (e.g. another state-sync
-  ;; regression in `hermes--state-slot-write').  This trusts the RPC
-  ;; process when buffer state contradicts it.
-  ;;
-  ;; (let* ((buf-conn (and hermes--state (hermes-state-connection hermes--state)))
-  ;;        (rpc-conn (and (boundp 'hermes-rpc--state)
-  ;;                       (pcase hermes-rpc--state
-  ;;                         ('starting 'connecting)
-  ;;                         ('ready    'connected)
-  ;;                         (_         'disconnected))))
-  ;;        (conn (if (and (eq buf-conn 'disconnected)
-  ;;                       (eq rpc-conn 'connected))
-  ;;                  'connected
-  ;;                (or buf-conn rpc-conn 'disconnected))))
-  ;;   ...use CONN instead of `(hermes-state-connection hermes--state)' below...)
-  (setq hermes--mode-line-status
-        (concat
-         (pcase (and hermes--state (hermes-state-connection hermes--state))
-           ('connected    "●")
-           ('connecting   "◐")
-           ('disconnected "○")
-           (_             "○"))
-         (let ((sid  (and hermes--state (hermes-state-session-id hermes--state)))
-               (conn (and hermes--state (hermes-state-connection hermes--state))))
-           (if sid
-               (format " · session %s %s"
-                       (if (> (length sid) 8) (substring sid 0 8) sid)
-                       (pcase conn
-                         ('connected    "ready")
-                         ('connecting   "connecting")
-                         ('disconnected "disconnected")
-                         (_             "unknown")))
-             " · session ?"))
-         (let* ((info  (and hermes--state (hermes-state-session-info hermes--state)))
-                (model (and (hash-table-p info) (gethash "model" info))))
-           (if model (format " · %s" model) ""))
-         (let ((ui (or hermes--ui-line "")))
-           (if (string-empty-p (string-trim ui))
-               ""
-             (format " · %s" (string-trim ui))))
-         (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
-                (sent  (and usage (gethash "tokens_sent" usage)))
-                (recv  (and usage (gethash "tokens_received" usage))))
-           (if (or sent recv)
-               (format " · (%s tokens)" (+ (or sent 0) (or recv 0)))
-             ""))
-         (let ((q (and hermes--state (hermes-state-queue hermes--state))))
-           (if (and q (> (length q) 0))
-               (format " · queue: %d" (length q))
-             ""))))
-  (force-mode-line-update))
+  "Recompute `hermes--mode-line-status' from the active state.
+Installed on `hermes-state-change-hook' (global) — finds its target
+buffer by resolving `hermes--current-session-id' through
+`hermes--org-buffers' and updates the mode-line there.  When called
+outside of dispatch (e.g. mode setup), falls back to current buffer."
+  (cl-flet ((paint
+             (st)
+             (setq hermes--mode-line-status
+                   (concat
+                    (pcase (and st (hermes-state-connection st))
+                      ('connected    "●")
+                      ('connecting   "◐")
+                      ('disconnected "○")
+                      (_             "○"))
+                    (let ((sid  (and st (hermes-state-session-id st)))
+                          (conn (and st (hermes-state-connection st))))
+                      (if sid
+                          (format " · session %s %s"
+                                  (if (> (length sid) 8) (substring sid 0 8) sid)
+                                  (pcase conn
+                                    ('connected    "ready")
+                                    ('connecting   "connecting")
+                                    ('disconnected "disconnected")
+                                    (_             "unknown")))
+                        " · session ?"))
+                    (let* ((info  (and st (hermes-state-session-info st)))
+                           (model (and (hash-table-p info) (gethash "model" info))))
+                      (if model (format " · %s" model) ""))
+                    (let ((ui (or hermes--ui-line "")))
+                      (if (string-empty-p (string-trim ui))
+                          ""
+                        (format " · %s" (string-trim ui))))
+                    (let* ((usage (and st (hermes-state-usage st)))
+                           (sent  (and usage (gethash "tokens_sent" usage)))
+                           (recv  (and usage (gethash "tokens_received" usage))))
+                      (if (or sent recv)
+                          (format " · (%s tokens)" (+ (or sent 0) (or recv 0)))
+                        ""))
+                    (let ((q (and st (hermes-state-queue st))))
+                      (if (and q (> (length q) 0))
+                          (format " · queue: %d" (length q))
+                        ""))))
+             (force-mode-line-update)))
+    (if hermes--current-session-id
+        (hermes--on-session-buffer hermes--org-buffers
+          (paint (hermes--state-slot-read hermes--current-session-id)))
+      (paint (hermes--current-state)))))
 
 (provide 'hermes-render)
 ;;; hermes-render.el ends here

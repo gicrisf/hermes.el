@@ -22,23 +22,27 @@
 Guards against re-entrant prompts when the renderer hook fires again.")
 
 (defun hermes-prompts-watch (old new)
-  "State-change hook: when pending becomes non-nil, schedule a prompt."
-  (let ((op (and old (hermes-state-pending old)))
-        (np (hermes-state-pending new)))
-    (when (and np (not (eq op np)) (not hermes--pending-active))
-      (setq hermes--pending-active t)
-      (let ((buf (current-buffer))
-            (sid (hermes-state-session-id new))
-            (pending np))
-        (run-at-time
-         0 nil
-         (lambda ()
-           (when (buffer-live-p buf)
-             (with-current-buffer buf
-               (unwind-protect
-                   (hermes--prompts-handle sid pending)
-                 (setq hermes--pending-active nil)
-                 (hermes-dispatch '(:pending-clear)))))))))))
+  "State-change hook: when pending becomes non-nil, schedule a prompt.
+Globally installed; resolves the target buffer via
+`hermes--org-buffers' so the buffer-local re-entry guard
+`hermes--pending-active' lives with its parent buffer."
+  (hermes--on-session-buffer hermes--org-buffers
+    (let ((op (and old (hermes-state-pending old)))
+          (np (hermes-state-pending new)))
+      (when (and np (not (eq op np)) (not hermes--pending-active))
+        (setq hermes--pending-active t)
+        (let ((buf (current-buffer))
+              (sid (hermes-state-session-id new))
+              (pending np))
+          (run-at-time
+           0 nil
+           (lambda ()
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (unwind-protect
+                     (hermes--prompts-handle sid pending)
+                   (setq hermes--pending-active nil)
+                   (hermes-dispatch '(:pending-clear) sid)))))))))))
 
 (defun hermes--prompts-handle (sid pending)
   "Run the right minibuffer prompt for PENDING and dispatch the response."

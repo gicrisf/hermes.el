@@ -47,7 +47,7 @@ RET visits the task buffer; k kills it.")
 (defun hermes-bg--list-for-sid (sid)
   "Pop a tabulated list of background tasks for session SID."
   (let* ((parent (and sid (hermes--lookup-buffer sid)))
-         (state  (and parent (buffer-local-value 'hermes--state parent)))
+         (state  (and sid (gethash sid hermes--sessions)))
          (tasks  (and state (hermes-state-bg-tasks state)))
          (buf    (get-buffer-create (format "*hermes-bg-list:%s*" (or sid "?")))))
     (with-current-buffer buf

@@ -34,62 +34,81 @@
 
 ;;;; Routing: filter event → buffer
 
-(defvar hermes--session-buffers (make-hash-table :test 'equal)
-  "Map of session-id → conversation buffer.")
-
 (defvar hermes--last-gateway-ready nil
   "Most recent `gateway.ready' payload, cached for replay into new buffers.
-The event broadcasts to every existing session buffer when it arrives, but
-the first session is typically created AFTER `gateway.ready' lands — so
-without this cache, the very first buffer would never see the skin.")
+The event broadcasts to every existing session when it arrives, but the
+first session is typically created AFTER `gateway.ready' lands — so
+without this cache, the very first session would never see the skin.")
 
 (defun hermes--lookup-buffer (session-id)
-  "Return the buffer for SESSION-ID, or nil."
-  (let ((buf (gethash session-id hermes--session-buffers)))
+  "Return the org buffer registered for SESSION-ID, or nil."
+  (let ((buf (gethash session-id hermes--org-buffers)))
     (and (buffer-live-p buf) buf)))
+
+(defun hermes--org-detach ()
+  "Remove the current buffer from `hermes--org-buffers'.
+Run on `kill-buffer-hook' for Hermes-aware buffers.  Leaves the
+session state in `hermes--sessions' untouched so it survives until
+explicit close."
+  (let ((buf (current-buffer))
+        (drops nil))
+    (maphash (lambda (sid b) (when (eq b buf) (push sid drops)))
+             hermes--org-buffers)
+    (dolist (sid drops)
+      (remhash sid hermes--org-buffers))))
 
 ;;;; Event routing — installed once on the RPC layer
 
 (defun hermes--route-event (type session-id payload)
-  "Dispatch event TYPE/PAYLOAD into the session buffer's atoms."
+  "Dispatch event TYPE/PAYLOAD into the session's state slot."
   (when (or (equal type "gateway.ready") (equal type "skin.changed"))
     (setq hermes--last-gateway-ready payload))
-  (let ((buf (and session-id (not (string-empty-p session-id))
-                  (hermes--lookup-buffer session-id))))
-    ;; Some events arrive before we know the session id (gateway.ready,
-    ;; skin.changed) — broadcast those to every existing Hermes buffer.
-     (cond
-      (buf (with-current-buffer buf
-             (hermes-dispatch (cons type payload) session-id)
-             (hermes-ui-dispatch (cons type payload) session-id)))
-      ((or (null session-id) (string-empty-p session-id))
-       (hermes--broadcast-dispatch type payload)))))
+  (cond
+   ((and session-id (not (string-empty-p session-id)))
+    ;; Per-session dispatch — writes to the global slot keyed by sid.
+    ;; `with-current-buffer' is still required for the buffer-local
+    ;; UI state.
+    (let ((buf (hermes--lookup-buffer session-id)))
+      (if (buffer-live-p buf)
+          (with-current-buffer buf
+            (hermes-dispatch (cons type payload) session-id)
+            (hermes-ui-dispatch (cons type payload) session-id))
+        (hermes-dispatch (cons type payload) session-id))))
+   (t
+    ;; Pre-session events (gateway.ready, skin.changed, etc.) update the
+    ;; process-wide state slot and broadcast UI to every live buffer.
+    (hermes--broadcast-dispatch type payload))))
 
 (defun hermes--route-connection (state)
-  "Broadcast a connection state change into every Hermes buffer."
+  "Broadcast a connection state change to every known session."
   ;; Clear the cached `gateway.ready' payload so that the *next* time we
   ;; reconnect we wait for a fresh one before firing `session.create'.
   (when (eq state 'disconnected)
     (setq hermes--last-gateway-ready nil))
-  (maphash (lambda (_sid b)
-             (when (buffer-live-p b)
-               (with-current-buffer b
-                 (hermes-dispatch
-                  (list (pcase state
-                          ('connecting   :connecting)
-                          ('connected    :connected)
-                          ('disconnected :disconnected)
-                          (_             :disconnected)))))))
-           hermes--session-buffers))
+  (let ((msg (list (pcase state
+                     ('connecting   :connecting)
+                     ('connected    :connected)
+                     ('disconnected :disconnected)
+                     (_             :disconnected)))))
+    ;; Update process-wide state for sessionless observers.
+    (hermes-dispatch msg)
+    ;; And every per-session slot, so each viewer's mode-line updates.
+    (maphash (lambda (sid _state)
+               (hermes-dispatch msg sid))
+             hermes--sessions)))
 
 (defun hermes--broadcast-dispatch (type payload)
-  "Dispatch TYPE + PAYLOAD to every active Hermes buffer."
-  (maphash (lambda (_sid b)
-             (when (buffer-live-p b)
-               (with-current-buffer b
-                 (hermes-dispatch (cons type payload))
-                 (hermes-ui-dispatch (cons type payload)))))
-           hermes--session-buffers))
+  "Dispatch TYPE + PAYLOAD to the global slot and every active session."
+  ;; Global slot first — sessionless observers (e.g. nascent buffers).
+  (hermes-dispatch (cons type payload))
+  ;; Per-session: write into each session's slot and update its UI.
+  (maphash (lambda (sid _state)
+             (hermes-dispatch (cons type payload) sid)
+             (let ((buf (hermes--lookup-buffer sid)))
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (hermes-ui-dispatch (cons type payload) sid)))))
+           hermes--sessions))
 
 (defun hermes--route-stderr (line)
   "Broadcast a `gateway.stderr' event with LINE to all Hermes buffers."
@@ -163,8 +182,7 @@ present (Phase 2: arbitrary Org buffers), one is created here."
               '(("RUNNING" . hermes-tool-running-face)
                 ("DONE"    . hermes-tool-done-face)
                 ("ERROR"   . hermes-tool-error-face)))
-  (unless (and (boundp 'hermes--state) hermes--state)
-    (hermes-state-init))
+  (hermes-state-init)
   ;; Ensure RPC event hooks are wired so events for sessions hosted in
   ;; this buffer route through `hermes--route-event'.  Idempotent.
   (hermes--install-hooks)
@@ -174,18 +192,24 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   ;; head; the recursive render inserts that user heading at point-max
   ;; with stream already nil → `stream-commit' won't have fired yet, so
   ;; when the outer render finally runs, `bench-end' has been rear-
-     ;; advanced past the user content and the assistant turn lands
-  ;; at the end of the buffer.  `add-hook' with nil APPEND *prepends*,
-  ;; reversing insertion order — so we explicitly append.
-  (add-hook 'hermes-state-change-hook    #'hermes--render        t t)
-  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  t t)
-  (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t t)
-  (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t t)
-  (add-hook 'hermes-state-change-hook    #'hermes--mode-line-update t t)
+  ;; advanced past the user content and the assistant turn lands at the
+  ;; end of the buffer.  These hooks are GLOBAL (no LOCAL flag) — each
+  ;; subscriber discovers its target buffer via `hermes--org-buffers'.
+  (add-hook 'hermes-state-change-hook    #'hermes--render        t)
+  (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  t)
+  (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t)
+  (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t)
+  (add-hook 'hermes-state-change-hook    #'hermes--mode-line-update t)
+  ;; UI state remains buffer-local, so its hook stays LOCAL.
   (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
   ;; Drop pending throttle timer on buffer kill so it can't fire into a
   ;; dead buffer.
   (add-hook 'kill-buffer-hook            #'hermes--stream-flush-cancel nil t)
+  ;; Detach this buffer from the global viewer registry when killed.  The
+  ;; session state itself stays in `hermes--sessions' — it carries data
+  ;; (reasoning, tool args, subagents) the gateway DB doesn't preserve,
+  ;; so explicit close is required to discard it.
+  (add-hook 'kill-buffer-hook            #'hermes--org-detach nil t)
   ;; Move Hermes status from the top header-line to the bottom mode-line.
   ;; Use a self-contained format that preserves basic mode-line elements
   ;; alongside the Hermes status segment.
@@ -204,16 +228,22 @@ present (Phase 2: arbitrary Org buffers), one is created here."
                                              (list '- 'right (length text))))
                            (propertize label 'face 'mode-line-emphasis))))))
   (setq header-line-format nil)
-  (hermes--mode-line-update hermes--state))
+  ;; Initial paint of the mode-line for this buffer.
+  (let* ((sid (catch 'found
+                (maphash (lambda (k b)
+                           (when (eq b (current-buffer))
+                             (throw 'found k)))
+                         hermes--org-buffers)
+                nil))
+         (state (hermes--state-slot-read sid)))
+    (hermes--mode-line-update nil state)))
 
 (defun hermes-minor-mode--off ()
-  "Teardown for `hermes-minor-mode': removes hooks, clears header-line."
+  "Teardown for `hermes-minor-mode': remove buffer-local hooks, clear header.
+The global state-change-hook subscribers are intentionally left in
+place — they are global and shared by every Hermes buffer; removing
+them here would tear down other live viewers."
   (remove-hook 'org-cycle-hook #'hermes--remember-cycle t)
-  (remove-hook 'hermes-state-change-hook #'hermes--render t)
-  (remove-hook 'hermes-state-change-hook #'hermes-prompts-watch t)
-  (remove-hook 'hermes-state-change-hook #'hermes-input--drain t)
-  (remove-hook 'hermes-state-change-hook #'hermes-skin-watch t)
-  (remove-hook 'hermes-state-change-hook #'hermes--mode-line-update t)
   (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui t)
   (remove-hook 'kill-buffer-hook #'hermes--stream-flush-cancel t)
   (hermes--stream-flush-cancel)
@@ -285,34 +315,32 @@ mode), fall back to `hermes-send' for a minibuffer prompt."
         (result
          (let* ((sid (gethash "session_id" result))
                 (buf (generate-new-buffer (format "*hermes:%s*" sid))))
-           (puthash sid buf hermes--session-buffers)
            (with-current-buffer buf
              (hermes-mode)
-              (setf (hermes-state-session-id hermes--state) sid)
-              (when detected-cwd
-                (setf (hermes-state-cwd hermes--state) detected-cwd))
-              (save-excursion
-                (goto-char (point-min))
-                (when (org-at-heading-p)
-                  (org-set-property "HERMES_SESSION" sid)
-                  (when detected-cwd
-                    (org-set-property "HERMES_CWD"
-                                      (abbreviate-file-name detected-cwd)))))
-           ;; Register the session in the buffer-local registry so the
-           ;; slice-B dispatcher can resolve `session-id' → state.  The
-           ;; marker tracks the container heading at point-min.
-           (hermes--register-session
-            sid hermes--state
-            (save-excursion (goto-char (point-min)) (copy-marker (point) nil)))
-           (when hermes--last-gateway-ready
-             (hermes-dispatch
-              (cons "gateway.ready" hermes--last-gateway-ready)))
-           (hermes-input-fetch-catalog))
-         (when callback (funcall callback buf)))))))))
+             (let ((state (make-hermes-state :connection 'connected
+                                             :session-id sid
+                                             :cwd detected-cwd)))
+               (hermes--register-session
+                sid state
+                (save-excursion (goto-char (point-min))
+                                (copy-marker (point) nil))))
+             (save-excursion
+               (goto-char (point-min))
+               (when (org-at-heading-p)
+                 (org-set-property "HERMES_SESSION" sid)
+                 (when detected-cwd
+                   (org-set-property "HERMES_CWD"
+                                     (abbreviate-file-name detected-cwd)))))
+             (when hermes--last-gateway-ready
+               (hermes-dispatch
+                (cons "gateway.ready" hermes--last-gateway-ready)
+                sid))
+             (hermes-input-fetch-catalog))
+           (when callback (funcall callback buf)))))))))
 
 (defun hermes-new-session (&optional callback)
   "Start the gateway (if needed), create a session, and prepare its buffer.
-The buffer is registered in `hermes--session-buffers' but NOT popped to the
+The buffer is registered in `hermes--org-buffers' but NOT popped to the
 user; that's the caller's job.  CALLBACK, if non-nil, is called with the new
 buffer (or nil on error) once `session.create' resolves.
 
@@ -332,7 +360,7 @@ background; for the user-facing entry that also pops the buffer, see
   "Return live session buffers, most-recently-touched first."
   (let (acc)
     (maphash (lambda (_sid b) (when (buffer-live-p b) (push b acc)))
-             hermes--session-buffers)
+             hermes--org-buffers)
     (sort acc (lambda (a b) (> (buffer-modified-tick a)
                                (buffer-modified-tick b))))))
 
@@ -420,7 +448,7 @@ background; for the user-facing entry that also pops the buffer, see
 (defun hermes-reconnect ()
   "Restart the gateway (if needed) and bind the current buffer to a fresh session.
 Used after the gateway subprocess has died.  The old session id is removed
-from `hermes--session-buffers' once the new one is bound; the buffer is
+from `hermes--org-buffers' once the new one is bound; the buffer is
 renamed accordingly; the slash-command catalog is re-fetched; and any
 queued input is drained."
   (interactive)
@@ -439,23 +467,33 @@ queued input is drained."
          (let ((sid (gethash "session_id" result)))
            (when (buffer-live-p buf)
              (with-current-buffer buf
-               (let ((old-sid (hermes-state-session-id hermes--state)))
+               (let* ((old-sid (catch 'found
+                                 (maphash (lambda (k b)
+                                            (when (eq b buf)
+                                              (throw 'found k)))
+                                          hermes--org-buffers)
+                                 nil))
+                      (old-state (and old-sid (hermes--state-slot-read old-sid))))
                  (when (and old-sid (not (equal old-sid sid)))
-                   (remhash old-sid hermes--session-buffers)
-                   (when (hash-table-p hermes--buffer-sessions)
-                     (remhash old-sid hermes--buffer-sessions))
-                   (when (hash-table-p hermes--session-markers)
-                     (remhash old-sid hermes--session-markers))))
-               (puthash sid buf hermes--session-buffers)
-               (setf (hermes-state-session-id hermes--state) sid)
-               (hermes--register-session
-                sid hermes--state
-                (save-excursion (goto-char (point-min)) (copy-marker (point) nil)))
+                   (remhash old-sid hermes--org-buffers)
+                   (remhash old-sid hermes--sessions)
+                   (remhash old-sid hermes--session-markers))
+                 (let ((state (or (and old-state
+                                       (let ((s (hermes-state-copy old-state)))
+                                         (setf (hermes-state-session-id s) sid)
+                                         s))
+                                  (make-hermes-state :connection 'connected
+                                                     :session-id sid))))
+                   (hermes--register-session
+                    sid state
+                    (save-excursion (goto-char (point-min))
+                                    (copy-marker (point) nil)))))
                (rename-buffer (generate-new-buffer-name
                                (format "*hermes:%s*" sid)))
                (when hermes--last-gateway-ready
                  (hermes-dispatch
-                  (cons "gateway.ready" hermes--last-gateway-ready)))
+                  (cons "gateway.ready" hermes--last-gateway-ready)
+                  sid))
                (hermes-input-fetch-catalog)
                (hermes-input--drain-after-reconnect)
                (message "hermes: reconnected as %s" sid))))))))))
@@ -526,9 +564,7 @@ so turn insertion follows the relative depth."
                      (org-set-property "HERMES_SESSION" sid)))
                  (let ((state (make-hermes-state :session-id sid
                                                  :connection 'connected)))
-                   (hermes--register-session sid state marker)
-                   (setq hermes--state state))
-                 (puthash sid buf hermes--session-buffers)
+                   (hermes--register-session sid state marker))
                  (when hermes--last-gateway-ready
                    (hermes-dispatch
                     (cons "gateway.ready" hermes--last-gateway-ready)
@@ -599,12 +635,12 @@ this is the only way to re-attach an Org snapshot to a live session."
         (result
          (let ((sid (gethash "session_id" result)))
            (when sid
-             (setf (hermes-state-session-id hermes--state) sid)
-             (puthash sid (current-buffer) hermes--session-buffers)
-             (hermes--register-session
-              sid hermes--state
-              (save-excursion
-                (goto-char (point-min)) (copy-marker (point) nil)))
+             (let ((state (make-hermes-state :session-id sid
+                                             :connection 'connected)))
+               (hermes--register-session
+                sid state
+                (save-excursion
+                  (goto-char (point-min)) (copy-marker (point) nil))))
              ;; Reset the seed stamp so the next prompt restores context.
              (setq hermes--seeded-session-id nil)
              (message "hermes: loaded org as %s (%d turns parsed)"
@@ -635,11 +671,16 @@ Shows the parsed `hermes-message' struct as reconstructed by
       (display-buffer buf))))
 
 (defun hermes-debug-state ()
-  "Pop a buffer inspecting the live `hermes--state' atom."
+  "Pop a buffer inspecting the active session's state struct."
   (interactive)
-  (unless (and (boundp 'hermes--state) hermes--state)
-    (user-error "No Hermes state in this buffer"))
-  (let* ((st hermes--state)
+  (let* ((target (hermes--resolve-session-target))
+         (st (and target (cdr target))))
+    (unless st (user-error "No Hermes state for this buffer"))
+    (hermes--debug-state-pop st)))
+
+(defun hermes--debug-state-pop (st)
+  "Render ST in a popup buffer."
+  (let* ((_ st)
          (data `(:session-id    ,(hermes-state-session-id st)
                  :connection    ,(hermes-state-connection st)
                  :stream        ,(and (hermes-state-stream st) t)
@@ -666,9 +707,8 @@ Shows the parsed `hermes-message' struct as reconstructed by
 (defun hermes-bg-list ()
   "Pop a tabulated list of background tasks for the current session."
   (interactive)
-  (let ((sid (and (boundp 'hermes--state)
-                  hermes--state
-                  (hermes-state-session-id hermes--state))))
+  (let* ((target (hermes--resolve-session-target))
+         (sid (car target)))
     (if sid
         (progn (require 'hermes-bg)
                (hermes-bg--list-for-sid sid))

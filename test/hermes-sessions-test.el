@@ -152,31 +152,37 @@
     (should (equal "parent-123" (hermes-state-parent-sid s)))))
 
 (ert-deftest hermes-sessions-test/current-annot-shows-parent-arrow ()
+  (hermes-test--reset-global-state)
   (with-temp-buffer
-    (let ((hermes--state (make-hermes-state
-                          :session-id "child-1"
-                          :parent-sid "parentXX")))
-      (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 3)))
-        (let ((out (hermes--current-annot (current-buffer))))
-          (should (string-match-p "←parentXX" out)))))))
+    (puthash "child-1" (current-buffer) hermes--org-buffers)
+    (hermes--state-slot-write
+     "child-1"
+     (make-hermes-state :session-id "child-1" :parent-sid "parentXX"))
+    (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 3)))
+      (let ((out (hermes--current-annot (current-buffer))))
+        (should (string-match-p "←parentXX" out))))))
 
 (ert-deftest hermes-sessions-test/current-annot-shows-title-bracket ()
+  (hermes-test--reset-global-state)
   (with-temp-buffer
-    (let* ((info (hermes-sessions-test--ht "model" "claude" "title" "My chat"))
-           (hermes--state (make-hermes-state
-                           :session-id "s1"
-                           :session-info info)))
-      (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 0)))
-        (let ((out (hermes--current-annot (current-buffer))))
-          (should (string-match-p "\\[My chat\\]" out)))))))
+    (puthash "s1" (current-buffer) hermes--org-buffers)
+    (let ((info (hermes-sessions-test--ht "model" "claude" "title" "My chat")))
+      (hermes--state-slot-write
+       "s1"
+       (make-hermes-state :session-id "s1" :session-info info)))
+    (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 0)))
+      (let ((out (hermes--current-annot (current-buffer))))
+        (should (string-match-p "\\[My chat\\]" out))))))
 
 (ert-deftest hermes-sessions-test/current-annot-omits-empty-title-and-parent ()
+  (hermes-test--reset-global-state)
   (with-temp-buffer
-    (let ((hermes--state (make-hermes-state :session-id "s1")))
-      (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 0)))
-        (let ((out (hermes--current-annot (current-buffer))))
-          (should-not (string-match-p "\\[" out))
-          (should-not (string-match-p "←" out)))))))
+    (puthash "s1" (current-buffer) hermes--org-buffers)
+    (hermes--state-slot-write "s1" (make-hermes-state :session-id "s1"))
+    (cl-letf (((symbol-function 'hermes--buffer-message-count) (lambda () 0)))
+      (let ((out (hermes--current-annot (current-buffer))))
+        (should-not (string-match-p "\\[" out))
+        (should-not (string-match-p "←" out))))))
 
 ;;;; Public commands exist
 

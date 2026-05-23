@@ -5,11 +5,22 @@
 (require 'hermes-bench)
 (require 'hermes-input)
 (require 'hermes-state)
+(load (expand-file-name "hermes-test-helpers.el"
+                        (file-name-directory
+                         (or load-file-name buffer-file-name))))
+
+(defvar hermes-bench-test--counter 0)
 
 (defun hermes-bench-test--make-parent ()
-  "Return a fresh parent buffer in `hermes-mode'."
-  (let ((buf (generate-new-buffer " *hermes-bench-test-parent*")))
-    (with-current-buffer buf (hermes-mode))
+  "Return a fresh parent buffer in `hermes-mode' with a registered session."
+  (let* ((sid (format "bench-test-%d" (cl-incf hermes-bench-test--counter)))
+         (buf (generate-new-buffer (format " *hermes-bench-test-%s*" sid))))
+    (with-current-buffer buf
+      (hermes-mode)
+      (hermes--register-session
+       sid
+       (make-hermes-state :session-id sid :connection 'connected)
+       (copy-marker (point-min) nil)))
     buf))
 
 (defmacro hermes-bench-test--with-pair (parent-var bench-var &rest body)
@@ -64,13 +75,13 @@
 ;;;; Slash-command CAPF in the bench
 
 (defun hermes-bench-test--seed-catalog (parent)
-  "Install a fake slash catalog with `/clear' on PARENT's `hermes--state'."
+  "Install a fake slash catalog with `/clear' on PARENT's `(hermes-test--cur)'."
   (with-current-buffer parent
     (let ((h (make-hash-table :test 'equal)))
       (puthash "pairs"
                (vector (vector "/clear" "Clear conversation history"))
                h)
-      (setf (hermes-state-slash-catalog hermes--state) h))))
+      (setf (hermes-state-slash-catalog (hermes-test--cur)) h))))
 
 (defun hermes-bench-test--type-input (bench text)
   "Insert TEXT into BENCH's input area, point at end."

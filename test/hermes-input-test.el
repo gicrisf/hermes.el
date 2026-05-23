@@ -5,6 +5,9 @@
 (require 'hermes-state)
 (require 'hermes-input)
 (require 'hermes-mode)
+(load (expand-file-name "hermes-test-helpers.el"
+                        (file-name-directory
+                         (or load-file-name buffer-file-name))))
 
 (defvar hermes-input-test--rpc-calls nil
   "Captured (METHOD . PARAMS) pairs from stubbed `hermes-rpc-request'.")
@@ -15,20 +18,19 @@
 (defmacro hermes-input-test--with-buffer (&rest body)
   "Run BODY in a fresh Hermes buffer with RPC stubbed and a session id set."
   (declare (indent 0))
-  `(let ((hermes-input-test--rpc-calls nil))
+  `(let ((hermes-input-test--rpc-calls nil)
+         (hermes--current-session-id "sess-1"))
+     (hermes-test--reset-global-state)
      (cl-letf (((symbol-function 'hermes-rpc-request)
                 #'hermes-input-test--stub-rpc)
                ((symbol-function 'hermes-rpc-live-p)
                 (lambda () t)))
        (with-temp-buffer
          (hermes-mode)
-         (hermes-dispatch (cons "session.ready"
-                                (let ((h (make-hash-table :test 'equal)))
-                                  (puthash "session_id" "sess-1" h)
-                                  h)))
-         (setq hermes--state
-               (hermes--with-copy hermes--state hermes-state-copy s
-                 (setf (hermes-state-session-id s) "sess-1")))
+         (hermes--register-session
+          "sess-1"
+          (make-hermes-state :session-id "sess-1" :connection 'connected)
+          (copy-marker (point-min) nil))
          ,@body))))
 
 (defun hermes-input-test--buffer-has-user-heading-p (text)
@@ -39,8 +41,7 @@
 
 (defun hermes-input-test--set-stream ()
   "Simulate an in-flight stream on the current buffer's state."
-  (setq hermes--state
-        (hermes--with-copy hermes--state hermes-state-copy s
+  (setf (hermes-test--cur)         (hermes--with-copy (hermes-test--cur) hermes-state-copy s
           (setf (hermes-state-stream s)
                 (make-hermes-stream :segments [] :tools [])))))
 
@@ -55,7 +56,7 @@ and `prompt.submit' is sent right away."
     (should (= 1 (length hermes-input-test--rpc-calls)))
     (should (equal "prompt.submit"
                    (car (car hermes-input-test--rpc-calls))))
-    (should (null (hermes-state-queue hermes--state)))))
+    (should (null (hermes-state-queue (hermes-test--cur))))))
 
 ;;;; Busy path — invisible queue, no optimistic commit
 
@@ -67,7 +68,7 @@ no RPC is sent yet."
     (hermes-send "and?")
     (should-not (hermes-input-test--buffer-has-user-heading-p "and?"))
     (should (null hermes-input-test--rpc-calls))
-    (should (equal '("and?") (hermes-state-queue hermes--state)))))
+    (should (equal '("and?") (hermes-state-queue (hermes-test--cur))))))
 
 (ert-deftest hermes-input-test/send-busy-multiple-keeps-fifo ()
   "Three messages sent while busy stay queued in arrival order."
@@ -81,7 +82,7 @@ no RPC is sent yet."
     (should-not (hermes-input-test--buffer-has-user-heading-p "three"))
     (should (null hermes-input-test--rpc-calls))
     (should (equal '("one" "two" "three")
-                   (hermes-state-queue hermes--state)))))
+                   (hermes-state-queue (hermes-test--cur))))))
 
 ;;;; Drain — turn ends, head of queue is displayed + sent
 
@@ -91,13 +92,12 @@ is rendered, removed from the queue, and submitted via RPC."
   (hermes-input-test--with-buffer
     (hermes-input-test--set-stream)
     (hermes-send "queued")
-    (let ((old hermes--state))
-      (setq hermes--state
-            (hermes--with-copy hermes--state hermes-state-copy s
+    (let ((old (hermes-test--cur)))
+      (setf (hermes-test--cur)             (hermes--with-copy (hermes-test--cur) hermes-state-copy s
               (setf (hermes-state-stream s) nil)))
-      (hermes-input--drain old hermes--state))
+      (hermes-input--drain old (hermes-test--cur)))
     (should (hermes-input-test--buffer-has-user-heading-p "queued"))
-    (should (null (hermes-state-queue hermes--state)))
+    (should (null (hermes-state-queue (hermes-test--cur))))
     (should (= 1 (length hermes-input-test--rpc-calls)))
     (should (equal "prompt.submit"
                    (car (car hermes-input-test--rpc-calls))))))
@@ -109,22 +109,20 @@ is rendered, removed from the queue, and submitted via RPC."
     (hermes-send "a")
     (hermes-send "b")
     ;; Tick 1: stream → nil.
-    (let ((old hermes--state))
-      (setq hermes--state
-            (hermes--with-copy hermes--state hermes-state-copy s
+    (let ((old (hermes-test--cur)))
+      (setf (hermes-test--cur)             (hermes--with-copy (hermes-test--cur) hermes-state-copy s
               (setf (hermes-state-stream s) nil)))
-      (hermes-input--drain old hermes--state))
-    (should (equal '("b") (hermes-state-queue hermes--state)))
+      (hermes-input--drain old (hermes-test--cur)))
+    (should (equal '("b") (hermes-state-queue (hermes-test--cur))))
     (should (hermes-input-test--buffer-has-user-heading-p "a"))
     (should-not (hermes-input-test--buffer-has-user-heading-p "b"))
     ;; Tick 2: a new stream starts and clears, draining "b".
     (hermes-input-test--set-stream)
-    (let ((old hermes--state))
-      (setq hermes--state
-            (hermes--with-copy hermes--state hermes-state-copy s
+    (let ((old (hermes-test--cur)))
+      (setf (hermes-test--cur)             (hermes--with-copy (hermes-test--cur) hermes-state-copy s
               (setf (hermes-state-stream s) nil)))
-      (hermes-input--drain old hermes--state))
-    (should (null (hermes-state-queue hermes--state)))
+      (hermes-input--drain old (hermes-test--cur)))
+    (should (null (hermes-state-queue (hermes-test--cur))))
     (should (hermes-input-test--buffer-has-user-heading-p "b"))))
 
 ;;;; History seed
@@ -227,9 +225,9 @@ when the new session hasn't been stamped yet, and stamps it."
             ((symbol-function 'hermes--buffer-message-count)
              (lambda () 1)))
     (hermes-input-test--with-buffer
-      (setq hermes--seeded-session-id nil
-            hermes--state
-            (hermes--with-copy hermes--state hermes-state-copy s
+      (setq hermes--seeded-session-id nil)
+      (setf (hermes-test--cur)
+            (hermes--with-copy (hermes-test--cur) hermes-state-copy s
               (setf (hermes-state-queue s) '("queued-1"))))
       (hermes-input--drain-after-reconnect)
       (should (equal "sess-1" hermes--seeded-session-id))

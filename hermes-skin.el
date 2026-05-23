@@ -117,11 +117,24 @@ skin (e.g. side-window backgrounds in other buffers).")
   (run-hook-with-args 'hermes-skin-applied-hook skin))
 
 (defun hermes-skin-watch (old new)
-  "State-change hook: re-apply the skin when it changes."
+  "State-change hook: re-apply the skin when it changes.
+Globally installed; resolves the target buffer via
+`hermes--org-buffers' so face-remap cookies are installed on the
+correct buffer."
   (let ((os (and old (hermes-state-skin old)))
         (ns (hermes-state-skin new)))
     (when (and ns (not (eq os ns)))
-      (hermes-skin-apply ns))))
+      (if hermes--current-session-id
+          (hermes--on-session-buffer hermes--org-buffers
+            (hermes-skin-apply ns))
+        ;; Sessionless skin change (gateway.ready before any session):
+        ;; apply to every known viewer buffer.
+        (maphash (lambda (_sid buf)
+                   (when (buffer-live-p buf)
+                     (with-current-buffer buf
+                       (hermes-skin-apply ns))))
+                 hermes--org-buffers)
+        (run-hook-with-args 'hermes-skin-applied-hook ns)))))
 
 (provide 'hermes-skin)
 ;;; hermes-skin.el ends here

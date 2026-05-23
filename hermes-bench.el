@@ -239,7 +239,7 @@ Cleared after one paint cycle.")
   "Slash-command CAPF for the bench input area.
 The slash must appear immediately after the bench prompt (i.e. at
 `hermes-bench--input-start').  Pulls the catalog from the paired parent
-buffer's `hermes--state' and delegates to `hermes-input--slash-complete'."
+buffer's `(hermes--current-state)' and delegates to `hermes-input--slash-complete'."
   (when (and hermes-bench--parent-buffer
              (buffer-live-p hermes-bench--parent-buffer)
              (hermes-bench--in-input-area-p))
@@ -247,8 +247,8 @@ buffer's `hermes--state' and delegates to `hermes-input--slash-complete'."
       (when (and input-start
                  (> (point) input-start)
                  (eq (char-after input-start) ?/))
-        (let* ((state (buffer-local-value 'hermes--state
-                                          hermes-bench--parent-buffer))
+        (let* ((state (hermes--buffer-session-state
+                       hermes-bench--parent-buffer))
                (catalog (and state (hermes-state-slash-catalog state))))
           (when catalog
             (hermes-input--slash-complete input-start (point) catalog)))))))
@@ -536,7 +536,7 @@ Does nothing if the current command is a motion command."
   "Return non-nil when the bench has no conversation content to display."
   (let* ((parent hermes-bench--parent-buffer)
          (state (and (buffer-live-p parent)
-                     (buffer-local-value 'hermes--state parent))))
+                     (hermes--buffer-session-state parent))))
     (and (or (null hermes-bench--current-user-prompt)
              (string-empty-p hermes-bench--current-user-prompt))
          (not (and state (hermes-state-stream state))))))
@@ -547,7 +547,7 @@ Does nothing if the current command is a motion command."
   "Return the attachments list from the paired parent buffer's state, or nil."
   (let* ((parent hermes-bench--parent-buffer)
          (state (and (buffer-live-p parent)
-                     (buffer-local-value 'hermes--state parent))))
+                     (hermes--buffer-session-state parent))))
     (and state (hermes-state-attachments state))))
 
 (defun hermes-bench--format-attachment (a)
@@ -573,7 +573,7 @@ token estimate; error → error marker."
 Used by `hermes-image' callbacks to refresh the attachment line(s)."
   (let* ((parent hermes-bench--parent-buffer)
          (state  (and (buffer-live-p parent)
-                      (buffer-local-value 'hermes--state parent)))
+                      (hermes--buffer-session-state parent)))
          (stream (and state (hermes-state-stream state))))
     (if (hermes-stream-p stream)
         (pcase-let ((`(,reasoning . ,answer)
@@ -594,7 +594,7 @@ Shows `[bg: N running]' while any task is running, otherwise
 No-op when the parent has no background tasks."
   (let* ((parent hermes-bench--parent-buffer)
          (state (and (buffer-live-p parent)
-                     (buffer-local-value 'hermes--state parent)))
+                     (hermes--buffer-session-state parent)))
          (bg-tasks (and state (hermes-state-bg-tasks state)))
          (running 0))
     (when (and (vectorp bg-tasks) (> (length bg-tasks) 0))
@@ -629,7 +629,7 @@ No-op when the parent has no background tasks."
   (interactive)
   (let* ((parent hermes-bench--parent-buffer)
          (state (and (buffer-live-p parent)
-                     (buffer-local-value 'hermes--state parent)))
+                     (hermes--buffer-session-state parent)))
          (sid (and state (hermes-state-session-id state))))
     (if sid
         (progn (require 'hermes-bg)
@@ -779,7 +779,7 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
   "Return the most-recent user prompt text from PARENT, or nil.
 Looks at pending-turns first, then walks the parent's history ring."
   (when (buffer-live-p parent)
-    (let* ((state (buffer-local-value 'hermes--state parent))
+    (let* ((state (hermes--buffer-session-state parent))
            (turns (and state (hermes-state-pending-turns state))))
       (or (and (vectorp turns)
                (let ((i (1- (length turns))) found)
@@ -830,7 +830,7 @@ The bench is NOT cleared; the answer remains until the next
       (when (and (buffer-live-p parent)
                  (hermes-stream-p old-stream))
         (with-current-buffer parent
-          (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
+          (let* ((usage (and (hermes--current-state) (hermes-state-usage (hermes--current-state))))
                  (msg (hermes--message-from-stream old-stream usage)))
             (with-silent-modifications
               (save-excursion
@@ -847,7 +847,7 @@ content."
         (setq hermes-bench--steer-messages
               (append hermes-bench--steer-messages (list text))))
       (let* ((state  (and (buffer-live-p parent)
-                          (buffer-local-value 'hermes--state parent)))
+                          (hermes--buffer-session-state parent)))
              (stream (and state (hermes-state-stream state))))
         (with-current-buffer bench
           (if (hermes-stream-p stream)
@@ -925,7 +925,7 @@ If ERROR-P is non-nil, apply `error' face.  The text is stored in
               (list :text text :error-p error-p))
         ;; Trigger repaint so the status appears immediately.
         (let* ((state  (and (buffer-live-p parent)
-                            (buffer-local-value 'hermes--state parent)))
+                            (hermes--buffer-session-state parent)))
                (stream (and state (hermes-state-stream state))))
           (if (hermes-stream-p stream)
               (pcase-let ((`(,reasoning . ,answer)

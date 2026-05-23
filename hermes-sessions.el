@@ -32,7 +32,7 @@
 (require 'hermes-state)
 (require 'hermes-project)
 
-(defvar hermes--session-buffers)        ; defined in hermes-mode.el
+;; hermes--org-buffers is defined in hermes-state.el
 (defvar hermes--seeded-session-id)      ; defined in hermes-input.el (buffer-local)
 (declare-function hermes-mode "hermes-mode" ())
 (declare-function hermes--install-hooks "hermes-mode" ())
@@ -81,7 +81,7 @@
 Shows model, status, message count, title (if set via `session.title'),
 parent SID (if the session was branched), and project basename."
   (with-current-buffer buf
-    (let* ((st     hermes--state)
+    (let* ((st     (hermes--current-state))
            (info   (and st (hermes-state-session-info st)))
            (model  (or (and (hash-table-p info) (gethash "model" info)) "?"))
            (title  (and (hash-table-p info) (gethash "title" info)))
@@ -106,13 +106,13 @@ parent SID (if the session was branched), and project basename."
 CANDS is a list of SIDs; ANNOT-FN maps a candidate to its annotation."
   (let ((annot (make-hash-table :test 'equal))
         (sids nil))
-    (when (hash-table-p hermes--session-buffers)
+    (when (hash-table-p hermes--org-buffers)
       (maphash
        (lambda (sid buf)
          (when (buffer-live-p buf)
            (push sid sids)
            (puthash sid (hermes--current-annot buf) annot)))
-       hermes--session-buffers))
+       hermes--org-buffers))
     (cons (nreverse sids)
           (lambda (s) (gethash s annot)))))
 
@@ -129,7 +129,7 @@ parent SID (when branched), and project basename."
       (user-error "No live Hermes sessions"))
     (let* ((completion-extra-properties (list :annotation-function annot))
            (sid (completing-read "Hermes session: " cands nil t))
-           (buf (gethash sid hermes--session-buffers)))
+           (buf (gethash sid hermes--org-buffers)))
       (if (buffer-live-p buf)
           (pop-to-buffer-same-window buf)
         (user-error "Session buffer is gone")))))
@@ -357,30 +357,29 @@ On return, BUF is a fully-armed Hermes session buffer with the history
 seed already stamped (no re-seeding on next prompt)."
   (with-current-buffer buf
     (hermes-mode)
-    (let ((cwd (and (hash-table-p info) (gethash "cwd" info))))
+    (let* ((cwd (and (hash-table-p info) (gethash "cwd" info)))
+           (state (make-hermes-state
+                   :connection 'connected
+                   :session-id new-sid
+                   :cwd cwd
+                   :parent-sid parent-sid
+                   :session-info (and (hash-table-p info) info))))
       (when cwd
-        (setq-local default-directory (file-name-as-directory cwd))
-        (setf (hermes-state-cwd hermes--state) cwd)))
-    (setf (hermes-state-session-id hermes--state) new-sid)
-    (when parent-sid
-      (setf (hermes-state-parent-sid hermes--state) parent-sid))
-    (when (hash-table-p info)
-      (setf (hermes-state-session-info hermes--state) info))
-    (save-excursion
-      (goto-char (point-min))
-      (when (org-at-heading-p)
-        (org-set-property "HERMES_SESSION" new-sid)
-        (when-let ((cwd (and (hash-table-p info) (gethash "cwd" info))))
-          (org-set-property "HERMES_CWD" (abbreviate-file-name cwd))))
-      (goto-char (point-max))
-      (let ((body (hermes--db-messages-to-org-body messages)))
-        (unless (string-empty-p body)
-          (unless (bolp) (insert "\n"))
-          (insert body))))
-    (puthash new-sid buf hermes--session-buffers)
-    (hermes--register-session
-     new-sid hermes--state
-     (save-excursion (goto-char (point-min)) (copy-marker (point) nil)))
+        (setq-local default-directory (file-name-as-directory cwd)))
+      (save-excursion
+        (goto-char (point-min))
+        (when (org-at-heading-p)
+          (org-set-property "HERMES_SESSION" new-sid)
+          (when cwd
+            (org-set-property "HERMES_CWD" (abbreviate-file-name cwd))))
+        (goto-char (point-max))
+        (let ((body (hermes--db-messages-to-org-body messages)))
+          (unless (string-empty-p body)
+            (unless (bolp) (insert "\n"))
+            (insert body))))
+      (hermes--register-session
+       new-sid state
+       (save-excursion (goto-char (point-min)) (copy-marker (point) nil))))
     (setq hermes--seeded-session-id new-sid)
     (goto-char (point-min))))
 

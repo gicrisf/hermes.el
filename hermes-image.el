@@ -55,7 +55,7 @@ entry in `hermes-state-attachments'."
 
 (defun hermes-image--current-session-id ()
   "Return the active session id from the current buffer's state, or nil."
-  (and hermes--state (hermes-state-session-id hermes--state)))
+  (and (hermes--current-state) (hermes-state-session-id (hermes--current-state))))
 
 (defun hermes-image--normalize-path (path)
   "Expand PATH: strip `file://' prefix, expand `~', and absolutize."

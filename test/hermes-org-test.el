@@ -219,23 +219,15 @@ deep inside the reasoning subtree
 
 ;;;; registry helpers
 
-(ert-deftest hermes-org-test/ensure-registries-creates-hashes ()
-  "First call lazily creates both buffer-local hash tables."
-  (with-temp-buffer
-    (should (null hermes--buffer-sessions))
-    (should (null hermes--session-markers))
-    (hermes--ensure-registries)
-    (should (hash-table-p hermes--buffer-sessions))
-    (should (hash-table-p hermes--session-markers))))
-
 (ert-deftest hermes-org-test/register-and-lookup-roundtrip ()
   "`hermes--register-session' makes state + marker retrievable by id."
+  (hermes-test--reset-global-state)
   (with-temp-buffer
     (org-mode)
     (insert "* Session :hermes:\n")
     (goto-char (point-min))
     (let ((marker (copy-marker (point) nil))
-          (state 'placeholder-state))
+          (state (make-hermes-state :session-id "sid-1")))
       (hermes--register-session "sid-1" state marker)
       (should (eq state (hermes--lookup-session-state "sid-1")))
       (should (eq marker (hermes--lookup-session-marker "sid-1")))
@@ -246,26 +238,24 @@ deep inside the reasoning subtree
 (require 'hermes-state)
 
 (ert-deftest hermes-org-test/dispatch-without-session-id-targets-buffer-local ()
-  "Calling `hermes-dispatch' with no session-id mutates `hermes--state'."
-  (with-temp-buffer
-    (hermes-state-init)
-    (let ((before hermes--state))
-      (hermes-dispatch (cons "session.info"
-                              (let ((h (make-hash-table :test 'equal)))
-                                (puthash "session_id" "sid-x" h)
-                                h)))
-      (should-not (eq before hermes--state))
-      (should (equal "sid-x" (hermes-state-session-id hermes--state))))))
+  "Dispatch with no session-id mutates `hermes--global-state'."
+  (hermes-test--reset-global-state)
+  (let ((before hermes--global-state))
+    (hermes-dispatch (cons "session.info"
+                           (let ((h (make-hash-table :test 'equal)))
+                             (puthash "session_id" "sid-x" h)
+                             h)))
+    (should-not (eq before hermes--global-state))
+    (should (equal "sid-x"
+                   (hermes-state-session-id hermes--global-state)))))
 
 (ert-deftest hermes-org-test/dispatch-with-session-id-updates-registry-slot ()
   "When the session is registered, dispatch updates the hash entry in place."
+  (hermes-test--reset-global-state)
   (with-temp-buffer
-    (hermes-state-init)
-    (let ((initial hermes--state))
+    (let ((initial (make-hermes-state :session-id "sid-A")))
       (hermes--register-session "sid-A" initial
                                 (copy-marker (point-min) nil))
-      ;; A dispatch carrying the session id must refresh both the
-      ;; registry slot and the mirrored `hermes--state'.
       (hermes-dispatch (cons "session.info"
                               (let ((h (make-hash-table :test 'equal)))
                                 (puthash "session_id" "sid-A" h)
@@ -274,18 +264,18 @@ deep inside the reasoning subtree
                        "sid-A")
       (let ((stored (hermes--lookup-session-state "sid-A")))
         (should-not (eq initial stored))
-        (should (equal "sid-A" (hermes-state-session-id stored)))
-        (should (eq stored hermes--state))))))
+        (should (equal "sid-A" (hermes-state-session-id stored)))))))
 
 (ert-deftest hermes-org-test/dispatch-binds-current-session-id-for-hooks ()
   "Hooks fired during dispatch see `hermes--current-session-id' bound."
+  (hermes-test--reset-global-state)
   (with-temp-buffer
-    (hermes-state-init)
-    (hermes--register-session "sid-B" hermes--state
+    (hermes--register-session "sid-B"
+                              (make-hermes-state :session-id "sid-B")
                               (copy-marker (point-min) nil))
     (let* ((seen nil)
            (probe (lambda (_o _n) (push hermes--current-session-id seen))))
-      (add-hook 'hermes-state-change-hook probe nil t)
+      (add-hook 'hermes-state-change-hook probe nil nil)
       (unwind-protect
           (hermes-dispatch (cons "session.info"
                                   (let ((h (make-hash-table :test 'equal)))
@@ -293,7 +283,7 @@ deep inside the reasoning subtree
                                     (puthash "model" "opus" h)
                                     h))
                            "sid-B")
-        (remove-hook 'hermes-state-change-hook probe t))
+        (remove-hook 'hermes-state-change-hook probe nil))
       (should (equal '("sid-B") seen)))))
 
 ;;;; Subtree-scoped rendering (slice C)
@@ -337,7 +327,7 @@ the registry with marker + state entries for each.  Returns nothing
   (with-temp-buffer
     (org-mode)
     (hermes-org-test--two-session-buffer)
-    ;; Activate hermes--state via slot-read of code-1 and emit a pending
+    ;; Activate (hermes-test--cur) via slot-read of code-1 and emit a pending
     ;; user turn for it.  Dispatching with the session id binds
     ;; `hermes--current-session-id', so the renderer's insert helper
     ;; resolves to the code-1 subtree end.
@@ -354,8 +344,10 @@ the registry with marker + state entries for each.  Returns nothing
            ;; the renderer directly without going through the full event
            ;; pipeline.
            (hermes--current-session-id sid))
-      (setq hermes--state new)
-      (puthash sid new hermes--buffer-sessions)
+      (setf (hermes-test--cur) new)
+      ;; Register the org buffer so `hermes--render' (now wrapped in
+      ;; `hermes--on-session-buffer') can find it.
+      (puthash sid (current-buffer) hermes--org-buffers)
       (hermes--render state new))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       ;; The new turn must appear between the two container headings,
@@ -460,17 +452,19 @@ of message structs, which the reducer's `(cons text history)' +
       (should (listp (hermes-state-history state)))
       ;; And dispatching :user-submit (which conses text onto history
       ;; and asks for its length) must succeed.
-      (hermes-dispatch (cons :user-submit (list :text "after resume")))
-      (should (member "after resume" (hermes-state-history hermes--state))))))
+      (hermes-dispatch (cons :user-submit (list :text "after resume"))
+                       "resumed-1")
+      (should (member "after resume"
+                      (hermes-state-history
+                       (hermes--state-slot-read "resumed-1")))))))
 
 (ert-deftest hermes-org-test/rebuild-session-state-registers-and-mirrors ()
-  "`hermes--rebuild-session-state' registers the new state under SID
-and assigns it to `hermes--state'."
+  "`hermes--rebuild-session-state' registers the new state under SID."
+  (hermes-test--reset-global-state)
   (with-temp-buffer
     (org-mode)
     (let* ((marker (hermes-org-test--seed-subtree-with-drawer "hello"))
            (state (hermes--rebuild-session-state "resumed-1" marker)))
-      (should (eq state hermes--state))
       (should (eq state (hermes--lookup-session-state "resumed-1")))
       (should (equal "resumed-1" (hermes-state-session-id state))))))
 
@@ -1077,10 +1071,10 @@ back via `hermes--parse-turn-at-point' and verify kind + text."
                  :segments (vector (make-hermes-segment
                                     :type 'text :content "ping" :id "s1"))
                  :timestamp "2026-05-21T10:00:00+0200"))
-           (old hermes--state)
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (old (hermes-test--cur))
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     (let* ((msgs (hermes--parse-buffer-messages))
            (parsed (and (> (length msgs) 0) (aref msgs 0))))

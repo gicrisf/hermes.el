@@ -31,31 +31,17 @@
 (declare-function hermes-rpc-start "hermes-rpc" ())
 (declare-function hermes--install-hooks "hermes-mode" ())
 (declare-function hermes-input--send-1 "hermes-input" (text))
-(defvar hermes--state)
 (defvar hermes-minor-mode)
 (defvar hermes--container-level)
 (defvar hermes--last-gateway-ready)
-(defvar hermes--session-buffers)
 
-;;;; Buffer-local registries
+;;;; Container marker registry
 
-(defvar-local hermes--buffer-sessions nil
-  "Hash table mapping session_id (string) → `hermes-state' struct.
-Populated by Phase 2 slice B as the dispatcher learns about sessions
-hosted in this buffer.  Nil until the buffer hosts at least one
-session.")
-
-(defvar-local hermes--session-markers nil
-  "Hash table mapping session_id (string) → marker at the session's
-container heading.  Markers track edits to surrounding text so the
-renderer can always find the correct subtree.")
-
-(defun hermes--ensure-registries ()
-  "Create the per-buffer session/marker hash tables if absent."
-  (unless (hash-table-p hermes--buffer-sessions)
-    (setq hermes--buffer-sessions (make-hash-table :test 'equal)))
-  (unless (hash-table-p hermes--session-markers)
-    (setq hermes--session-markers (make-hash-table :test 'equal))))
+(defvar hermes--session-markers (make-hash-table :test 'equal)
+  "Global map: session-id → marker at the session's container heading.
+Markers track edits to surrounding text so the renderer can always
+find the correct subtree.  Each marker carries its own buffer
+reference, so the table is buffer-agnostic.")
 
 ;;;; Lookups
 
@@ -159,38 +145,43 @@ entry point, which can safely ask the user when ambiguous."
 ;;;; Registry mutators (used by slice B)
 
 (defun hermes--register-session (session-id state marker)
-  "Record SESSION-ID → STATE / MARKER in the buffer-local registries."
-  (hermes--ensure-registries)
-  (puthash session-id state hermes--buffer-sessions)
-  (puthash session-id marker hermes--session-markers))
+  "Record SESSION-ID → STATE in the global registries; pin MARKER."
+  (hermes--state-slot-write session-id state)
+  (puthash session-id marker hermes--session-markers)
+  (let ((buf (and (markerp marker) (marker-buffer marker))))
+    (when (buffer-live-p buf)
+      (puthash session-id buf hermes--org-buffers))))
 
 (defun hermes--lookup-session-state (session-id)
   "Return the per-session `hermes-state' struct for SESSION-ID, or nil."
-  (and (hash-table-p hermes--buffer-sessions)
-       (gethash session-id hermes--buffer-sessions)))
+  (gethash session-id hermes--sessions))
 
 (defun hermes--lookup-session-marker (session-id)
   "Return the marker for SESSION-ID's container heading, or nil."
-  (and (hash-table-p hermes--session-markers)
-       (gethash session-id hermes--session-markers)))
+  (gethash session-id hermes--session-markers))
 
 ;;;; User-facing session resolution
 
 (defun hermes--resolve-session-target ()
   "Return (SID . STATE) for the active session of the current buffer.
-- In a `hermes-mode' (primary) buffer, returns the buffer-local
-  `hermes--state' as the active session.
+- In a `hermes-mode' (primary) buffer, returns the session registered
+  for this buffer in `hermes--org-buffers'.
 - In an arbitrary Org buffer with `hermes-minor-mode' enabled, walks
   up from point to find the enclosing `:hermes:' container and looks
-  the corresponding state up in `hermes--buffer-sessions'.
+  the corresponding state up in `hermes--sessions'.
 - In a `hermes-bench-mode' buffer, delegates to the paired parent
   buffer so commands invoked from the bench resolve against the
   parent's session.
 Returns nil when no session is reachable."
   (cond
    ((derived-mode-p 'hermes-mode)
-    (and (boundp 'hermes--state) hermes--state
-         (cons (hermes-state-session-id hermes--state) hermes--state)))
+    (let* ((buf (current-buffer))
+           (sid (catch 'found
+                  (maphash (lambda (k b) (when (eq b buf) (throw 'found k)))
+                           hermes--org-buffers)
+                  nil))
+           (state (and sid (hermes--state-slot-read sid))))
+      (and sid (cons sid state))))
    ((bound-and-true-p hermes-minor-mode)
     (let* ((sid (hermes--session-at-point))
            (state (and sid (hermes--lookup-session-state sid))))
@@ -697,10 +688,9 @@ and usage from visible buffer structure."
   "Build a fresh `hermes-state' for SID and register it under MARKER.
 The state atom holds only ephemeral data (stream / queue / pending);
 committed history already lives in the Org subtree as visible text
-plus heading properties, so there's nothing to seed.  Mirroring to `hermes--state'
-keeps single-session readers coherent.  Also ensures `hermes-minor-mode'
-is on and the bench is visible so the user can interact with the
-resumed session.  Returns the new state."
+plus heading properties, so there's nothing to seed.  Also ensures
+`hermes-minor-mode' is on and the bench is visible so the user can
+interact with the resumed session.  Returns the new state."
   (let* ((cwd-prop (save-excursion
                      (goto-char (marker-position marker))
                      (when (org-at-heading-p)
@@ -711,7 +701,6 @@ resumed session.  Returns the new state."
                                    :connection 'connected
                                    :cwd cwd-prop)))
     (hermes--register-session sid state marker)
-    (setq hermes--state state)
     (unless (or (derived-mode-p 'hermes-mode)
                 (bound-and-true-p hermes-minor-mode))
       (hermes-minor-mode 1))
@@ -731,10 +720,7 @@ bound so dispatch routes correctly."
       (let* ((state (hermes--lookup-session-state sid))
              (hermes--current-session-id sid))
         (when state
-          (if (eq state hermes--state)
-              (hermes-input--send-1 (cdr entry))
-            (let ((hermes--state state))
-              (hermes-input--send-1 (cdr entry)))))))))
+          (hermes-input--send-1 (cdr entry)))))))
 
 (defun hermes--create-fresh-session (old-sid marker)
   "Create a brand-new gateway session to replace the unresumable OLD-SID.
@@ -761,8 +747,6 @@ keyed by OLD-SID are drained against the new session."
                                      (goto-char marker-pos)
                                      (copy-marker (point) nil))))
                  (hermes--rebuild-session-state new-sid fresh-marker))
-               (when (boundp 'hermes--session-buffers)
-                 (puthash new-sid buf hermes--session-buffers))
                ;; Move the queued text from old-sid → new-sid before draining.
                (let ((entry (assoc old-sid hermes--pre-send-queue)))
                  (when entry

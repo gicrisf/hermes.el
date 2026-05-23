@@ -4,7 +4,8 @@
 ;;
 ;; Read-only magit-section view over the canonical `turns' vector of a
 ;; Hermes session.  Projects state from `hermes--sessions'; never mutates
-;; it.  See plans/04-section-mode.md.
+;; it.  See plans/04-section-mode.md and
+;; plans/08-hermes-section-presentation.md.
 
 ;;; Code:
 
@@ -22,19 +23,62 @@
 (declare-function hermes-send "hermes-input" (text))
 (declare-function hermes-interrupt-current-session "hermes-mode" ())
 
-;;;; Faces
+;;;; Faces — turn headings
 
 (defface hermes-section-face-user
   '((t :inherit font-lock-keyword-face :weight bold))
-  "Face for user turn heading labels.")
+  "Face for user turn heading text.")
 
 (defface hermes-section-face-assistant
   '((t :inherit font-lock-function-name-face :weight bold))
-  "Face for assistant turn heading labels.")
+  "Face for assistant turn heading text.")
 
 (defface hermes-section-face-system
   '((t :inherit font-lock-builtin-face))
-  "Face for system turn heading labels.")
+  "Face for system turn heading text.")
+
+;;;; Faces — child headings
+
+(defface hermes-section-face-reasoning
+  '((t :inherit (italic font-lock-comment-face)))
+  "Face for reasoning child heading.")
+
+(defface hermes-section-face-tool
+  '((t :inherit font-lock-keyword-face))
+  "Face for tool child heading base.")
+
+(defface hermes-section-face-tool-done
+  '((t :inherit font-lock-doc-face))
+  "Face for tool DONE status keyword.")
+
+(defface hermes-section-face-tool-error
+  '((t :inherit font-lock-error-face))
+  "Face for tool ERROR status keyword.")
+
+(defface hermes-section-face-tool-running
+  '((t :inherit font-lock-warning-face))
+  "Face for tool RUNNING status keyword.")
+
+(defface hermes-section-face-subagent
+  '((t :inherit font-lock-builtin-face :weight bold))
+  "Face for subagent child heading.")
+
+;;;; Faces — background tints
+
+(defface hermes-section-bg-user
+  '((((background dark)) :background "#3a3530")
+    (t                   :background "#f0ebe3"))
+  "Warm tint for user turn sections.")
+
+(defface hermes-section-bg-assistant
+  '((((background dark)) :background "#2e3640")
+    (t                   :background "#e8edf3"))
+  "Cool tint for assistant turn sections.")
+
+(defface hermes-section-bg-system
+  '((((background dark)) :background "#353035")
+    (t                   :background "#f5f0eb"))
+  "Subtle tint for system turn sections.")
 
 ;;;; Section classes
 
@@ -54,6 +98,15 @@
   (hermes-section-turn-section) ()
   "A system turn section.")
 
+(defclass hermes-section-reasoning-section (magit-section) ()
+  "Reasoning child section (chain-of-thought).")
+
+(defclass hermes-section-tool-section (magit-section) ()
+  "Tool invocation child section.")
+
+(defclass hermes-section-subagent-section (magit-section) ()
+  "Subagent delegation child section.")
+
 ;;;; Buffer-local snapshot
 
 (defvar-local hermes-section--turns-snapshot nil
@@ -61,83 +114,326 @@
 
 ;;;; Text helpers
 
-(defun hermes-section--message-text (msg)
-  "Concatenate text and reasoning segments of MSG into a string."
+(defun hermes-section--text-segments (msg)
+  "Return list of text-segment content strings from MSG, in arrival order."
   (let ((segs (hermes-message-segments msg))
-        (parts nil))
+        (out nil))
     (when (vectorp segs)
       (dotimes (i (length segs))
         (let* ((seg  (aref segs i))
                (type (hermes-segment-type seg))
                (c    (hermes-segment-content seg)))
-          (when (and (memq type '(text reasoning))
-                     (stringp c)
-                     (> (length c) 0))
-            (push c parts)))))
+          (when (and (eq type 'text) (stringp c) (> (length c) 0))
+            (push c out)))))
+    (nreverse out)))
+
+(defun hermes-section--body-text (msg)
+  "Return MSG's raw text-segment content joined with newlines."
+  (mapconcat #'identity (hermes-section--text-segments msg) "\n"))
+
+(defun hermes-section--first-non-blank-line (s)
+  "Return the first non-blank line of S, trimmed.  Empty if none."
+  (let ((s (or s "")))
+    (catch 'done
+      (dolist (line (split-string s "\n"))
+        (let ((trimmed (string-trim line)))
+          (unless (string-empty-p trimmed)
+            (throw 'done trimmed))))
+      "")))
+
+(defun hermes-section--has-segment-type-p (msg type)
+  (let ((segs (hermes-message-segments msg))
+        (found nil))
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (when (eq type (hermes-segment-type (aref segs i)))
+          (setq found t))))
+    found))
+
+(defun hermes-section--heading-text (msg)
+  "Return the single-line heading text for MSG."
+  (let ((line (hermes-section--first-non-blank-line
+               (hermes-section--body-text msg))))
+    (cond
+     ((not (string-empty-p line)) line)
+     ((and (eq (hermes-message-kind msg) 'assistant)
+           (hermes-section--has-segment-type-p msg 'tool))
+      "(tool-only turn)")
+     (t "(empty)"))))
+
+(defun hermes-section--bg-face (kind)
+  (pcase kind
+    ('user      'hermes-section-bg-user)
+    ('assistant 'hermes-section-bg-assistant)
+    (_          'hermes-section-bg-system)))
+
+(defun hermes-section--head-face (kind)
+  (pcase kind
+    ('user      'hermes-section-face-user)
+    ('assistant 'hermes-section-face-assistant)
+    (_          'hermes-section-face-system)))
+
+(defun hermes-section--turn-class (kind)
+  (pcase kind
+    ('user      'hermes-section-user-section)
+    ('assistant 'hermes-section-assistant-section)
+    (_          'hermes-section-system-section)))
+
+(defun hermes-section--insert-bg (text bg-face &optional head-face)
+  "Insert TEXT propertized with BG-FACE and optional HEAD-FACE foreground."
+  (insert (propertize (or text "")
+                      'face (if head-face
+                                (list head-face bg-face)
+                              bg-face))))
+
+(defun hermes-section--format-timestamp (ts)
+  (cond ((stringp ts) ts)
+        ((null ts) "")
+        (t (format-time-string "%Y-%m-%dT%H:%M:%S%z" ts))))
+
+(defun hermes-section--session-model (sid)
+  (let* ((state (and sid (hermes--state-slot-read sid)))
+         (info  (and state (hermes-state-session-info state))))
+    (and (hash-table-p info) (gethash "model" info))))
+
+(defun hermes-section--usage-tokens (usage)
+  "Return (SENT . RECV) from USAGE hash-table, or nil if neither present."
+  (when (hash-table-p usage)
+    (let ((sent (or (gethash "tokens_sent" usage)
+                    (gethash "input_tokens" usage)))
+          (recv (or (gethash "tokens_received" usage)
+                    (gethash "output_tokens" usage))))
+      (when (or sent recv)
+        (cons (or sent 0) (or recv 0))))))
+
+(defun hermes-section--format-duration (dur)
+  (cond ((null dur) "")
+        ((numberp dur) (format " (%.1fs)" dur))
+        (t (format " (%s)" dur))))
+
+;;;; Body insertion
+
+(defun hermes-section--insert-full-text (msg bg-face heading)
+  "Insert MSG body text, deduping first non-blank line equal to HEADING."
+  (let* ((text (hermes-section--body-text msg))
+         (lines (split-string text "\n"))
+         (seen-content nil)
+         (out nil))
+    (dolist (line lines)
+      (cond
+       ((and (not seen-content) (string-empty-p (string-trim line))) nil)
+       ((and (not seen-content) (equal (string-trim line) heading))
+        (setq seen-content t))
+       (t (setq seen-content t)
+          (push line out))))
+    (when out
+      (hermes-section--insert-bg
+       (concat (mapconcat #'identity (nreverse out) "\n") "\n")
+       bg-face))))
+
+(defun hermes-section--insert-lines (lines bg-face)
+  (dolist (line lines)
+    (hermes-section--insert-bg (concat line "\n") bg-face)))
+
+(defun hermes-section--image-lines (msg)
+  (let ((segs (hermes-message-segments msg))
+        (out nil))
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (let ((seg (aref segs i)))
+          (when (eq 'image (hermes-segment-type seg))
+            (let* ((c (hermes-segment-content seg))
+                   (name (or (and (listp c) (plist-get c :name))
+                             (let ((p (and (listp c) (plist-get c :path))))
+                               (and p (file-name-nondirectory p)))
+                             "image")))
+              (push (format "[image: %s]" name) out))))))
+    (nreverse out)))
+
+(defun hermes-section--insert-user-body (msg bg-face heading)
+  (hermes-section--insert-full-text msg bg-face heading)
+  (let* ((sid hermes--current-session-id)
+         (ts  (hermes-section--format-timestamp
+               (hermes-message-timestamp msg)))
+         (model (hermes-section--session-model sid))
+         (usage (hermes-section--usage-tokens (hermes-message-usage msg)))
+         (imgs (hermes-section--image-lines msg))
+         (meta nil))
+    (unless (string-empty-p ts) (push (format "submitted at %s" ts) meta))
+    (when model (push (format "model: %s" model) meta))
+    (when usage (push (format "tokens: %d sent, %d received"
+                              (car usage) (cdr usage))
+                      meta))
+    (when (or meta imgs)
+      (hermes-section--insert-bg "---\n" bg-face)
+      (hermes-section--insert-lines (nreverse meta) bg-face)
+      (hermes-section--insert-lines imgs bg-face))))
+
+(defun hermes-section--insert-system-body (msg bg-face heading)
+  (hermes-section--insert-full-text msg bg-face heading)
+  (let* ((sid hermes--current-session-id)
+         (ts  (hermes-section--format-timestamp
+               (hermes-message-timestamp msg)))
+         (model (hermes-section--session-model sid))
+         (meta nil))
+    (unless (string-empty-p ts) (push (format "at %s" ts) meta))
+    (when model (push (format "model: %s" model) meta))
+    (when meta
+      (hermes-section--insert-bg "---\n" bg-face)
+      (hermes-section--insert-lines (nreverse meta) bg-face))))
+
+;;;; Child sections
+
+(defun hermes-section--insert-reasoning-child (seg bg-face)
+  (let ((id (or (hermes-segment-id seg)
+                (format "reasoning-%d" (sxhash-equal seg))))
+        (c  (or (hermes-segment-content seg) "")))
+    (magit-insert-section (hermes-section-reasoning-section id t)
+      (magit-insert-heading
+        (propertize "Reasoning"
+                    'face (list 'hermes-section-face-reasoning bg-face)))
+      (magit-insert-section-body
+        (hermes-section--insert-bg
+         (concat c (if (or (string-empty-p c) (string-suffix-p "\n" c))
+                       "" "\n"))
+         bg-face)))))
+
+(defun hermes-section--tool-status-keyword (tool)
+  (pcase (hermes-tool-status tool)
+    ('complete   (cons "DONE"    'hermes-section-face-tool-done))
+    ('error      (cons "ERROR"   'hermes-section-face-tool-error))
+    ('running    (cons "RUNNING" 'hermes-section-face-tool-running))
+    ('generating (cons "RUNNING" 'hermes-section-face-tool-running))
+    (_           (cons "..."     'hermes-section-face-tool-running))))
+
+(defun hermes-section--tool-body (tool)
+  "Return plain-text body string for TOOL struct."
+  (let* ((ctx (let ((c (hermes-tool-context tool)))
+                (if (and c (stringp c) (> (length c) 0)) c "(no input)")))
+         (dur (hermes-section--format-duration (hermes-tool-duration tool)))
+         (err (hermes-tool-error tool))
+         (result (or (hermes-tool-output tool)
+                     (hermes-tool-summary tool)
+                     "(no result)")))
+    (if err
+        (format "input: %s\nerror: %s%s\n" ctx err dur)
+      (format "input: %s\nresult: %s%s\n" ctx result dur))))
+
+(defun hermes-section--insert-tool-child (tool bg-face)
+  (let* ((id (or (hermes-tool-id tool)
+                 (format "tool-%d" (sxhash-equal tool))))
+         (kw (hermes-section--tool-status-keyword tool))
+         (name (or (hermes-tool-name tool) "tool"))
+         (dur (hermes-section--format-duration (hermes-tool-duration tool)))
+         (summ (let ((s (hermes-tool-summary tool)))
+                 (if (and s (> (length s) 0)) (format " — %s" s) "")))
+         (status (hermes-tool-status tool))
+         (hide (memq status '(complete error))))
+    (magit-insert-section (hermes-section-tool-section id hide)
+      (magit-insert-heading
+        (propertize (car kw) 'face (list (cdr kw) bg-face))
+        (propertize (format " %s%s%s" name dur summ)
+                    'face (list 'hermes-section-face-tool bg-face)))
+      (magit-insert-section-body
+        (hermes-section--insert-bg
+         (hermes-section--tool-body tool) bg-face)))))
+
+(defun hermes-section--subagent-body (sa)
+  "Return plain-text body string for subagent SA struct."
+  (let ((parts nil)
+        (thinking (hermes-subagent-thinking sa))
+        (tools (hermes-subagent-tools sa))
+        (summary (hermes-subagent-summary sa))
+        (status (hermes-subagent-status sa))
+        (dur (hermes-section--format-duration (hermes-subagent-duration sa))))
+    (when (and thinking (stringp thinking) (> (length thinking) 0))
+      (push (format "thinking: %s" thinking) parts))
+    (when (and (vectorp tools) (> (length tools) 0))
+      (let ((tool-lines nil))
+        (dotimes (i (length tools))
+          (let* ((tp (aref tools i))
+                 (n  (and (listp tp) (or (plist-get tp :name)
+                                         (plist-get tp 'name))))
+                 (a  (and (listp tp) (or (plist-get tp :args)
+                                         (plist-get tp 'args)))))
+            (push (format "  - %s%s" (or n "tool")
+                          (if a (format "(%s)" a) ""))
+                  tool-lines)))
+        (push (concat "tools:\n"
+                      (mapconcat #'identity (nreverse tool-lines) "\n"))
+              parts)))
+    (when (and (memq status '(complete error)) summary)
+      (push (format "result: %s%s" summary dur) parts))
     (if parts
-        (mapconcat #'identity (nreverse parts) "")
-      "(empty)")))
+        (concat (mapconcat #'identity (nreverse parts) "\n") "\n")
+      "")))
 
-(defun hermes-section--excerpt (text n)
-  "Return first non-blank line of TEXT, newlines collapsed, truncated to N chars."
-  (let* ((s (replace-regexp-in-string "[ \t\n\r]+" " " (or text "")))
-         (s (string-trim s)))
-    (if (> (length s) n)
-        (concat (substring s 0 n) "…")
-      s)))
+(defun hermes-section--insert-subagent-child (sa bg-face)
+  (let* ((id   (or (hermes-subagent-id sa)
+                   (format "sa-%d" (sxhash-equal sa))))
+         (goal (or (hermes-subagent-goal sa) "subagent"))
+         (status (or (hermes-subagent-status sa) 'queued)))
+    (magit-insert-section (hermes-section-subagent-section id t)
+      (magit-insert-heading
+        (propertize (format "%s (%s)" goal status)
+                    'face (list 'hermes-section-face-subagent bg-face)))
+      (magit-insert-section-body
+        (let ((body (hermes-section--subagent-body sa)))
+          (unless (string-empty-p body)
+            (hermes-section--insert-bg body bg-face)))))))
 
-(defun hermes-section--format-body (text)
-  "Strip Org artifacts from TEXT and return plain text."
-  (with-temp-buffer
-    (insert (or text ""))
-    (goto-char (point-min))
-    ;; Property drawers
-    (while (re-search-forward "^[ \t]*:PROPERTIES:[ \t]*\n\\(?:.*\n\\)*?[ \t]*:END:[ \t]*\n?" nil t)
-      (replace-match ""))
-    (goto-char (point-min))
-    ;; Other drawers
-    (while (re-search-forward "^[ \t]*:[A-Za-z_]+:[ \t]*\n\\(?:.*\n\\)*?[ \t]*:END:[ \t]*\n?" nil t)
-      (replace-match ""))
-    (goto-char (point-min))
-    ;; Org comments
-    (while (re-search-forward "^[ \t]*#\\+[A-Za-z_]+:.*\n?" nil t)
-      (replace-match ""))
-    (goto-char (point-min))
-    ;; #+begin_…/#+end_… block markers (keep body)
-    (while (re-search-forward "^[ \t]*#\\+\\(begin\\|end\\)_[A-Za-z0-9_-]+.*\n?" nil t)
-      (replace-match ""))
-    (string-trim-right (buffer-string))))
+(defun hermes-section--insert-assistant-body (msg bg-face heading)
+  (hermes-section--insert-full-text msg bg-face heading)
+  (let* ((segs (or (hermes-message-segments msg) []))
+         (sas  (or (hermes-message-subagents msg) []))
+         (any-child
+          (or (> (length sas) 0)
+              (catch 'yes
+                (dotimes (i (length segs))
+                  (when (memq (hermes-segment-type (aref segs i))
+                              '(reasoning tool))
+                    (throw 'yes t)))
+                nil))))
+    (when any-child
+      (hermes-section--insert-bg "───\n" bg-face))
+    (dotimes (i (length segs))
+      (let* ((seg (aref segs i))
+             (type (hermes-segment-type seg))
+             (c (hermes-segment-content seg)))
+        (pcase type
+          ('reasoning
+           (hermes-section--insert-reasoning-child seg bg-face))
+          ('tool
+           (when (hermes-tool-p c)
+             (hermes-section--insert-tool-child c bg-face)))
+          (_ nil))))
+    (dotimes (i (length sas))
+      (hermes-section--insert-subagent-child (aref sas i) bg-face))))
 
-;;;; Refresh pipeline
+;;;; Insert turn
 
 (defun hermes-section--insert-turn (msg)
   "Insert MSG as a magit section at point."
   (let* ((kind  (hermes-message-kind msg))
-         (text  (hermes-section--message-text msg))
-         (class (pcase kind
-                  ('user      'hermes-section-user-section)
-                  ('assistant 'hermes-section-assistant-section)
-                  (_          'hermes-section-system-section)))
-         (face  (pcase kind
-                  ('user      'hermes-section-face-user)
-                  ('assistant 'hermes-section-face-assistant)
-                  (_          'hermes-section-face-system)))
-         (label (pcase kind
-                  ('user      "U")
-                  ('assistant "A")
-                  (_          "S")))
+         (class (hermes-section--turn-class kind))
+         (head-face (hermes-section--head-face kind))
+         (bg-face (hermes-section--bg-face kind))
+         (heading (hermes-section--heading-text msg))
          (id    (or (hermes-message-id msg)
                     (format "anon-%d" (sxhash-equal msg))))
          (hide  (eq kind 'user)))
     (magit-insert-section ((eval class) id hide)
       (magit-insert-heading
-        (propertize label 'face face)
-        ": "
-        (hermes-section--excerpt text 75))
+        (propertize heading 'face (list head-face bg-face)))
       (magit-insert-section-body
-        (insert (hermes-section--format-body text))
+        (pcase kind
+          ('user      (hermes-section--insert-user-body msg bg-face heading))
+          ('assistant (hermes-section--insert-assistant-body msg bg-face heading))
+          (_          (hermes-section--insert-system-body msg bg-face heading)))
         (unless (bolp) (insert "\n"))
         (insert "\n")))))
+
+;;;; Refresh pipeline
 
 (defun hermes-section--rebuild (state)
   "Erase the current buffer and rebuild sections from STATE."
@@ -309,7 +605,7 @@ the gateway if needed)."
 (defun hermes-section--org-insert-turn (msg)
   "Insert MSG as a simplified Org heading at point."
   (let ((kind (hermes-message-kind msg))
-        (text (hermes-section--message-text msg)))
+        (text (hermes-section--body-text msg)))
     (pcase kind
       ('user      (insert "* User\n"))
       ('assistant (insert "* Assistant\n"))

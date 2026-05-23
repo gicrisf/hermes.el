@@ -27,9 +27,9 @@
    :timestamp (current-time)
    :subagents []))
 
-;;;; message-text
+;;;; body-text / heading-text
 
-(ert-deftest hermes-section-test/message-text-concatenates-text-and-reasoning ()
+(ert-deftest hermes-section-test/body-text-joins-text-segments-only ()
   (let ((m (make-hermes-message
             :kind 'assistant
             :segments
@@ -37,34 +37,72 @@
              (make-hermes-segment :type 'reasoning :content "think." :id "r")
              (make-hermes-segment :type 'text      :content "say."   :id "t")
              (make-hermes-segment :type 'tool      :content nil      :id "x")))))
-    (should (equal "think.say." (hermes-section--message-text m)))))
+    ;; Reasoning is rendered as a child section, not joined into body text.
+    (should (equal "say." (hermes-section--body-text m)))))
 
-(ert-deftest hermes-section-test/message-text-empty ()
-  (let ((m (make-hermes-message :kind 'user :segments []))) ;; nothing
-    (should (equal "(empty)" (hermes-section--message-text m)))))
+(ert-deftest hermes-section-test/body-text-empty ()
+  (let ((m (make-hermes-message :kind 'user :segments [])))
+    (should (equal "" (hermes-section--body-text m)))))
 
-;;;; excerpt
+(ert-deftest hermes-section-test/heading-text-first-non-blank-line ()
+  (let ((m (make-hermes-message
+            :kind 'assistant
+            :segments
+            (vector
+             (make-hermes-segment :type 'text
+                                  :content "\n\nfirst line\nsecond"
+                                  :id "t")))))
+    (should (equal "first line" (hermes-section--heading-text m)))))
 
-(ert-deftest hermes-section-test/excerpt-trims-and-truncates ()
-  (should (equal "hello world"
-                 (hermes-section--excerpt "  hello\n\nworld " 80)))
-  (should (equal "abc…"
-                 (hermes-section--excerpt "abcdef" 3))))
+(ert-deftest hermes-section-test/heading-text-empty-user ()
+  (let ((m (make-hermes-message :kind 'user :segments [])))
+    (should (equal "(empty)" (hermes-section--heading-text m)))))
 
-;;;; format-body
+(ert-deftest hermes-section-test/heading-text-tool-only-assistant ()
+  (let* ((tool (make-hermes-tool :id "t1" :name "calc" :status 'complete))
+         (m (make-hermes-message
+             :kind 'assistant
+             :segments (vector (make-hermes-segment :type 'tool
+                                                    :content tool :id "s")))))
+    (should (equal "(tool-only turn)" (hermes-section--heading-text m)))))
 
-(ert-deftest hermes-section-test/format-body-strips-org-artifacts ()
-  (let* ((src (concat
-               ":PROPERTIES:\n:HERMES_KIND: USER\n:END:\n"
-               "#+TITLE: x\n"
-               "#+begin_src elisp\n(+ 1 2)\n#+end_src\n"
-               "Hello.\n"))
-         (out (hermes-section--format-body src)))
-    (should-not (string-match-p ":PROPERTIES:" out))
-    (should-not (string-match-p "#\\+TITLE:" out))
-    (should-not (string-match-p "#\\+begin_src" out))
-    (should (string-match-p "(\\+ 1 2)" out))
-    (should (string-match-p "Hello\\." out))))
+;;;; tool-body / subagent-body
+
+(ert-deftest hermes-section-test/tool-body-result-precedence ()
+  (let ((t1 (make-hermes-tool :id "1" :name "x" :status 'complete
+                              :context "ctx" :output "out" :summary "sum"
+                              :duration 0.3)))
+    (should (equal "input: ctx\nresult: out (0.3s)\n"
+                   (hermes-section--tool-body t1))))
+  (let ((t2 (make-hermes-tool :id "2" :name "x" :status 'complete
+                              :context "ctx" :summary "sum"
+                              :duration 0.3)))
+    (should (equal "input: ctx\nresult: sum (0.3s)\n"
+                   (hermes-section--tool-body t2))))
+  (let ((t3 (make-hermes-tool :id "3" :name "x" :status 'complete
+                              :context "ctx" :duration 0.3)))
+    (should (equal "input: ctx\nresult: (no result) (0.3s)\n"
+                   (hermes-section--tool-body t3)))))
+
+(ert-deftest hermes-section-test/tool-body-error ()
+  (let ((t1 (make-hermes-tool :id "1" :name "x" :status 'error
+                              :context "ctx" :error "boom"
+                              :duration 0.5)))
+    (should (equal "input: ctx\nerror: boom (0.5s)\n"
+                   (hermes-section--tool-body t1)))))
+
+(ert-deftest hermes-section-test/tool-body-no-context ()
+  (let ((t1 (make-hermes-tool :id "1" :name "x" :status 'complete
+                              :output "out")))
+    (should (equal "input: (no input)\nresult: out\n"
+                   (hermes-section--tool-body t1)))))
+
+(ert-deftest hermes-section-test/subagent-body-omits-empties ()
+  (let ((sa (make-hermes-subagent
+             :id "s" :goal "g" :status 'complete
+             :thinking "" :tools [] :summary "ok" :duration 1.2)))
+    (should (equal "result: ok (1.2s)\n"
+                   (hermes-section--subagent-body sa)))))
 
 ;;;; insert-turn + rebuild
 
@@ -91,8 +129,8 @@
         (hermes--state-slot-write "s1" st)
         (hermes-section--rebuild st))
       (let ((s (buffer-string)))
-        (should (string-match-p "U: hello there" s))
-        (should (string-match-p "A: hi back" s))))))
+        (should (string-match-p "hello there" s))
+        (should (string-match-p "hi back" s))))))
 
 ;;;; refresh routing via global hook
 
@@ -165,7 +203,7 @@
                      (hermes-section-test--text-of (aref turns 0)))))))
 
 (defun hermes-section-test--text-of (msg)
-  (hermes-section--message-text msg))
+  (hermes-section--body-text msg))
 
 ;;;; Session lookup helpers
 

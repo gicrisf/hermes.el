@@ -31,15 +31,15 @@
 ;;;; Faces — turn headings
 
 (defface hermes-section-face-user
-  '((t :inherit default :weight normal :height 0.9))
+  '((t :weight normal))
   "Face for user turn heading text.")
 
 (defface hermes-section-face-assistant
-  '((t :inherit default :weight normal :height 0.9))
+  '((t :weight normal))
   "Face for assistant turn heading text.")
 
 (defface hermes-section-face-system
-  '((t :inherit default :weight normal :height 0.9))
+  '((t :weight normal))
   "Face for system turn heading text.")
 
 ;;;; Faces — child headings
@@ -71,18 +71,18 @@
 ;;;; Faces — background tints
 
 (defface hermes-section-bg-user
-  '((((background dark)) :background "#3a3530")
-    (t                   :background "#f0ebe3"))
+  '((((background dark)) :background "#45403b" :extend t)
+    (t                   :background "#fcf7ef" :extend t))
   "Warm tint for user turn sections.")
 
 (defface hermes-section-bg-assistant
-  '((((background dark)) :background "#2e3640")
-    (t                   :background "#e8edf3"))
+  '((((background dark)) :background "#2e3640" :extend t)
+    (t                   :background "#e8edf3" :extend t))
   "Cool tint for assistant turn sections.")
 
 (defface hermes-section-bg-system
-  '((((background dark)) :background "#353035")
-    (t                   :background "#f5f0eb"))
+  '((((background dark)) :background "#353035" :extend t)
+    (t                   :background "#f5f0eb" :extend t))
   "Subtle tint for system turn sections.")
 
 ;;;; Section classes
@@ -153,16 +153,16 @@
                     (ignore-errors
                       (format-time-string "%H:%M" (date-to-time ts))))))
     (pcase kind
-      ('user (concat (format "#%d · User" index)
+      ('user (concat (format "> %d · User" index)
                      (and time (concat " · " time))))
       ('assistant
        (concat
         (if (hermes-section--has-segment-type-p msg 'text)
-            (format "#%d · Assistant · %s" index
+            (format "● %d · Assistant · %s" index
                     (or (hermes-section--session-model
                          hermes--current-session-id)
                         "?"))
-          (format "#%d · Assistant · (tool-only)" index))
+          (format "● %d · Assistant · (tool-only)" index))
         (and time (concat " · " time))))
       (_ (concat (format "#%d · System" index)
                  (and time (concat " · " time)))))))
@@ -485,7 +485,9 @@ structural labels and the context line as plain text."
          (hide  nil))
     (magit-insert-section ((eval class) id hide)
       (magit-insert-heading
-        (propertize heading 'font-lock-face (list head-face bg-face)))
+        (propertize heading
+                    'face (list head-face bg-face)
+                    'font-lock-face (list head-face bg-face)))
       (magit-insert-section-body
         (pcase kind
           ('user      (hermes-section--insert-user-body msg bg-face))
@@ -525,7 +527,14 @@ session via `hermes--on-session-buffer'."
   (hermes--on-session-buffer hermes-section--buffers
     (unless (eq (hermes-state-turns new)
                 hermes-section--turns-snapshot)
-      (hermes-section--rebuild new))))
+      (let ((tail-windows nil))
+        (dolist (win (get-buffer-window-list (current-buffer) nil t))
+          (when (= (window-point win) (point-max))
+            (push win tail-windows)))
+        (hermes-section--rebuild new)
+        (dolist (win tail-windows)
+          (when (window-live-p win)
+            (set-window-point win (point-max))))))))
 
 (defun hermes-section-refresh ()
   "Manually rebuild the current conversation buffer from state."

@@ -54,11 +54,11 @@
                                   :id "t"))))
         (hermes--current-session-id nil))
     ;; No session info → model defaults to "?".
-    (should (equal "#3 · Assistant · ?" (hermes-section--heading-text m 3)))))
+    (should (equal "● 3 · Assistant · ?" (hermes-section--heading-text m 3)))))
 
 (ert-deftest hermes-section-test/heading-text-empty-user ()
   (let ((m (make-hermes-message :kind 'user :segments [])))
-    (should (equal "#1 · User" (hermes-section--heading-text m 1)))))
+    (should (equal "> 1 · User" (hermes-section--heading-text m 1)))))
 
 (ert-deftest hermes-section-test/heading-text-tool-only-assistant ()
   (let* ((tool (make-hermes-tool :id "t1" :name "calc" :status 'complete))
@@ -66,7 +66,7 @@
              :kind 'assistant
              :segments (vector (make-hermes-segment :type 'tool
                                                     :content tool :id "s")))))
-    (should (equal "#2 · Assistant · (tool-only)"
+    (should (equal "● 2 · Assistant · (tool-only)"
                    (hermes-section--heading-text m 2)))))
 
 (ert-deftest hermes-section-test/heading-text-system ()
@@ -177,8 +177,8 @@
       ;; part of buffer-string.
       (magit-section-show-level-4-all)
       (let ((s (buffer-string)))
-        (should (string-match-p "#1 · User" s))
-        (should (string-match-p "#2 · Assistant" s))
+        (should (string-match-p "> 1 · User" s))
+        (should (string-match-p "● 2 · Assistant" s))
         (should (string-match-p "hello there" s))
         (should (string-match-p "hi back" s))))))
 

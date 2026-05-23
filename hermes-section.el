@@ -528,21 +528,151 @@ top of the buffer on every refresh."
       (magit-section-show magit-root-section))
     (goto-char (point-max))))
 
-(defun hermes-section--refresh (_old new)
-  "Rebuild the conversation buffer when `turns' changes.
+;;;; Streaming (plan 16)
+
+(defvar-local hermes-section--stream-sentinel nil
+  "Marker at the start of the in-flight streaming region.
+Nil when no stream is active.")
+
+(defvar-local hermes-section--stream-timer nil
+  "Throttle cooldown timer for streaming repaints.")
+
+(defvar-local hermes-section--stream-pending nil
+  "Latest un-flushed `hermes-state' snapshot waiting for the cooldown.")
+
+(defun hermes-section--stream-text-length (stream)
+  "Total character count of string segments in STREAM."
+  (let ((len 0)
+        (segs (and stream (hermes-stream-segments stream))))
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (let ((c (hermes-segment-content (aref segs i))))
+          (when (stringp c) (cl-incf len (length c))))))
+    len))
+
+(defun hermes-section--stream-throttle-interval (stream)
+  "Adaptive cooldown in seconds, scaled by STREAM text length.
+Matches the thresholds used by the Org renderer
+\(see `hermes--adaptive-throttle-interval')."
+  (let ((len (hermes-section--stream-text-length stream)))
+    (cond ((< len 1000)  0.04)
+          ((< len 5000)  0.20)
+          ((< len 10000) 1.00)
+          (t             2.00))))
+
+(defun hermes-section--stream-cancel-timer ()
+  "Cancel any pending throttle timer and drop the stashed snapshot."
+  (when (timerp hermes-section--stream-timer)
+    (cancel-timer hermes-section--stream-timer))
+  (setq hermes-section--stream-timer nil
+        hermes-section--stream-pending nil))
+
+(defun hermes-section--paint-stream (state)
+  "Erase from the sentinel to point-max and re-render the in-flight turn.
+Uses `hermes--message-from-stream' to project STATE's in-flight stream
+into a synthetic `hermes-message', then runs it through the normal
+`--insert-turn' path so committed and streaming turns share rendering."
+  (let* ((inhibit-read-only t)
+         (stream (hermes-state-stream state))
+         (turns  (hermes-state-turns state))
+         (index  (1+ (length turns)))
+         (msg    (hermes--message-from-stream stream nil))
+         (tail-windows nil))
+    (dolist (win (get-buffer-window-list (current-buffer) nil t))
+      (when (= (window-point win) (point-max))
+        (push win tail-windows)))
+    (delete-region hermes-section--stream-sentinel (point-max))
+    (goto-char (point-max))
+    (hermes-section--insert-turn msg index)
+    (goto-char (point-max))
+    (dolist (win tail-windows)
+      (when (window-live-p win)
+        (set-window-point win (point-max))))))
+
+(defun hermes-section--stream-flush (buf)
+  "Timer callback: paint `--stream-pending' into BUF and re-arm cooldown."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (setq hermes-section--stream-timer nil)
+      (let ((ns hermes-section--stream-pending))
+        (setq hermes-section--stream-pending nil)
+        (when (and ns
+                   hermes-section--stream-sentinel
+                   (hermes-state-stream ns))
+          (hermes-section--paint-stream ns)
+          (setq hermes-section--stream-timer
+                (run-with-timer
+                 (hermes-section--stream-throttle-interval
+                  (hermes-state-stream ns))
+                 nil
+                 #'hermes-section--stream-flush buf)))))))
+
+(defun hermes-section--stream-begin (new)
+  "Open a streaming region at point-max and paint NEW state into it."
+  (let ((inhibit-read-only t))
+    (goto-char (point-max))
+    (unless (bolp) (insert "\n"))
+    (setq hermes-section--stream-sentinel (copy-marker (point) nil))
+    (hermes-section--paint-stream new)))
+
+(defun hermes-section--stream-update (new)
+  "Throttled repaint of the streaming region from NEW state."
+  (if (null hermes-section--stream-timer)
+      ;; First paint after idle: paint synchronously, arm cooldown.
+      (progn
+        (hermes-section--paint-stream new)
+        (setq hermes-section--stream-timer
+              (run-with-timer
+               (hermes-section--stream-throttle-interval
+                (hermes-state-stream new))
+               nil
+               #'hermes-section--stream-flush (current-buffer))))
+    ;; Within cooldown: stash the latest snapshot for the timer.
+    (setq hermes-section--stream-pending new)))
+
+(defun hermes-section--stream-commit (new)
+  "End streaming: cancel timer, drop the region, rebuild from NEW.
+The reducer has already pushed the in-flight message into `turns'
+before clearing the stream, so a full rebuild surfaces the new
+committed turn.  Visibility cache restores any folds the user
+made during streaming."
+  (hermes-section--stream-cancel-timer)
+  (when (markerp hermes-section--stream-sentinel)
+    (let ((inhibit-read-only t))
+      (delete-region hermes-section--stream-sentinel (point-max)))
+    (set-marker hermes-section--stream-sentinel nil)
+    (setq hermes-section--stream-sentinel nil))
+  (hermes-section--rebuild new))
+
+(defun hermes-section--refresh (old new)
+  "Dispatch state diffs to streaming or committed-rebuild paths.
 Routes to the conversation buffer for the currently dispatched
 session via `hermes--on-session-buffer'."
   (hermes--on-session-buffer hermes-section--buffers
-    (unless (eq (hermes-state-turns new)
-                hermes-section--turns-snapshot)
-      (let ((tail-windows nil))
-        (dolist (win (get-buffer-window-list (current-buffer) nil t))
-          (when (= (window-point win) (point-max))
-            (push win tail-windows)))
-        (hermes-section--rebuild new)
-        (dolist (win tail-windows)
-          (when (window-live-p win)
-            (set-window-point win (point-max))))))))
+    (let ((old-stream (and old (hermes-state-stream old)))
+          (new-stream (hermes-state-stream new)))
+      (cond
+       ;; Stream began.
+       ((and (null old-stream) new-stream)
+        (hermes-section--stream-begin new))
+       ;; Stream ended → commit + rebuild (the cond does not fall through,
+       ;; so stream-commit must rebuild internally).
+       ((and old-stream (null new-stream))
+        (hermes-section--stream-commit new))
+       ;; Stream updated.
+       ((and old-stream new-stream (not (eq old-stream new-stream)))
+        (hermes-section--stream-update new))
+       ;; Turns changed with no stream involved.
+       ((not (eq (hermes-state-turns new)
+                 hermes-section--turns-snapshot))
+        (let ((tail-windows nil))
+          (dolist (win (get-buffer-window-list (current-buffer) nil t))
+            (when (= (window-point win) (point-max))
+              (push win tail-windows)))
+          (hermes-section--rebuild new)
+          (dolist (win tail-windows)
+            (when (window-live-p win)
+              (set-window-point win (point-max))))))))))
 
 (defun hermes-section-refresh ()
   "Manually rebuild the current conversation buffer from state."
@@ -579,6 +709,7 @@ session via `hermes--on-session-buffer'."
 (defun hermes-section--detach ()
   "Detach this buffer from the conversation registry on kill.
 Kills the paired bench when the last viewer goes."
+  (hermes-section--stream-cancel-timer)
   (when (and hermes--current-session-id
               (eq (current-buffer)
                   (gethash hermes--current-session-id

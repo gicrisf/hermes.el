@@ -73,36 +73,7 @@
   (let ((m (make-hermes-message :kind 'system :segments [])))
     (should (equal "#4 · System" (hermes-section--heading-text m 4)))))
 
-;;;; tool-body / subagent-body
-
-(ert-deftest hermes-section-test/tool-body-result-precedence ()
-  (let ((t1 (make-hermes-tool :id "1" :name "x" :status 'complete
-                              :context "ctx" :output "out" :summary "sum"
-                              :duration 0.3)))
-    (should (equal "input: ctx\nresult: out (0.3s)\n"
-                   (hermes-section--tool-body t1))))
-  (let ((t2 (make-hermes-tool :id "2" :name "x" :status 'complete
-                              :context "ctx" :summary "sum"
-                              :duration 0.3)))
-    (should (equal "input: ctx\nresult: sum (0.3s)\n"
-                   (hermes-section--tool-body t2))))
-  (let ((t3 (make-hermes-tool :id "3" :name "x" :status 'complete
-                              :context "ctx" :duration 0.3)))
-    (should (equal "input: ctx\nresult: (no result) (0.3s)\n"
-                   (hermes-section--tool-body t3)))))
-
-(ert-deftest hermes-section-test/tool-body-error ()
-  (let ((t1 (make-hermes-tool :id "1" :name "x" :status 'error
-                              :context "ctx" :error "boom"
-                              :duration 0.5)))
-    (should (equal "input: ctx\nerror: boom (0.5s)\n"
-                   (hermes-section--tool-body t1)))))
-
-(ert-deftest hermes-section-test/tool-body-no-context ()
-  (let ((t1 (make-hermes-tool :id "1" :name "x" :status 'complete
-                              :output "out")))
-    (should (equal "input: (no input)\nresult: out\n"
-                   (hermes-section--tool-body t1)))))
+;;;; subagent-body
 
 ;;;; org-mode fontification (plan 10)
 

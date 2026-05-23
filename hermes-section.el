@@ -19,6 +19,7 @@
 (require 'hermes-state)
 (require 'hermes-md)
 (require 'hermes-rpc)
+(require 'hermes-tool-formatters)
 
 (declare-function hermes-bench-ensure "hermes-bench" (sid))
 
@@ -187,27 +188,32 @@
 
 ;;;; Org-mode fontification (plan 10)
 
-(defun hermes-section--fontify-org (text)
-  "Return TEXT fontified as Org-mode body, with `font-lock-face' properties.
-Runs TEXT through `hermes-md-to-org' (matching the canonical Org
-renderer's pipeline), then enables `org-mode' in a temp buffer
-and ensures font-lock.  Converts the resulting `face' properties
-to `font-lock-face' so the colors render in
-`magit-section-mode' buffers where syntactic font-locking is
-disabled.  Per plan 10, body text carries no background tint;
-only the heading does.
-
-Applied only to fields known to be LLM-generated markdown — tool
-output/summary/context are inserted plain to preserve what the
-tool actually returned (see plan 10 §4)."
+(defun hermes-section--fontify-as-org (text)
+  "Return TEXT (already valid Org) fontified with `font-lock-face' properties.
+Enables `org-mode' in a temp buffer with `org-src-fontify-natively'
+so embedded source blocks (e.g. `#+begin_src diff') are fontified
+by their language modes.  Converts the resulting `face' properties
+to `font-lock-face' so the colors render in `magit-section-mode'
+buffers where syntactic font-locking is disabled."
   (if (or (null text) (string-empty-p text))
       (or text "")
     (with-temp-buffer
-      (insert (hermes-md-to-org text))
+      (insert text)
       ;; org-src-fontify-natively must be let-bound BEFORE org-mode init:
       ;; org-mode reads it when building org-font-lock-keywords.
       (let ((org-src-fontify-natively t))
         (delay-mode-hooks (org-mode))
+        ;; Align named hermes-tool tables before fontifying — matches
+        ;; the org renderer's post-pass (hermes-render.el `org-table-
+        ;; align' loop).  `font-lock-ensure' below catches any whitespace
+        ;; changes from the alignment.
+        (save-excursion
+          (goto-char (point-min))
+          (while (re-search-forward
+                  "^#\\+name: hermes-tool-[^ \t\r\n]+[ \t]*$" nil t)
+            (forward-line 1)
+            (when (looking-at "^[ \t]*|")
+              (ignore-errors (org-table-align)))))
         (font-lock-ensure))
       (let ((pos (point-min)))
         (while (< pos (point-max))
@@ -220,6 +226,12 @@ tool actually returned (see plan 10 §4)."
               (remove-text-properties pos next '(face nil)))
             (setq pos next))))
       (buffer-string))))
+
+(defun hermes-section--fontify-org (text)
+  "Convert TEXT from markdown to Org and fontify.
+Applied to LLM-generated markdown response/reasoning text — runs
+through `hermes-md-to-org' first, then `hermes-section--fontify-as-org'."
+  (hermes-section--fontify-as-org (hermes-md-to-org (or text ""))))
 
 (defun hermes-section--format-timestamp (ts)
   (cond ((stringp ts) ts)
@@ -323,48 +335,29 @@ Heading is turn-number based (per plan 11), so no dedup needed."
     ('generating (cons "RUNNING" 'hermes-section-face-tool-running))
     (_           (cons "..."     'hermes-section-face-tool-running))))
 
-(defun hermes-section--tool-body (tool)
-  "Return plain-text body string for TOOL struct.
-Used by tests; production rendering inserts the body piecewise so
-the result value can be fontified as markdown while keeping the
-structural labels and the context line as plain text."
-  (let* ((ctx (let ((c (hermes-tool-context tool)))
-                (if (and c (stringp c) (> (length c) 0)) c "(no input)")))
-         (dur (hermes-section--format-duration (hermes-tool-duration tool)))
-         (err (hermes-tool-error tool))
-         (result (or (hermes-tool-output tool)
-                     (hermes-tool-summary tool)
-                     "(no result)")))
-    (if err
-        (format "input: %s\nerror: %s%s\n" ctx err dur)
-      (format "input: %s\nresult: %s%s\n" ctx result dur))))
-
 (defun hermes-section--insert-tool-child (tool bg-face)
   (let* ((id (or (hermes-tool-id tool)
                  (format "tool-%d" (sxhash-equal tool))))
          (kw (hermes-section--tool-status-keyword tool))
          (name (or (hermes-tool-name tool) "tool"))
          (dur (hermes-section--format-duration (hermes-tool-duration tool)))
-         (summ (let ((s (hermes-tool-summary tool)))
-                 (if (and s (> (length s) 0)) (format " — %s" s) "")))
          (status (hermes-tool-status tool))
          (hide (memq status '(complete error)))
-         (ctx (let ((c (hermes-tool-context tool)))
-                (if (and c (stringp c) (> (length c) 0)) c "(no input)")))
-         (err (hermes-tool-error tool))
-         (result (or (hermes-tool-output tool)
-                     (hermes-tool-summary tool)
-                     "(no result)")))
+         (formatter (hermes-tool--lookup name))
+         (parts (and formatter (funcall formatter tool)))
+         (fmt-summary (or (plist-get parts :summary) name))
+         (gw-summary (let ((s (hermes-tool-summary tool)))
+                       (if (and s (> (length s) 0)) (format " — %s" s) "")))
+         (body (or (plist-get parts :body) "")))
     (magit-insert-section (hermes-section-tool-section id hide)
       (magit-insert-heading
         (propertize (car kw) 'font-lock-face (list (cdr kw) bg-face))
-        (propertize (format " %s%s%s" name dur summ)
+        (propertize (format " %s%s%s" fmt-summary dur gw-summary)
                     'font-lock-face (list 'hermes-section-face-tool bg-face)))
       (magit-insert-section-body
-        (insert (format "input: %s\n" ctx))
-        (if err
-            (insert (format "error: %s%s\n" err dur))
-          (insert (format "result: %s%s\n" result dur)))))))
+        (when (and body (> (length body) 0))
+          (insert (hermes-section--fontify-as-org body))
+          (unless (bolp) (insert "\n")))))))
 
 (defun hermes-section--subagent-body (sa)
   "Return plain-text body string for subagent SA struct."
@@ -444,32 +437,49 @@ structural labels and the context line as plain text."
 
 (defun hermes-section--insert-assistant-body (msg bg-face)
   (let* ((segs (or (hermes-message-segments msg) []))
-         (sas  (or (hermes-message-subagents msg) [])))
+         (sas  (or (hermes-message-subagents msg) []))
+         (any-child
+          (or (> (length sas) 0)
+              (catch 'yes
+                (dotimes (i (length segs))
+                  (when (eq 'tool (hermes-segment-type (aref segs i)))
+                    (throw 'yes t)))
+                nil)))
+         (any-child-emitted nil)
+         (emit (lambda (thunk)
+                 (when any-child-emitted (insert "\n"))
+                 (funcall thunk)
+                 (setq any-child-emitted t))))
     ;; Pass 1: reasoning segments → child sections (before response text)
-    (dotimes (i (length segs))
-      (let ((seg (aref segs i)))
-        (when (eq 'reasoning (hermes-segment-type seg))
-          (hermes-section--insert-reasoning-child seg bg-face))))
-    ;; Response text (all text segments joined, no heading dedup)
-    (hermes-section--insert-full-text msg bg-face)
-    ;; Pass 2: separator + tool segments + subagents
-    (let ((any-child
-           (or (> (length sas) 0)
-               (catch 'yes
-                 (dotimes (i (length segs))
-                   (when (eq 'tool (hermes-segment-type (aref segs i)))
-                     (throw 'yes t)))
-                 nil))))
-      (when any-child
-        (insert "───\n"))
+    (let ((had-reasoning nil))
       (dotimes (i (length segs))
         (let ((seg (aref segs i)))
-          (when (eq 'tool (hermes-segment-type seg))
-            (let ((c (hermes-segment-content seg)))
-              (when (hermes-tool-p c)
-                (hermes-section--insert-tool-child c bg-face))))))
-      (dotimes (i (length sas))
-        (hermes-section--insert-subagent-child (aref sas i) bg-face)))))
+          (when (eq 'reasoning (hermes-segment-type seg))
+            (hermes-section--insert-reasoning-child seg bg-face)
+            (setq had-reasoning t))))
+      (when had-reasoning (insert "\n")))
+    ;; Response text (all text segments joined, no heading dedup)
+    (hermes-section--insert-full-text msg bg-face)
+    ;; Blank line between response text and first tool/subagent child.
+    (when any-child
+      (insert "\n"))
+    ;; Pass 2: tool segments + subagents, blank line between consecutive
+    ;; children, and a trailing blank line for breathing room.
+    (dotimes (i (length segs))
+      (let ((seg (aref segs i)))
+        (when (eq 'tool (hermes-segment-type seg))
+          (let ((c (hermes-segment-content seg)))
+            (when (hermes-tool-p c)
+              (funcall emit
+                       (lambda ()
+                         (hermes-section--insert-tool-child c bg-face))))))))
+    (dotimes (i (length sas))
+      (funcall emit
+               (lambda ()
+                 (hermes-section--insert-subagent-child
+                  (aref sas i) bg-face))))
+    (when any-child
+      (insert "\n"))))
 
 ;;;; Insert turn
 

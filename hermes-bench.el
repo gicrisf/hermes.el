@@ -163,8 +163,10 @@ without affecting the rest of Emacs."
 
 ;;;; Buffer-local state (bench buffer)
 
-(defvar-local hermes-bench--parent-buffer nil
-  "The hermes-mode org buffer this bench renders for.")
+(defvar-local hermes-bench--session-id nil
+  "Session-id this bench is bound to.
+The bench reads its persistent state directly from `hermes--sessions'
+keyed by this id, and is registered in `hermes--bench-buffers'.")
 
 (defvar-local hermes-bench--input-boundary nil
   "Marker at the start of the separator line.
@@ -190,11 +192,6 @@ Cleared after one paint cycle.")
   '((t :inherit shadow))
   "Face for the per-attachment metadata line in the bench."
   :group 'hermes)
-
-;;;; Buffer-local state (parent buffer)
-
-(defvar-local hermes-bench--buffer nil
-  "The bench buffer paired with this hermes-mode buffer.")
 
 ;;;; Mode
 
@@ -235,20 +232,23 @@ Cleared after one paint cycle.")
   "Force `display-line-numbers-mode' off in the current bench buffer."
   (display-line-numbers-mode -1))
 
+(defun hermes-bench--state ()
+  "Return the persistent state for this bench's session, or nil."
+  (and hermes-bench--session-id
+       (gethash hermes-bench--session-id hermes--sessions)))
+
 (defun hermes-bench-completion-at-point ()
   "Slash-command CAPF for the bench input area.
 The slash must appear immediately after the bench prompt (i.e. at
-`hermes-bench--input-start').  Pulls the catalog from the paired parent
-buffer's `(hermes--current-state)' and delegates to `hermes-input--slash-complete'."
-  (when (and hermes-bench--parent-buffer
-             (buffer-live-p hermes-bench--parent-buffer)
+`hermes-bench--input-start').  Pulls the catalog from the session
+state in `hermes--sessions' and delegates to `hermes-input--slash-complete'."
+  (when (and hermes-bench--session-id
              (hermes-bench--in-input-area-p))
     (let ((input-start (hermes-bench--input-start)))
       (when (and input-start
                  (> (point) input-start)
                  (eq (char-after input-start) ?/))
-        (let* ((state (hermes--buffer-session-state
-                       hermes-bench--parent-buffer))
+        (let* ((state (hermes-bench--state))
                (catalog (and state (hermes-state-slash-catalog state))))
           (when catalog
             (hermes-input--slash-complete input-start (point) catalog)))))))
@@ -268,8 +268,8 @@ buffer's `(hermes--current-state)' and delegates to `hermes-input--slash-complet
 
 ;;;; Lifecycle
 
-(defun hermes-bench--buffer-name (parent)
-  (format " *hermes-bench:%s*" (buffer-name parent)))
+(defun hermes-bench--buffer-name (sid)
+  (format "*hermes-bench:%s*" sid))
 
 (defun hermes-bench--effective-bg (skin)
   "Return the background color string to use for the bench buffer.
@@ -308,49 +308,39 @@ the previous cookie first so the effect is idempotent."
       (setq hermes-bench--bg-cookie
             (face-remap-add-relative 'default :background bg)))))
 
-(defun hermes-bench-active-p (&optional parent)
-  "Return the live bench buffer paired with PARENT, or nil.
-Low-level primitive: assumes PARENT is the parent org buffer.  Prefer
-`hermes-bench-live-p' when the caller may be in either the bench or its
-parent."
-  (let* ((p (or parent (current-buffer)))
-         (b (and (buffer-live-p p)
-                 (buffer-local-value 'hermes-bench--buffer p))))
-    (and (buffer-live-p b) b)))
-
 (defun hermes-bench-buffer-p (&optional buffer)
   "Return non-nil if BUFFER (or current buffer) is a bench buffer."
   (let ((buf (or buffer (current-buffer))))
     (and (buffer-live-p buf)
          (eq (buffer-local-value 'major-mode buf) 'hermes-bench-mode))))
 
-(defun hermes-bench-resolve-parent (&optional buffer)
-  "Resolve BUFFER to its parent org buffer.
-If BUFFER is a bench buffer, return its `hermes-bench--parent-buffer'.
-If BUFFER already has a paired bench (i.e. is itself a parent), return
-it as-is.  Otherwise return nil."
-  (let ((buf (or buffer (current-buffer))))
-    (cond
-     ((not (buffer-live-p buf)) nil)
-     ((hermes-bench-buffer-p buf)
-      (let ((p (buffer-local-value 'hermes-bench--parent-buffer buf)))
-        (and (buffer-live-p p) p)))
-     ((buffer-local-value 'hermes-bench--buffer buf) buf)
-     (t nil))))
+(defun hermes-bench-active-p (&optional buffer-or-sid)
+  "Return the live bench buffer for BUFFER-OR-SID, or nil.
+BUFFER-OR-SID can be: a session-id string, a viewer buffer (any kind),
+or nil (= current buffer).  In every case the session-id is resolved
+and looked up in `hermes--bench-buffers'."
+  (let ((sid (cond
+              ((stringp buffer-or-sid) buffer-or-sid)
+              ((bufferp buffer-or-sid) (hermes--buffer-sid buffer-or-sid))
+              (t (hermes--buffer-sid (current-buffer))))))
+    (and sid
+         (let ((buf (gethash sid hermes--bench-buffers)))
+           (and (buffer-live-p buf) buf)))))
 
-(defun hermes-bench-live-p (&optional buffer)
+(defalias 'hermes-bench-live-p #'hermes-bench-active-p
   "Return the live bench buffer associated with BUFFER, or nil.
-BUFFER may be a bench buffer or its parent org buffer; in either case
-the paired bench is returned when it exists."
-  (let ((parent (hermes-bench-resolve-parent buffer)))
-    (and parent (hermes-bench-active-p parent))))
+Alias for `hermes-bench-active-p'.")
 
-(defun hermes-bench--setup (parent)
-  "Initialize the bench buffer contents for PARENT."
+(defun hermes-bench--setup (sid)
+  "Initialize the bench buffer contents for session SID."
   (hermes-bench-mode)
   (hermes-bench--apply-bg)
-  (setq hermes-bench--parent-buffer parent
+  (setq hermes-bench--session-id sid
         hermes-bench--current-user-prompt nil)
+  ;; Buffer-local hint so resolvers (`hermes--resolve-session-target',
+  ;; `hermes--current-state', `hermes-send' fallback path) can find the
+  ;; session without walking registries.
+  (setq-local hermes--current-session-id sid)
   (let ((inhibit-read-only t))
     (erase-buffer)
     ;; Seed `input-boundary' at point-min so the first paint has a
@@ -360,34 +350,31 @@ the paired bench is returned when it exists."
   (setq-local header-line-format nil)
   (goto-char (point-max)))
 
-(defun hermes-bench--kill-parent-hook ()
-  "Kill the bench when its parent buffer is killed."
-  (hermes-bench-hide (current-buffer)))
-
-(defun hermes-bench--align-parent-to-tail (parent)
-  "Move every window showing PARENT to `point-max'.
+(defun hermes-bench--align-org-to-tail ()
+  "Pull org-viewer windows of this bench's session to `point-max'.
+No-ops when the session has no org viewer (section-mode only).
 Pre-aligns the org buffer so the post-commit follow logic in
 `hermes--render' captures the window as tail-tracking."
-  (when (buffer-live-p parent)
-    (let ((end (with-current-buffer parent (point-max))))
-      (dolist (win (get-buffer-window-list parent nil t))
-        (when (and (window-live-p win)
-                   (/= (window-point win) end))
-          (set-window-point win end))))))
+  (when hermes-bench--session-id
+    (let ((buf (gethash hermes-bench--session-id hermes--org-buffers)))
+      (when (buffer-live-p buf)
+        (let ((end (with-current-buffer buf (point-max))))
+          (dolist (win (get-buffer-window-list buf nil t))
+            (when (and (window-live-p win)
+                       (/= (window-point win) end))
+              (set-window-point win end))))))))
 
-(defun hermes-bench-ensure (parent)
-  "Ensure a bench buffer exists and is displayed for PARENT."
-  (let* ((name (hermes-bench--buffer-name parent))
-         (existing (buffer-local-value 'hermes-bench--buffer parent))
+(defun hermes-bench-ensure (sid)
+  "Ensure a bench buffer exists and is displayed for session SID."
+  (let* ((name (hermes-bench--buffer-name sid))
+         (existing (gethash sid hermes--bench-buffers))
          (buf (or (and (buffer-live-p existing) existing)
                   (get-buffer-create name))))
-    (with-current-buffer parent
-      (setq hermes-bench--buffer buf)
-      (add-hook 'kill-buffer-hook #'hermes-bench--kill-parent-hook nil t))
+    (puthash sid buf hermes--bench-buffers)
     (with-current-buffer buf
       (unless (and (derived-mode-p 'hermes-bench-mode)
-                   (eq hermes-bench--parent-buffer parent))
-        (hermes-bench--setup parent)))
+                   (equal hermes-bench--session-id sid))
+        (hermes-bench--setup sid)))
     (display-buffer-in-side-window
      buf `((side . bottom)
            (slot . 0)
@@ -396,20 +383,18 @@ Pre-aligns the org buffer so the post-commit follow logic in
            (preserve-size . (nil . t))
            (window-parameters . ((no-other-window . nil)
                                  (no-delete-other-windows . t)))))
-    (hermes-bench--align-parent-to-tail parent)
+    (with-current-buffer buf
+      (hermes-bench--align-org-to-tail))
     buf))
 
-(defun hermes-bench-hide (parent)
-  "Delete the bench window for PARENT and kill the bench buffer."
-  (let ((buf (and (buffer-live-p parent)
-                  (buffer-local-value 'hermes-bench--buffer parent))))
+(defun hermes-bench-hide (sid)
+  "Delete the bench window for SID and kill the bench buffer."
+  (let ((buf (gethash sid hermes--bench-buffers)))
     (when (buffer-live-p buf)
       (dolist (w (get-buffer-window-list buf nil t))
         (when (window-live-p w) (delete-window w)))
       (kill-buffer buf))
-    (when (buffer-live-p parent)
-      (with-current-buffer parent
-        (setq hermes-bench--buffer nil)))))
+    (remhash sid hermes--bench-buffers)))
 
 ;;;; Input area
 
@@ -534,20 +519,16 @@ Does nothing if the current command is a motion command."
 
 (defun hermes-bench--should-show-splash-p ()
   "Return non-nil when the bench has no conversation content to display."
-  (let* ((parent hermes-bench--parent-buffer)
-         (state (and (buffer-live-p parent)
-                     (hermes--buffer-session-state parent))))
+  (let ((state (hermes-bench--state)))
     (and (or (null hermes-bench--current-user-prompt)
              (string-empty-p hermes-bench--current-user-prompt))
          (not (and state (hermes-state-stream state))))))
 
 ;;;; Attachment helpers
 
-(defun hermes-bench--attachments-from-parent ()
-  "Return the attachments list from the paired parent buffer's state, or nil."
-  (let* ((parent hermes-bench--parent-buffer)
-         (state (and (buffer-live-p parent)
-                     (hermes--buffer-session-state parent))))
+(defun hermes-bench--attachments ()
+  "Return the attachments list from the bench's session state, or nil."
+  (let ((state (hermes-bench--state)))
     (and state (hermes-state-attachments state))))
 
 (defun hermes-bench--format-attachment (a)
@@ -571,9 +552,7 @@ token estimate; error → error marker."
 (defun hermes-bench--repaint-preserving-stream ()
   "Repaint the bench, preserving any in-flight stream content.
 Used by `hermes-image' callbacks to refresh the attachment line(s)."
-  (let* ((parent hermes-bench--parent-buffer)
-         (state  (and (buffer-live-p parent)
-                      (hermes--buffer-session-state parent)))
+  (let* ((state  (hermes-bench--state))
          (stream (and state (hermes-state-stream state))))
     (if (hermes-stream-p stream)
         (pcase-let ((`(,reasoning . ,answer)
@@ -591,10 +570,8 @@ Used by `hermes-image' callbacks to refresh the attachment line(s)."
   "Insert a one-line summary of background tasks into the bench.
 Shows `[bg: N running]' while any task is running, otherwise
 `[bg #ID complete] PROMPT' for the most recently completed task.
-No-op when the parent has no background tasks."
-  (let* ((parent hermes-bench--parent-buffer)
-         (state (and (buffer-live-p parent)
-                     (hermes--buffer-session-state parent)))
+No-op when the session has no background tasks."
+  (let* ((state (hermes-bench--state))
          (bg-tasks (and state (hermes-state-bg-tasks state)))
          (running 0))
     (when (and (vectorp bg-tasks) (> (length bg-tasks) 0))
@@ -625,12 +602,9 @@ No-op when the parent has no background tasks."
               'face 'hermes-bench-steer-face)))))))))
 
 (defun hermes-bench-bg-list ()
-  "Pop the background-task list for the parent session."
+  "Pop the background-task list for this bench's session."
   (interactive)
-  (let* ((parent hermes-bench--parent-buffer)
-         (state (and (buffer-live-p parent)
-                     (hermes--buffer-session-state parent)))
-         (sid (and state (hermes-state-session-id state))))
+  (let ((sid hermes-bench--session-id))
     (if sid
         (progn (require 'hermes-bg)
                (hermes-bg--list-for-sid sid))
@@ -660,7 +634,7 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
     (goto-char (point-min))
     ;; 2. Splash, or normal ephemeral zones.
     (if (and (string-empty-p effective-user)
-             (null (hermes-bench--attachments-from-parent))
+             (null (hermes-bench--attachments))
              (hermes-bench--should-show-splash-p))
         (hermes-bench--insert-splash)
       (unless (string-empty-p effective-user)
@@ -670,7 +644,7 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
       ;; Shown above any reasoning/answer so the user can see what will be
       ;; sent with the next prompt.  No inline thumbnails (bench is 20
       ;; lines tall; thumbnails would blow the layout).
-      (let ((atts (hermes-bench--attachments-from-parent)))
+      (let ((atts (hermes-bench--attachments)))
         (when atts
           (dolist (a atts)
             (insert (propertize (hermes-bench--format-attachment a)
@@ -775,12 +749,12 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
 
 ;;;; Latest user prompt discovery (fallback for out-of-bench submissions)
 
-(defun hermes-bench--latest-user-text (parent)
-  "Return the most-recent user prompt text from PARENT, or nil.
-Looks at pending-turns first, then walks the parent's history ring."
-  (when (buffer-live-p parent)
-    (let* ((state (hermes--buffer-session-state parent))
-           (turns (and state (hermes-state-pending-turns state))))
+(defun hermes-bench--latest-user-text (&optional state)
+  "Return the most-recent user prompt text from STATE, or nil.
+STATE defaults to the bench's session state.  Looks at pending-turns
+first, then walks the session's history ring."
+  (let* ((state (or state (hermes-bench--state)))
+         (turns (and state (hermes-state-pending-turns state))))
       (or (and (vectorp turns)
                (let ((i (1- (length turns))) found)
                  (while (and (not found) (>= i 0))
@@ -795,7 +769,7 @@ Looks at pending-turns first, then walks the parent's history ring."
                  found))
           (and state
                (let ((hist (hermes-state-history state)))
-                 (and (consp hist) (car hist))))))))
+                 (and (consp hist) (car hist)))))))
 
 ;;;; Stream lifecycle (called from hermes--render)
 
@@ -804,8 +778,7 @@ Looks at pending-turns first, then walks the parent's history ring."
   (when (buffer-live-p bench)
     (with-current-buffer bench
       (let ((user (or hermes-bench--current-user-prompt
-                      (hermes-bench--latest-user-text
-                       hermes-bench--parent-buffer)
+                      (hermes-bench--latest-user-text)
                       "")))
         (hermes-bench--paint-ephemeral user "" "")))))
 
@@ -819,37 +792,37 @@ Looks at pending-turns first, then walks the parent's history ring."
         (hermes-bench--paint-ephemeral nil reasoning answer)))))
 
 (defun hermes-bench--stream-commit (bench old-stream)
-  "Stream ended: commit OLD-STREAM into the parent's org buffer.
+  "Stream ended: commit OLD-STREAM into the session's org buffer.
 The bench is NOT cleared; the answer remains until the next
 `hermes-bench-send'."
   (when (buffer-live-p bench)
     (with-current-buffer bench
       ;; Steer messages were valid for the now-ending turn only.
       (setq hermes-bench--steer-messages nil))
-    (let ((parent (buffer-local-value 'hermes-bench--parent-buffer bench)))
-      (when (and (buffer-live-p parent)
+    (let* ((sid (buffer-local-value 'hermes-bench--session-id bench))
+           (org-buf (and sid (gethash sid hermes--org-buffers))))
+      (when (and (buffer-live-p org-buf)
                  (hermes-stream-p old-stream))
-        (with-current-buffer parent
-          (let* ((usage (and (hermes--current-state) (hermes-state-usage (hermes--current-state))))
+        (with-current-buffer org-buf
+          (let* ((state (gethash sid hermes--sessions))
+                 (usage (and state (hermes-state-usage state)))
                  (msg (hermes--message-from-stream old-stream usage)))
             (with-silent-modifications
               (save-excursion
                 (hermes--insert-committed-turn msg)))))))))
 
-(defun hermes-bench-add-steer (parent text)
-  "Append TEXT as a `[steer]' message to the bench paired with PARENT.
-No-op if PARENT has no live bench.  Repaints so the message is visible
+(defun hermes-bench-add-steer (sid text)
+  "Append TEXT as a `[steer]' message to the bench for session SID.
+No-op if SID has no live bench.  Repaints so the message is visible
 above the reasoning zone immediately, preserving any in-flight stream
 content."
-  (let ((bench (hermes-bench-active-p parent)))
+  (let ((bench (hermes-bench-active-p sid)))
     (when (and bench (stringp text) (not (string-empty-p text)))
       (with-current-buffer bench
         (setq hermes-bench--steer-messages
-              (append hermes-bench--steer-messages (list text))))
-      (let* ((state  (and (buffer-live-p parent)
-                          (hermes--buffer-session-state parent)))
-             (stream (and state (hermes-state-stream state))))
-        (with-current-buffer bench
+              (append hermes-bench--steer-messages (list text)))
+        (let* ((state  (hermes-bench--state))
+               (stream (and state (hermes-state-stream state))))
           (if (hermes-stream-p stream)
               (pcase-let ((`(,reasoning . ,answer)
                            (hermes-bench--segments-by-zone
@@ -860,34 +833,33 @@ content."
 ;;;; Send / interrupt / compose
 
 (defun hermes-bench-send ()
-  "Send the current input-area text to the paired parent buffer.
+  "Send the current input-area text to this bench's session.
 Clears the bench ephemeral content first (showing the new user prompt),
-then dispatches the text to the parent."
+then dispatches the text via `hermes-send'."
   (interactive)
   (let ((text (string-trim (hermes-bench--input-text)))
-        (parent hermes-bench--parent-buffer))
-    (unless (buffer-live-p parent)
-      (user-error "Bench has no live parent buffer"))
+        (sid hermes-bench--session-id))
+    (unless sid
+      (user-error "Bench has no session"))
     (when (string-empty-p text)
       (user-error "Nothing to send"))
     ;; 1+2. Clear input area first so it's not preserved by paint.
     (hermes-bench--clear-input)
     ;; 3. Wipe old turn, show new user prompt + empty reasoning/answer.
     (hermes-bench--paint-ephemeral text "" "")
-    ;; 3a. Pull parent org buffer's windows to point-max so the
-    ;; post-commit follow logic in `hermes--render' sees them as
-    ;; tail-tracking.
-    (hermes-bench--align-parent-to-tail parent)
-    ;; 4. Dispatch to parent (fires :user-submit + RPC).
-    (with-current-buffer parent
+    ;; 3a. Pull org-viewer windows to point-max so the post-commit
+    ;; follow logic in `hermes--render' sees them as tail-tracking.
+    (hermes-bench--align-org-to-tail)
+    ;; 4. Dispatch via `hermes-send' bound to this session.
+    (let ((hermes--current-session-id sid))
       (hermes-send text))
     (goto-char (point-max))))
 
 (defun hermes-bench-interrupt-parent ()
-  "Interrupt the parent session."
+  "Interrupt the bench's session."
   (interactive)
-  (when (buffer-live-p hermes-bench--parent-buffer)
-    (with-current-buffer hermes-bench--parent-buffer
+  (when hermes-bench--session-id
+    (let ((hermes--current-session-id hermes-bench--session-id))
       (call-interactively #'hermes-interrupt-current-session))))
 
 (declare-function hermes-steer "hermes-config" (text))
@@ -895,44 +867,42 @@ then dispatches the text to the parent."
 (defun hermes-bench-steer ()
   "Send the current input-area text as a `session.steer' message.
 Clears the input area, shows `[steer] <text>' above the reasoning zone,
-and dispatches the steer RPC against the parent session."
+and dispatches the steer RPC against the bench's session."
   (interactive)
   (let ((text (string-trim (hermes-bench--input-text)))
-        (parent hermes-bench--parent-buffer))
-    (unless (buffer-live-p parent)
-      (user-error "Bench has no live parent buffer"))
+        (sid hermes-bench--session-id))
+    (unless sid
+      (user-error "Bench has no session"))
     (when (string-empty-p text)
       (user-error "Nothing to steer"))
     (hermes-bench--clear-input)
-    (with-current-buffer parent
+    (let ((hermes--current-session-id sid))
       (hermes-steer text))))
 
 (defun hermes-bench-compose ()
-  "Open the multi-line composer targeting the parent buffer."
+  "Open the multi-line composer targeting the bench's session."
   (interactive)
-  (when (buffer-live-p hermes-bench--parent-buffer)
-    (with-current-buffer hermes-bench--parent-buffer
-      (call-interactively #'hermes-compose))))
+  (when hermes-bench--session-id
+    (call-interactively #'hermes-compose)))
 
-(defun hermes-bench-show-status (parent text &optional error-p)
-  "Show TEXT as a transient status line in the bench paired with PARENT.
+(defun hermes-bench-show-status (sid text &optional error-p)
+  "Show TEXT as a transient status line in the bench for SID.
 If ERROR-P is non-nil, apply `error' face.  The text is stored in
 `hermes-bench--status-message' and rendered immediately."
-  (let ((bench (hermes-bench-active-p parent)))
+  (let ((bench (hermes-bench-active-p sid)))
     (when bench
       (with-current-buffer bench
         (setq hermes-bench--status-message
               (list :text text :error-p error-p))
         ;; Trigger repaint so the status appears immediately.
-        (let* ((state  (and (buffer-live-p parent)
-                            (hermes--buffer-session-state parent)))
+        (let* ((state  (hermes-bench--state))
                (stream (and state (hermes-state-stream state))))
           (if (hermes-stream-p stream)
               (pcase-let ((`(,reasoning . ,answer)
                            (hermes-bench--segments-by-zone
                             (hermes-stream-segments stream))))
                 (hermes-bench--paint-ephemeral nil reasoning answer))
-             (hermes-bench--paint-ephemeral nil nil nil)))))))
+            (hermes-bench--paint-ephemeral nil nil nil)))))))
 
 (declare-function ansi-color-apply "ansi-color" (string))
 

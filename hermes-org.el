@@ -169,9 +169,8 @@ entry point, which can safely ask the user when ambiguous."
 - In an arbitrary Org buffer with `hermes-org-minor-mode' enabled,
   walks up from point to find the enclosing `:hermes:' container and
   looks the corresponding state up in `hermes--sessions'.
-- In a `hermes-bench-mode' buffer, delegates to the paired parent
-  buffer so commands invoked from the bench resolve against the
-  parent's session.
+- In a section or bench buffer, reads `hermes--current-session-id'
+  set buffer-locally at creation.
 Returns nil when no session is reachable."
   (cond
    ;; Single-session host buffer: when this buffer is registered as the
@@ -196,17 +195,12 @@ Returns nil when no session is reachable."
       ;; from "no container at all" (nil return) so it can trigger
       ;; an on-demand resume.
       (and sid (cons sid state))))
-   ((and (boundp 'hermes-bench--parent-buffer)
-         hermes-bench--parent-buffer
-         (buffer-live-p hermes-bench--parent-buffer))
-    (with-current-buffer hermes-bench--parent-buffer
-      (hermes--resolve-session-target)))
-   ;; Section view: read session-id from the buffer-local variable.
-   ;; Section buffers are always created with a live session, so look
-   ;; the state up directly in `hermes--sessions' (not via
-   ;; `hermes--state-slot-read', which would mask absence by returning
-   ;; `hermes--global-state').
-   ((derived-mode-p 'hermes-section-mode)
+   ;; Section / bench view: read session-id from the buffer-local
+   ;; variable installed at creation.  Look the state up directly in
+   ;; `hermes--sessions' (not via `hermes--state-slot-read', which
+   ;; would mask absence by returning `hermes--global-state').
+   ((or (derived-mode-p 'hermes-section-mode)
+        (derived-mode-p 'hermes-bench-mode))
     (let ((sid (buffer-local-value 'hermes--current-session-id
                                    (current-buffer))))
       (and sid (cons sid (gethash sid hermes--sessions)))))))

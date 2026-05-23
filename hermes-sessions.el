@@ -39,7 +39,7 @@
 (declare-function hermes--install-hooks "hermes-mode" ())
 (declare-function hermes--register-session "hermes-org" (sid state marker))
 (declare-function hermes--buffer-message-count "hermes-mode" ())
-(declare-function hermes-bench-ensure "hermes-bench" (parent))
+(declare-function hermes-bench-ensure "hermes-bench" (sid))
 (declare-function hermes--focus-bench-input "hermes-mode" (buf))
 
 ;;;; Field accessors (hash-table / alist tolerant)
@@ -421,7 +421,7 @@ install.  PARENT-SID, when non-nil, is threaded into the install step
         ;; Mirror the normal `M-x hermes' entry path: ensure the bench is
         ;; visible and cursor lands in the input zone.
         (when (fboundp 'hermes-bench-ensure)
-          (hermes-bench-ensure buf))
+          (hermes-bench-ensure new-sid))
         (when (fboundp 'hermes--focus-bench-input)
           (hermes--focus-bench-input buf))
         (message "hermes: resumed %s as %s (%d msgs)"

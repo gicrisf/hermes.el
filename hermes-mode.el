@@ -50,13 +50,14 @@ without this cache, the very first session would never see the skin.")
   "Remove the current buffer from `hermes--org-buffers'.
 Run on `kill-buffer-hook' for Hermes-aware buffers.  Leaves the
 session state in `hermes--sessions' untouched so it survives until
-explicit close."
+explicit close.  Kills the paired bench when the last viewer goes."
   (let ((buf (current-buffer))
         (drops nil))
     (maphash (lambda (sid b) (when (eq b buf) (push sid drops)))
              hermes--org-buffers)
     (dolist (sid drops)
-      (remhash sid hermes--org-buffers))))
+      (remhash sid hermes--org-buffers)
+      (hermes--maybe-kill-bench sid))))
 
 ;;;; Event routing — installed once on the RPC layer
 
@@ -294,7 +295,8 @@ prompt."
       (select-window (get-buffer-window bench))
       (goto-char (point-max)))
      (bench
-      (hermes-bench-ensure (current-buffer))
+      (when-let ((sid (hermes--buffer-sid (current-buffer))))
+        (hermes-bench-ensure sid))
       (let ((w (get-buffer-window bench)))
         (when (window-live-p w)
           (select-window w)
@@ -386,7 +388,8 @@ background; for the user-facing entry that also pops the buffer, see
   (interactive)
   (cond
    (hermes-org-minor-mode
-    (hermes-bench-ensure (current-buffer))
+    (when-let ((sid (hermes--buffer-sid (current-buffer))))
+      (hermes-bench-ensure sid))
     (let* ((bench (hermes-bench-active-p))
            (win   (and bench (get-buffer-window bench))))
       (when (window-live-p win)
@@ -409,7 +412,8 @@ background; for the user-facing entry that also pops the buffer, see
       (cond
        (state
         (when (marker-position marker) (goto-char marker))
-        (hermes-bench-ensure (current-buffer))
+        (when-let ((s (hermes--buffer-sid (current-buffer))))
+          (hermes-bench-ensure s))
         (let* ((bench (hermes-bench-active-p))
                (win   (and bench (get-buffer-window bench))))
           (when (window-live-p win)
@@ -432,13 +436,15 @@ background; for the user-facing entry that also pops the buffer, see
       (if buf
           (progn
             (pop-to-buffer-same-window buf)
-            (hermes-bench-ensure buf)
+            (when-let ((sid (hermes--buffer-sid buf)))
+              (hermes-bench-ensure sid))
             (hermes--focus-bench-input buf))
         (hermes-new-session
          (lambda (b)
            (when (buffer-live-p b)
              (pop-to-buffer-same-window b)
-             (hermes-bench-ensure b)
+             (when-let ((sid (hermes--buffer-sid b)))
+               (hermes-bench-ensure sid))
              (hermes--focus-bench-input b)))))))))
 
 (defun hermes--focus-bench-input (buf)

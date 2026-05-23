@@ -14,6 +14,8 @@
 (require 'hermes-state)
 (require 'hermes-rpc)
 
+(declare-function hermes-bench-ensure "hermes-bench" (sid))
+
 (declare-function hermes--install-hooks "hermes-mode" ())
 (declare-function hermes-new-session "hermes-mode" (&optional callback))
 (declare-function hermes--parse-buffer-messages "hermes-mode" ())
@@ -194,12 +196,15 @@ session via `hermes--on-session-buffer'."
 ;;;; Detach
 
 (defun hermes-section--detach ()
-  "Detach this buffer from the conversation registry on kill."
+  "Detach this buffer from the conversation registry on kill.
+Kills the paired bench when the last viewer goes."
   (when (and hermes--current-session-id
               (eq (current-buffer)
                   (gethash hermes--current-session-id
                            hermes-section--buffers)))
-    (remhash hermes--current-session-id hermes-section--buffers)))
+    (let ((sid hermes--current-session-id))
+      (remhash sid hermes-section--buffers)
+      (hermes--maybe-kill-bench sid))))
 
 ;;;; Major mode + keymap
 
@@ -242,6 +247,8 @@ by `hermes-new-session'); otherwise a fresh buffer is generated."
         (when state
           (hermes-section--rebuild state))))
     (pop-to-buffer buf)
+    (when (fboundp 'hermes-bench-ensure)
+      (hermes-bench-ensure sid))
     buf))
 
 (defun hermes--maybe-pick-session ()

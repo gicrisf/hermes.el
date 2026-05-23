@@ -12,7 +12,7 @@
 (defvar hermes-bench-test--counter 0)
 
 (defun hermes-bench-test--make-parent ()
-  "Return a fresh parent buffer with `hermes-org-minor-mode' active and a registered session."
+  "Return (PARENT . SID) for a fresh org viewer + registered session."
   (let* ((sid (format "bench-test-%d" (cl-incf hermes-bench-test--counter)))
          (buf (generate-new-buffer (format " *hermes-bench-test-%s*" sid))))
     (with-current-buffer buf
@@ -23,13 +23,15 @@
        sid
        (make-hermes-state :session-id sid :connection 'connected)
        (copy-marker (point-min) nil)))
-    buf))
+    (cons buf sid)))
 
 (defmacro hermes-bench-test--with-pair (parent-var bench-var &rest body)
   "Bind PARENT-VAR and BENCH-VAR to a fresh hermes/bench pair around BODY."
   (declare (indent 2))
-  `(let* ((,parent-var (hermes-bench-test--make-parent))
-          (,bench-var (hermes-bench-ensure ,parent-var)))
+  `(let* ((pair (hermes-bench-test--make-parent))
+          (,parent-var (car pair))
+          (sid (cdr pair))
+          (,bench-var (hermes-bench-ensure sid)))
      (unwind-protect (progn ,@body)
        (when (buffer-live-p ,bench-var) (kill-buffer ,bench-var))
        (when (buffer-live-p ,parent-var) (kill-buffer ,parent-var)))))
@@ -46,33 +48,38 @@
       (should (hermes-bench-buffer-p)))
     (should (hermes-bench-buffer-p bench))))
 
-(ert-deftest hermes-bench-test/resolve-parent-from-bench ()
+(ert-deftest hermes-bench-test/active-p-from-org-viewer ()
   (hermes-bench-test--with-pair parent bench
-    (should (eq parent (hermes-bench-resolve-parent bench)))
-    (with-current-buffer bench
-      (should (eq parent (hermes-bench-resolve-parent))))))
-
-(ert-deftest hermes-bench-test/resolve-parent-returns-self-for-org ()
-  (hermes-bench-test--with-pair parent _bench
-    (should (eq parent (hermes-bench-resolve-parent parent)))
+    (should (eq bench (hermes-bench-active-p parent)))
     (with-current-buffer parent
-      (should (eq parent (hermes-bench-resolve-parent))))))
+      (should (eq bench (hermes-bench-active-p))))))
 
-(ert-deftest hermes-bench-test/resolve-parent-nil-for-unrelated ()
+(ert-deftest hermes-bench-test/active-p-from-bench-buffer ()
+  (hermes-bench-test--with-pair _parent bench
+    (should (eq bench (hermes-bench-active-p bench)))
+    (with-current-buffer bench
+      (should (eq bench (hermes-bench-active-p))))))
+
+(ert-deftest hermes-bench-test/active-p-by-sid ()
+  (hermes-bench-test--with-pair _parent bench
+    (should (eq bench (hermes-bench-active-p sid)))))
+
+(ert-deftest hermes-bench-test/active-p-nil-for-unrelated ()
   (let ((unrelated (generate-new-buffer " *hermes-bench-test-unrelated*")))
     (unwind-protect
-        (should-not (hermes-bench-resolve-parent unrelated))
+        (should-not (hermes-bench-active-p unrelated))
       (kill-buffer unrelated))))
 
-(ert-deftest hermes-bench-test/live-p-returns-bench-for-parent ()
-  (hermes-bench-test--with-pair parent bench
-    (should (eq bench (hermes-bench-live-p parent)))))
-
-(ert-deftest hermes-bench-test/live-p-returns-bench-for-bench ()
-  (hermes-bench-test--with-pair _parent bench
-    (should (eq bench (hermes-bench-live-p bench)))
-    (with-current-buffer bench
-      (should (eq bench (hermes-bench-live-p))))))
+(ert-deftest hermes-bench-test/kill-on-last-viewer-detach ()
+  "Killing the only viewer kills the paired bench."
+  (let* ((pair (hermes-bench-test--make-parent))
+         (parent (car pair))
+         (sid (cdr pair))
+         (bench (hermes-bench-ensure sid)))
+    (should (buffer-live-p bench))
+    (kill-buffer parent)
+    (should-not (buffer-live-p bench))
+    (should-not (gethash sid hermes--bench-buffers))))
 
 ;;;; Slash-command CAPF in the bench
 

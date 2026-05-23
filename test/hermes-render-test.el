@@ -1477,5 +1477,54 @@ mutates, so there is no preview-vs-final ambiguity to gate on."
            (out (plist-get (hermes-tool-format-edit tool) :body)))
       (should (string-match-p "^#\\+name: hermes-tool-t-context$" out)))))
 
+(ert-deftest hermes-render-test/recursive-dispatch-targets-session-slot ()
+  "Nested `:pending-turns-clear' inside `hermes--render' must write to the
+session's state slot, not the global one.
+
+Regression for the bench bug: bench / section buffers make
+`hermes--current-session-id' buffer-local.  When the outer dispatch
+runs in such a buffer, the dynamic let-bind only covers that buffer;
+once `hermes--render' switches into the org buffer with
+`with-current-buffer', the dynamic value would drop back to the global
+binding (nil) unless `hermes--render' rebinds it.  Without the rebind,
+the recursive `:pending-turns-clear' silently writes to
+`hermes--global-state' and the session's `pending-turns' grows
+unbounded — surfacing as duplicate `** U:' headings in the org buffer
+on every subsequent dispatch."
+  (require 'hermes-test-helpers)
+  (hermes-test--reset-global-state)
+  (let* ((sid "render-test-sid")
+         (org-buf (generate-new-buffer " *hermes-render-test-org*"))
+         (origin  (generate-new-buffer " *hermes-render-test-origin*")))
+    (unwind-protect
+        (progn
+          ;; Org viewer: registered, hermes-org-minor-mode active so the
+          ;; render hook installs.
+          (with-current-buffer org-buf
+            (org-mode)
+            (hermes--ensure-container)
+            (hermes-org-minor-mode 1)
+            (hermes--register-session
+             sid
+             (make-hermes-state :session-id sid :connection 'connected)
+             (copy-marker (point-min) nil)))
+          ;; Origin buffer mimics a bench: `hermes--current-session-id'
+          ;; lives buffer-local here.  Dispatch from this buffer.
+          (with-current-buffer origin
+            (setq-local hermes--current-session-id sid)
+            (let ((hermes--current-session-id sid))
+              (hermes-dispatch (cons :user-submit (list :text "hi")))))
+          ;; Session slot must be clean; global must not have absorbed the
+          ;; pending entry.
+          (let ((session-state (gethash sid hermes--sessions)))
+            (should (zerop (length (hermes-state-pending-turns session-state)))))
+          (should (zerop (length (hermes-state-pending-turns hermes--global-state))))
+          ;; Org buffer must contain exactly one user heading.
+          (with-current-buffer org-buf
+            (goto-char (point-min))
+            (should (= 1 (count-matches "^\\*\\* U: " (point-min) (point-max))))))
+      (when (buffer-live-p org-buf) (kill-buffer org-buf))
+      (when (buffer-live-p origin) (kill-buffer origin)))))
+
 (provide 'hermes-render-test)
 ;;; hermes-render-test.el ends here

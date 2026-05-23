@@ -177,7 +177,15 @@ such as tests, or in-buffer dispatch loops)."
          (buf (and sid (gethash sid hermes--org-buffers))))
     (cond
      ((buffer-live-p buf)
-      (with-current-buffer buf (hermes--render-1 old new)))
+      ;; Rebind the dynamic sid *inside* the target buffer.  `let' creates
+      ;; a buffer-local binding; if `hermes--current-session-id' is
+      ;; buffer-local in the caller (bench / section), the outer let
+      ;; doesn't reach this buffer.  Without this rebind, recursive
+      ;; dispatches from render-1 (e.g. `:pending-turns-clear') would
+      ;; resolve to nil and write to the global state slot.
+      (with-current-buffer buf
+        (let ((hermes--current-session-id sid))
+          (hermes--render-1 old new))))
      ((bound-and-true-p hermes-org-minor-mode)
       (hermes--render-1 old new)))))
 

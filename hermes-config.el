@@ -185,10 +185,10 @@ Bound around the `completing-read' call in `hermes--set-model-prompt'.")
 
 ;;;; Steer (mid-turn injection)
 
-(declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
-(declare-function hermes-bench-resolve-parent "hermes-bench" (&optional buffer))
-(declare-function hermes-bench-live-p "hermes-bench" (&optional buffer))
-(declare-function hermes-bench-add-steer "hermes-bench" (parent text))
+(declare-function hermes-bench-active-p "hermes-bench" (&optional buffer-or-sid))
+(declare-function hermes-bench-live-p "hermes-bench" (&optional buffer-or-sid))
+(declare-function hermes-bench-add-steer "hermes-bench" (sid text))
+(declare-function hermes-bench-show-status "hermes-bench" (sid text &optional error-p))
 
 (defun hermes-steer (text)
   "Send TEXT as a steer message to the current session's in-flight turn.
@@ -197,12 +197,11 @@ without interrupting it.  If a bench is paired with the target buffer,
 the message is also shown above its reasoning zone."
   (interactive (list (read-string "Steer: ")))
   (let ((sid    (hermes--config-resolve-target))
-        (parent (current-buffer))
         (trimmed (string-trim (or text ""))))
     (when (string-empty-p trimmed)
       (user-error "Empty steer message"))
     (when (fboundp 'hermes-bench-add-steer)
-      (hermes-bench-add-steer parent trimmed))
+      (hermes-bench-add-steer sid trimmed))
     (hermes-rpc-request
      "session.steer"
      (list :session_id sid :text trimmed)
@@ -479,14 +478,14 @@ a hash table whose values are vectors/lists of names."
 If the bench is unavailable and output is single-line, fall back to the
 minibuffer.  ERROR-P applies `error' face."
   (let* ((clean (or (ansi-color-apply (or output "")) ""))
-         (buf (hermes-bench-resolve-parent)))
+         (sid (hermes--buffer-sid)))
     (cond
      ((string-empty-p clean)
       (message "hermes: (no output)"))
      ((and (fboundp 'hermes-bench-show-status)
-           buf
-           (hermes-bench-active-p buf))
-      (hermes-bench-show-status buf clean error-p))
+           sid
+           (hermes-bench-active-p sid))
+      (hermes-bench-show-status sid clean error-p))
      ((string-match-p "\n" (string-trim-right clean))
       (let ((disp (get-buffer-create "*Hermes Skills*")))
         (with-current-buffer disp

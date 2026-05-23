@@ -345,6 +345,34 @@ Same resolution as `hermes--current-state' but returns the id."
                    hermes--org-buffers)
           nil))))
 
+(defun hermes--buffer-sid (&optional buffer)
+  "Return the session-id for BUFFER (or current buffer), or nil.
+Recognises every viewer kind:
+- Section and bench buffers (buffer-local `hermes--current-session-id'
+  or `hermes-bench--session-id').
+- Org viewers (walked through `hermes--org-buffers')."
+  (let ((buf (or buffer (current-buffer))))
+    (when (buffer-live-p buf)
+      (or (buffer-local-value 'hermes--current-session-id buf)
+          (and (local-variable-p 'hermes-bench--session-id buf)
+               (buffer-local-value 'hermes-bench--session-id buf))
+          (catch 'found
+            (maphash (lambda (sid b) (when (eq b buf) (throw 'found sid)))
+                     hermes--org-buffers)
+            nil)))))
+
+(defun hermes--maybe-kill-bench (sid)
+  "Kill the bench for SID if no viewers remain across all registries."
+  (when sid
+    (unless (or (buffer-live-p (gethash sid hermes--org-buffers))
+                (buffer-live-p (gethash sid hermes-section--buffers)))
+      (let ((bench (gethash sid hermes--bench-buffers)))
+        (when (buffer-live-p bench)
+          (dolist (w (get-buffer-window-list bench nil t))
+            (when (window-live-p w) (delete-window w)))
+          (kill-buffer bench))
+        (remhash sid hermes--bench-buffers)))))
+
 (defmacro hermes--on-session-buffer (registry &rest body)
   "If the current session has a live buffer in REGISTRY, run BODY there.
 Reads `hermes--current-session-id', looks up REGISTRY (a hash-table

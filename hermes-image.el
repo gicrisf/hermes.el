@@ -21,8 +21,8 @@
 (require 'hermes-rpc)
 (require 'hermes-state)
 
-(declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
-(declare-function hermes-bench-show-status "hermes-bench" (parent text &optional error-p))
+(declare-function hermes-bench-active-p "hermes-bench" (&optional buffer-or-sid))
+(declare-function hermes-bench-show-status "hermes-bench" (sid text &optional error-p))
 (declare-function hermes--paint-bench "hermes-bench" ())
 
 (defvar hermes-image--attach-counter 0
@@ -92,12 +92,11 @@ CALLBACK receives (RESULT ERROR)."
 
 ;;;; Bench repaint
 
-(defun hermes-image--repaint-bench (parent)
-  "Trigger a bench repaint for PARENT, preserving in-flight content.
-The bench reads `hermes-state-attachments' from PARENT when rendering."
-  (when (and (buffer-live-p parent)
-             (fboundp 'hermes-bench-active-p))
-    (let ((bench (hermes-bench-active-p parent)))
+(defun hermes-image--repaint-bench (sid)
+  "Trigger a bench repaint for SID, preserving in-flight content.
+The bench reads `hermes-state-attachments' from its session state."
+  (when (and sid (fboundp 'hermes-bench-active-p))
+    (let ((bench (hermes-bench-active-p sid)))
       (when (buffer-live-p bench)
         (with-current-buffer bench
           (when (fboundp 'hermes-bench--repaint-preserving-stream)
@@ -114,64 +113,57 @@ The bench shows an optimistic placeholder immediately; the entry is
 updated with width/height/token estimate when the gateway responds,
 or removed with an error status if the gateway rejects the file."
   (interactive "fImage file: ")
-  (unless (or (bound-and-true-p hermes-org-minor-mode)
-              (and (boundp 'hermes-bench--parent-buffer)
-                   hermes-bench--parent-buffer))
-    (user-error "Not in a Hermes buffer"))
-  (let* ((parent (or (and (boundp 'hermes-bench--parent-buffer)
-                          hermes-bench--parent-buffer)
-                     (current-buffer)))
-         (path (hermes-image--normalize-path file))
-         (name (file-name-nondirectory path))
-         (attach-id (hermes-image--next-attach-id)))
-    (with-current-buffer parent
-      (let ((sid (hermes-image--current-session-id)))
-        (unless sid
-          (user-error "No active Hermes session in this buffer"))
-        ;; Optimistic insert.
-        (hermes-dispatch
-         (cons :attachment-add
-               (list :attach-id attach-id
-                     :path path
-                     :name name
-                     :status 'pending)))
-        (hermes-image--repaint-bench parent)
-        (hermes-image--rpc-attach
-         sid path
-         (lambda (result error)
-           (when (buffer-live-p parent)
-             (with-current-buffer parent
-               (cond
-                ((or error (not (eq t (and result (hermes-image--get result "attached")))))
-                 (let ((msg (or (and (hash-table-p error) (gethash "message" error))
-                                (and result (hermes-image--get result "message"))
-                                (format "%S" error))))
-                   (hermes-dispatch
-                    (cons :attachment-remove (list :attach-id attach-id)))
-                   (hermes-image--repaint-bench parent)
-                   (when (fboundp 'hermes-bench-show-status)
-                     (hermes-bench-show-status
-                      parent (format "Attach failed: %s" msg) t))))
-                (t
-                 (let* ((rpath (or (hermes-image--get result "path") path))
-                        (w (hermes-image--get result "width"))
-                        (h (hermes-image--get result "height")))
-                   (unless (and w h)
-                     (let ((dims (hermes-image--probe-dimensions rpath)))
-                       (when dims
-                         (setq w (or w (car dims))
-                               h (or h (cdr dims))))))
-                   (hermes-dispatch
-                    (cons :attachment-update
-                          (list :attach-id attach-id
-                                :path rpath
-                                :name (or (hermes-image--get result "name") name)
-                                :width w
-                                :height h
-                                :token-estimate (hermes-image--get result "token_estimate")
-                                :status 'attached))))
-                 (hermes-image--repaint-bench parent)))))))))
-    attach-id))
+  (let ((sid (hermes--buffer-sid)))
+    (unless sid
+      (user-error "Not in a Hermes buffer"))
+    (let* ((path (hermes-image--normalize-path file))
+           (name (file-name-nondirectory path))
+           (attach-id (hermes-image--next-attach-id)))
+      ;; Optimistic insert.
+      (hermes-dispatch
+       (cons :attachment-add
+             (list :attach-id attach-id
+                   :path path
+                   :name name
+                   :status 'pending))
+       sid)
+      (hermes-image--repaint-bench sid)
+      (hermes-image--rpc-attach
+       sid path
+       (lambda (result error)
+         (cond
+          ((or error (not (eq t (and result (hermes-image--get result "attached")))))
+           (let ((msg (or (and (hash-table-p error) (gethash "message" error))
+                          (and result (hermes-image--get result "message"))
+                          (format "%S" error))))
+             (hermes-dispatch
+              (cons :attachment-remove (list :attach-id attach-id))
+              sid)
+             (hermes-image--repaint-bench sid)
+             (when (fboundp 'hermes-bench-show-status)
+               (hermes-bench-show-status
+                sid (format "Attach failed: %s" msg) t))))
+          (t
+           (let* ((rpath (or (hermes-image--get result "path") path))
+                  (w (hermes-image--get result "width"))
+                  (h (hermes-image--get result "height")))
+             (unless (and w h)
+               (let ((dims (hermes-image--probe-dimensions rpath)))
+                 (when dims
+                   (setq w (or w (car dims))
+                         h (or h (cdr dims))))))
+             (hermes-dispatch
+              (cons :attachment-update
+                    (list :attach-id attach-id
+                          :path rpath
+                          :name (or (hermes-image--get result "name") name)
+                          :width w
+                          :height h
+                          :token-estimate (hermes-image--get result "token_estimate")
+                          :status 'attached))
+              sid))
+           (hermes-image--repaint-bench sid)))))
+      attach-id)))
 
 (defun hermes-image--insert-clipboard-text-locally ()
   "Yank clipboard text into the bench input area (or current buffer)."
@@ -214,12 +206,12 @@ selection support).  Callers should treat `unknown' as \"send the RPC\"."
            (t 'unknown)))
       (error 'unknown)))))
 
-(defun hermes-image--clipboard-fallback-yank (parent error result)
+(defun hermes-image--clipboard-fallback-yank (sid error result)
   "Fallback path when `clipboard.paste' reports no image.
 Yanks clipboard text into the bench input area; otherwise shows an
-error status in the bench paired with PARENT."
+error status in the bench for SID."
   (let ((bench (and (fboundp 'hermes-bench-active-p)
-                    (hermes-bench-active-p parent)))
+                    (hermes-bench-active-p sid)))
         (yanked nil))
     (if (buffer-live-p bench)
         (with-current-buffer bench
@@ -230,39 +222,39 @@ error status in the bench paired with PARENT."
                      (and result (hermes-image--get result "message"))
                      "no image or text on clipboard")))
         (when (fboundp 'hermes-bench-show-status)
-          (hermes-bench-show-status parent msg t))))))
+          (hermes-bench-show-status sid msg t))))))
 
-(defun hermes-image--clipboard-paste-callback (parent attach-id result error)
-  "RPC callback for `clipboard.paste' against PARENT and ATTACH-ID."
-  (when (buffer-live-p parent)
-    (with-current-buffer parent
-      (cond
-       ((and (not error)
-             result
-             (eq t (hermes-image--get result "attached")))
-        (let* ((rpath (hermes-image--get result "path"))
-               (w (hermes-image--get result "width"))
-               (h (hermes-image--get result "height")))
-          (unless (and w h)
-            (let ((dims (hermes-image--probe-dimensions rpath)))
-              (when dims
-                (setq w (or w (car dims))
-                      h (or h (cdr dims))))))
-          (hermes-dispatch
-           (cons :attachment-update
-                 (list :attach-id attach-id
-                       :path rpath
-                       :name (or (hermes-image--get result "name") "clipboard")
-                       :width w
-                       :height h
-                       :token-estimate (hermes-image--get result "token_estimate")
-                       :status 'attached))))
-        (hermes-image--repaint-bench parent))
-       (t
-        (hermes-dispatch
-         (cons :attachment-remove (list :attach-id attach-id)))
-        (hermes-image--repaint-bench parent)
-        (hermes-image--clipboard-fallback-yank parent error result))))))
+(defun hermes-image--clipboard-paste-callback (sid attach-id result error)
+  "RPC callback for `clipboard.paste' against SID and ATTACH-ID."
+  (cond
+   ((and (not error)
+         result
+         (eq t (hermes-image--get result "attached")))
+    (let* ((rpath (hermes-image--get result "path"))
+           (w (hermes-image--get result "width"))
+           (h (hermes-image--get result "height")))
+      (unless (and w h)
+        (let ((dims (hermes-image--probe-dimensions rpath)))
+          (when dims
+            (setq w (or w (car dims))
+                  h (or h (cdr dims))))))
+      (hermes-dispatch
+       (cons :attachment-update
+             (list :attach-id attach-id
+                   :path rpath
+                   :name (or (hermes-image--get result "name") "clipboard")
+                   :width w
+                   :height h
+                   :token-estimate (hermes-image--get result "token_estimate")
+                   :status 'attached))
+       sid))
+    (hermes-image--repaint-bench sid))
+   (t
+    (hermes-dispatch
+     (cons :attachment-remove (list :attach-id attach-id))
+     sid)
+    (hermes-image--repaint-bench sid)
+    (hermes-image--clipboard-fallback-yank sid error result))))
 
 ;;;###autoload
 (defun hermes-image-clipboard-paste ()
@@ -276,10 +268,8 @@ When the local probe is inconclusive (terminal Emacs, no display), the
 RPC path is taken; if the gateway also reports no image, fall back to
 local text yank."
   (interactive)
-  (let ((parent (or (and (boundp 'hermes-bench--parent-buffer)
-                         hermes-bench--parent-buffer)
-                    (current-buffer))))
-    (unless (buffer-live-p parent)
+  (let ((sid (hermes--buffer-sid)))
+    (unless sid
       (user-error "No live Hermes buffer"))
     (let ((probe (hermes-image--clipboard-has-image-p)))
       (cond
@@ -287,22 +277,19 @@ local text yank."
         (unless (hermes-image--insert-clipboard-text-locally)
           (message "hermes: clipboard is empty")))
        (t
-        (let ((sid (with-current-buffer parent (hermes-image--current-session-id))))
-          (unless sid
-            (user-error "No active Hermes session in this buffer"))
-          (let ((attach-id (hermes-image--next-attach-id)))
-            (with-current-buffer parent
-              (hermes-dispatch
-               (cons :attachment-add
-                     (list :attach-id attach-id
-                           :name "clipboard"
-                           :status 'pending)))
-              (hermes-image--repaint-bench parent))
-            (hermes-image--rpc-clipboard-paste
-             sid
-             (lambda (result error)
-               (hermes-image--clipboard-paste-callback
-                parent attach-id result error))))))))))
+        (let ((attach-id (hermes-image--next-attach-id)))
+          (hermes-dispatch
+           (cons :attachment-add
+                 (list :attach-id attach-id
+                       :name "clipboard"
+                       :status 'pending))
+           sid)
+          (hermes-image--repaint-bench sid)
+          (hermes-image--rpc-clipboard-paste
+           sid
+           (lambda (result error)
+             (hermes-image--clipboard-paste-callback
+              sid attach-id result error)))))))))
 
 (provide 'hermes-image)
 ;;; hermes-image.el ends here

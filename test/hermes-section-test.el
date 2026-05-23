@@ -44,19 +44,21 @@
   (let ((m (make-hermes-message :kind 'user :segments [])))
     (should (equal "" (hermes-section--body-text m)))))
 
-(ert-deftest hermes-section-test/heading-text-first-non-blank-line ()
+(ert-deftest hermes-section-test/heading-text-assistant-with-text ()
   (let ((m (make-hermes-message
             :kind 'assistant
             :segments
             (vector
              (make-hermes-segment :type 'text
                                   :content "\n\nfirst line\nsecond"
-                                  :id "t")))))
-    (should (equal "first line" (hermes-section--heading-text m)))))
+                                  :id "t"))))
+        (hermes--current-session-id nil))
+    ;; No session info → model defaults to "?".
+    (should (equal "#3 · Assistant · ?" (hermes-section--heading-text m 3)))))
 
 (ert-deftest hermes-section-test/heading-text-empty-user ()
   (let ((m (make-hermes-message :kind 'user :segments [])))
-    (should (equal "(empty)" (hermes-section--heading-text m)))))
+    (should (equal "#1 · User" (hermes-section--heading-text m 1)))))
 
 (ert-deftest hermes-section-test/heading-text-tool-only-assistant ()
   (let* ((tool (make-hermes-tool :id "t1" :name "calc" :status 'complete))
@@ -64,7 +66,12 @@
              :kind 'assistant
              :segments (vector (make-hermes-segment :type 'tool
                                                     :content tool :id "s")))))
-    (should (equal "(tool-only turn)" (hermes-section--heading-text m)))))
+    (should (equal "#2 · Assistant · (tool-only)"
+                   (hermes-section--heading-text m 2)))))
+
+(ert-deftest hermes-section-test/heading-text-system ()
+  (let ((m (make-hermes-message :kind 'system :segments [])))
+    (should (equal "#4 · System" (hermes-section--heading-text m 4)))))
 
 ;;;; tool-body / subagent-body
 
@@ -129,6 +136,19 @@
     (should (equal "result: ok (1.2s)\n"
                    (hermes-section--subagent-body sa)))))
 
+(ert-deftest hermes-section-test/subagent-body-includes-notes ()
+  (let ((sa (make-hermes-subagent
+             :id "s" :goal "g" :status 'complete
+             :thinking "thinking-text"
+             :notes ["checking deps" "running tests"]
+             :tools [] :summary "ok" :duration 1.2)))
+    (should (equal (concat "thinking: thinking-text\n"
+                           "notes:\n"
+                           "  - checking deps\n"
+                           "  - running tests\n"
+                           "result: ok (1.2s)\n")
+                   (hermes-section--subagent-body sa)))))
+
 ;;;; insert-turn + rebuild
 
 (ert-deftest hermes-section-test/rebuild-empty ()
@@ -153,7 +173,12 @@
              (st (make-hermes-state :turns (vector u a))))
         (hermes--state-slot-write "s1" st)
         (hermes-section--rebuild st))
+      ;; Expand all sections so the (hidden by default) user body becomes
+      ;; part of buffer-string.
+      (magit-section-show-level-4-all)
       (let ((s (buffer-string)))
+        (should (string-match-p "#1 · User" s))
+        (should (string-match-p "#2 · Assistant" s))
         (should (string-match-p "hello there" s))
         (should (string-match-p "hi back" s))))))
 
@@ -180,6 +205,7 @@
               ;; Simulate a dispatch firing
               (run-hook-with-args 'hermes-state-change-hook old new)))
           (with-current-buffer buf
+            (magit-section-show-level-4-all)
             (should (string-match-p "first prompt" (buffer-string)))))
       (kill-buffer buf))))
 

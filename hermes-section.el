@@ -315,7 +315,7 @@ Heading is turn-number based (per plan 11), so no dedup needed."
   (let ((id (or (hermes-segment-id seg)
                 (format "reasoning-%d" (sxhash-equal seg))))
         (c  (or (hermes-segment-content seg) "")))
-    (magit-insert-section (hermes-section-reasoning-section id t)
+    (magit-insert-section (hermes-section-reasoning-section id nil)
       (magit-insert-heading
         (propertize "Reasoning"
                      'font-lock-face (list 'hermes-section-face-reasoning bg-face)))
@@ -341,15 +341,13 @@ Heading is turn-number based (per plan 11), so no dedup needed."
          (kw (hermes-section--tool-status-keyword tool))
          (name (or (hermes-tool-name tool) "tool"))
          (dur (hermes-section--format-duration (hermes-tool-duration tool)))
-         (status (hermes-tool-status tool))
-         (hide (memq status '(complete error)))
          (formatter (hermes-tool--lookup name))
          (parts (and formatter (funcall formatter tool)))
          (fmt-summary (or (plist-get parts :summary) name))
          (gw-summary (let ((s (hermes-tool-summary tool)))
                        (if (and s (> (length s) 0)) (format " — %s" s) "")))
          (body (or (plist-get parts :body) "")))
-    (magit-insert-section (hermes-section-tool-section id hide)
+    (magit-insert-section (hermes-section-tool-section id nil)
       (magit-insert-heading
         (propertize (car kw) 'font-lock-face (list (cdr kw) bg-face))
         (propertize (format " %s%s%s" fmt-summary dur gw-summary)
@@ -407,7 +405,7 @@ Heading is turn-number based (per plan 11), so no dedup needed."
          (tools (hermes-subagent-tools sa))
          (summary (hermes-subagent-summary sa))
          (dur (hermes-section--format-duration (hermes-subagent-duration sa))))
-    (magit-insert-section (hermes-section-subagent-section id t)
+    (magit-insert-section (hermes-section-subagent-section id nil)
       (magit-insert-heading
         (propertize (format "%s (%s)" goal status)
                     'font-lock-face (list 'hermes-section-face-subagent bg-face)))
@@ -610,6 +608,8 @@ Reads from `turns' in the global `hermes--sessions' table.
 Read-only; input via `hermes-send' (minibuffer)."
   (setq-local buffer-read-only t)
   (setq-local magit-section-cache-visibility t)
+  (add-hook 'magit-section-set-visibility-hook
+            #'magit-section-cached-visibility nil t)
   (visual-line-mode 1)
   (add-hook 'kill-buffer-hook #'hermes-section--detach nil t)
   (add-hook 'hermes-state-change-hook

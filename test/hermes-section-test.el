@@ -97,11 +97,12 @@
     (should (equal "input: (no input)\nresult: out\n"
                    (hermes-section--tool-body t1)))))
 
-;;;; markdown fontification (plan 09)
+;;;; org-mode fontification (plan 10)
 
-(ert-deftest hermes-section-test/fontify-markdown-applies-font-lock-face ()
-  ;; A bold span gets a font-lock-face (not face) somewhere inside.
-  (let* ((out (hermes-section--fontify-markdown "hello **world**"))
+(ert-deftest hermes-section-test/fontify-org-applies-font-lock-face ()
+  ;; Bold markdown is converted to Org via hermes-md-to-org, then
+  ;; org-mode fontifies the result.  Some character gains font-lock-face.
+  (let* ((out (hermes-section--fontify-org "hello **world**"))
          (found nil))
     (let ((i 0) (n (length out)))
       (while (< i n)
@@ -117,9 +118,9 @@
         (setq i (1+ i)))
       (should-not face-leaked))))
 
-(ert-deftest hermes-section-test/fontify-markdown-empty-noop ()
-  (should (equal "" (hermes-section--fontify-markdown "")))
-  (should (equal "" (hermes-section--fontify-markdown nil))))
+(ert-deftest hermes-section-test/fontify-org-empty-noop ()
+  (should (equal "" (hermes-section--fontify-org "")))
+  (should (equal "" (hermes-section--fontify-org nil))))
 
 (ert-deftest hermes-section-test/subagent-body-omits-empties ()
   (let ((sa (make-hermes-subagent

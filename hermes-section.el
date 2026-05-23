@@ -1,6 +1,6 @@
 ;;; hermes-section.el --- magit-section conversation viewer  -*- lexical-binding: t; -*-
 
-;; Package-Requires: ((emacs "27.1") (magit-section "3.0") (markdown-mode "2.6"))
+;; Package-Requires: ((emacs "27.1") (magit-section "3.0"))
 
 ;;; Commentary:
 ;;
@@ -8,15 +8,16 @@
 ;; Hermes session.  Projects state from `hermes--sessions'; never mutates
 ;; it.  See plans/04-section-mode.md,
 ;; plans/08-hermes-section-presentation.md, and
-;; plans/09-hermes-section-markdown-highlighting.md.
+;; plans/10-hermes-section-org-fontification.md.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'seq)
+(require 'org)
 (require 'magit-section)
-(require 'markdown-mode)
 (require 'hermes-state)
+(require 'hermes-md)
 (require 'hermes-rpc)
 
 (declare-function hermes-bench-ensure "hermes-bench" (sid))
@@ -183,20 +184,30 @@
     ('assistant 'hermes-section-assistant-section)
     (_          'hermes-section-system-section)))
 
-;;;; Markdown fontification (plan 09)
+;;;; Org-mode fontification (plan 10)
 
-(defun hermes-section--fontify-markdown (text)
-  "Return TEXT with `font-lock-face' properties from `markdown-mode'.
-Used to highlight body text in `hermes-section' buffers where
-`magit-section-mode' disables syntactic font-locking — only
-`font-lock-face' (or `face') properties render.  Per plan 09,
-body text carries no background tint; only the heading does."
+(defun hermes-section--fontify-org (text)
+  "Return TEXT fontified as Org-mode body, with `font-lock-face' properties.
+Runs TEXT through `hermes-md-to-org' (matching the canonical Org
+renderer's pipeline), then enables `org-mode' in a temp buffer
+and ensures font-lock.  Converts the resulting `face' properties
+to `font-lock-face' so the colors render in
+`magit-section-mode' buffers where syntactic font-locking is
+disabled.  Per plan 10, body text carries no background tint;
+only the heading does.
+
+Applied only to fields known to be LLM-generated markdown — tool
+output/summary/context are inserted plain to preserve what the
+tool actually returned (see plan 10 §4)."
   (if (or (null text) (string-empty-p text))
       (or text "")
     (with-temp-buffer
-      (insert text)
-      (delay-mode-hooks (markdown-mode))
-      (font-lock-ensure)
+      (insert (hermes-md-to-org text))
+      ;; org-src-fontify-natively must be let-bound BEFORE org-mode init:
+      ;; org-mode reads it when building org-font-lock-keywords.
+      (let ((org-src-fontify-natively t))
+        (delay-mode-hooks (org-mode))
+        (font-lock-ensure))
       (let ((pos (point-min)))
         (while (< pos (point-max))
           (let* ((next (or (next-single-property-change
@@ -252,7 +263,7 @@ background tint — only the turn heading shows the writer's tint."
        (t (setq seen-content t)
           (push line out))))
     (when out
-      (insert (hermes-section--fontify-markdown
+      (insert (hermes-section--fontify-org
                (concat (mapconcat #'identity (nreverse out) "\n") "\n"))))))
 
 (defun hermes-section--insert-lines (lines _bg-face)
@@ -318,7 +329,7 @@ background tint — only the turn heading shows the writer's tint."
         (propertize "Reasoning"
                     'face (list 'hermes-section-face-reasoning bg-face)))
       (magit-insert-section-body
-        (insert (hermes-section--fontify-markdown
+        (insert (hermes-section--fontify-org
                  (concat c (if (or (string-empty-p c)
                                    (string-suffix-p "\n" c))
                                "" "\n"))))))))
@@ -372,9 +383,7 @@ structural labels and the context line as plain text."
         (insert (format "input: %s\n" ctx))
         (if err
             (insert (format "error: %s%s\n" err dur))
-          (insert "result: "
-                  (hermes-section--fontify-markdown result)
-                  (format "%s\n" dur)))))))
+          (insert (format "result: %s%s\n" result dur)))))))
 
 (defun hermes-section--subagent-body (sa)
   "Return plain-text body string for subagent SA struct."
@@ -422,7 +431,7 @@ structural labels and the context line as plain text."
       (magit-insert-section-body
         (when (and thinking (stringp thinking) (> (length thinking) 0))
           (insert "thinking: "
-                  (hermes-section--fontify-markdown thinking)
+                  (hermes-section--fontify-org thinking)
                   "\n"))
         (when (and (vectorp tools) (> (length tools) 0))
           (insert "tools:\n")
@@ -436,7 +445,7 @@ structural labels and the context line as plain text."
                               (if a (format "(%s)" a) ""))))))
         (when (and (memq status '(complete error)) summary)
           (insert "result: "
-                  (hermes-section--fontify-markdown summary)
+                  (hermes-section--fontify-org summary)
                   (format "%s\n" dur)))))))
 
 (defun hermes-section--insert-assistant-body (msg bg-face heading)

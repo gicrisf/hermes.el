@@ -36,7 +36,7 @@
 (defun hermes-compose ()
   "Pop a `*hermes-compose*' buffer for multi-line input to the current session."
   (interactive)
-  (unless (derived-mode-p 'hermes-mode)
+  (unless (bound-and-true-p hermes-org-minor-mode)
     (user-error "Not in a Hermes buffer"))
   (let ((target (current-buffer))
         (buf (get-buffer-create "*hermes-compose*")))

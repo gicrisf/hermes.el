@@ -34,7 +34,8 @@
 
 ;; hermes--org-buffers is defined in hermes-state.el
 (defvar hermes--seeded-session-id)      ; defined in hermes-input.el (buffer-local)
-(declare-function hermes-mode "hermes-mode" ())
+(declare-function hermes-org-minor-mode "hermes-mode" (&optional arg))
+(declare-function hermes--ensure-container "hermes-mode" ())
 (declare-function hermes--install-hooks "hermes-mode" ())
 (declare-function hermes--register-session "hermes-org" (sid state marker))
 (declare-function hermes--buffer-message-count "hermes-mode" ())
@@ -298,8 +299,8 @@ current project's CWD."
 (defun hermes--db-messages-to-org-body (messages)
   "Render MESSAGES (list/vector of hashtables) as the body org string.
 Emits only the per-turn headings (no `* Hermes session' container).
-Used when inserting into a buffer where `hermes-mode' has already
-created the container."
+Used when inserting into a buffer where the container has already
+been created."
   (let ((msgs (cond
                ((vectorp messages) (append messages nil))
                ((listp messages) messages)
@@ -349,14 +350,16 @@ Erases the buffer first."
 ;;;; Resume / branch install path
 
 (defun hermes--db-install-into-buffer (buf new-sid messages info &optional parent-sid)
-  "Activate `hermes-mode' in BUF, render MESSAGES, register NEW-SID.
+  "Activate `hermes-org-minor-mode' in BUF, render MESSAGES, register NEW-SID.
 INFO is the `info' hash-table from the server response (may be nil).
 PARENT-SID, when non-nil, is recorded on the state's `parent-sid' slot
 — set this for branch installs, leave nil for plain resume.
 On return, BUF is a fully-armed Hermes session buffer with the history
 seed already stamped (no re-seeding on next prompt)."
   (with-current-buffer buf
-    (hermes-mode)
+    (org-mode)
+    (hermes--ensure-container)
+    (hermes-org-minor-mode 1)
     (let* ((cwd (and (hash-table-p info) (gethash "cwd" info)))
            (state (make-hermes-state
                    :connection 'connected

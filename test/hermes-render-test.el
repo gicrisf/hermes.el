@@ -527,7 +527,7 @@ Duration is full-precision."
   "Regression: the assistant heading's HERMES_USAGE_* properties carry
 the just-completed turn's deltas, not the running session total."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     ;; Pre-seed session-cumulative usage as if a prior turn ran.
     (setf (hermes-test--cur)
           (hermes--with-copy (hermes-test--cur) hermes-state-copy s
@@ -563,7 +563,7 @@ the just-completed turn's deltas, not the running session total."
 (ert-deftest hermes-render-test/pending-turns-drained-correctly ()
   "Render writes pending-turn messages into the buffer and dispatches a clear."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let* ((msg (make-hermes-message
                  :kind 'user
                  :segments (vector (make-hermes-segment
@@ -604,7 +604,7 @@ stream in the same step.  The renderer must seal the streaming turn
 via stream-commit and skip the assistant in the drain, leaving exactly
 one assistant subtree."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     ;; Stage 1: stream begins and accumulates text.
     (let* ((old (hermes-test--cur))
            (stream (make-hermes-stream
@@ -640,7 +640,7 @@ one assistant subtree."
 After render: one assistant subtree, one system heading, system appears
   *after* the assistant turn, and each committed turn is properly sealed."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     ;; Stage 1: stream begins.
     (let* ((old (hermes-test--cur))
            (stream (make-hermes-stream
@@ -684,7 +684,7 @@ After render: one assistant subtree, one system heading, system appears
   "Drain with only an assistant in pending-turns inserts nothing,
 but still clears the vector via :pending-turns-clear."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let* ((old (hermes-test--cur))
            (msg (make-hermes-message
                  :kind 'assistant
@@ -712,7 +712,7 @@ subtree has been fully committed (heading + body), not interleaved."
              (lambda () t)))
     (hermes-test--reset-global-state)
     (with-temp-buffer
-      (hermes-mode)
+      (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
       ;; Stage 1 — register session id (idle path).
       (hermes--register-session
        "sess-1"
@@ -755,7 +755,7 @@ assistant stream heading are level 2.  Bump the container to level 3
 and they shift to level 4."
   (dolist (clevel '(1 3))
     (with-temp-buffer
-      (hermes-mode)
+      (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
       ;; Override the container level the major mode just set.  In real
       ;; life this happens once at mode entry; here we simulate a deeper
       ;; container.  We do NOT rewrite the buffer's existing container
@@ -792,7 +792,7 @@ and they shift to level 4."
 during cooldown stash a pending snapshot instead of painting.
 (`stream-begin' is always immediate and does not arm the timer.)"
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))      ; effectively never fires
       ;; stream-begin path — immediate, no timer.
       (hermes-render-test--apply-stream
@@ -824,7 +824,7 @@ during cooldown stash a pending snapshot instead of painting.
 (ert-deftest hermes-render-test/throttle-disabled-paints-every-delta ()
   "Throttle = 0 reproduces the legacy behaviour: every delta paints, no timer."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 0))
       ;; stream-begin
       (hermes-render-test--apply-stream
@@ -852,7 +852,7 @@ during cooldown stash a pending snapshot instead of painting.
   "stream-commit must paint pending segments synchronously before tearing
 down the bench, so the final tokens never get dropped."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))
       ;; First delta paints "Hi" inline and arms the cooldown.
       (hermes-render-test--apply-stream
@@ -883,7 +883,7 @@ down the bench, so the final tokens never get dropped."
 (ert-deftest hermes-render-test/throttle-cancelled-on-minor-mode-off ()
   "Disabling the minor mode cancels any in-flight throttle timer."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))
       ;; stream-begin then a real delta to arm the timer.
       (hermes-render-test--apply-stream
@@ -895,7 +895,7 @@ down the bench, so the final tokens never get dropped."
         :segments (vector (make-hermes-segment
                            :type 'text :content "xy" :id "s1"))))
       (should (timerp hermes--stream-render-timer))
-      (hermes-minor-mode -1)
+      (hermes-org-minor-mode -1)
       (should (null hermes--stream-render-timer))
       (should (null hermes--stream-render-pending)))))
 
@@ -1005,7 +1005,7 @@ content must end up in the buffer and the snapshot."
 (ert-deftest hermes-render-test/adaptive-interval-steps-up ()
   "Interval grows with rendered text size."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 0))
       ;; No snapshot → 0 chars → smallest step (25 Hz).
       (should (= 0.04 (hermes--adaptive-throttle-interval)))
@@ -1025,7 +1025,7 @@ content must end up in the buffer and the snapshot."
 (ert-deftest hermes-render-test/adaptive-floor-respects-custom-variable ()
   "`hermes-render-stream-throttle' acts as a minimum interval."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 1.0))
       (setq hermes--stream-segments-snapshot
             (vector (list :length 100)))
@@ -1047,7 +1047,7 @@ indent + fold passes.  Regression: previously
 `with-silent-modifications', stripping `line-prefix' from the
 rewritten heading."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (org-indent-mode 1)
     ;; Stage 1: stream begins.
     (let* ((old (hermes-test--cur))
@@ -1088,7 +1088,7 @@ rewritten heading."
         (save-window-excursion
           (set-window-buffer (selected-window) buf)
           (with-current-buffer buf
-            (hermes-mode)
+            (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
             ;; Stage 1 — stream begins.
             (let* ((old (hermes-test--cur))
                    (stream (make-hermes-stream
@@ -1123,7 +1123,7 @@ rewritten heading."
         (save-window-excursion
           (set-window-buffer (selected-window) buf)
           (with-current-buffer buf
-            (hermes-mode)
+            (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
             (let* ((old (hermes-test--cur))
                    (stream (make-hermes-stream
                             :segments (vector (make-hermes-segment

@@ -6,8 +6,9 @@
 
 ;;; Commentary:
 
-;; Normal-state Evil bindings for `hermes-mode' buffers.  Works in any
-;; Emacs that has Evil installed (vanilla + evil-mode, Spacemacs, Doom).
+;; Normal-state Evil bindings for `hermes-org-minor-mode' buffers.
+;; Works in any Emacs that has Evil installed (vanilla + evil-mode,
+;; Spacemacs, Doom).
 ;;
 ;; Usage: (require 'hermes-evil)
 ;;
@@ -25,7 +26,7 @@
   (require 'evil nil t))
 
 (with-eval-after-load 'evil
-  (evil-define-key 'normal hermes-mode-map
+  (evil-define-key 'normal hermes-org-minor-mode-map
     (kbd "C-c C-i") #'hermes-bench-focus
     (kbd "C-c C-k") #'hermes-interrupt-current-session
     (kbd "C-c C-l") #'hermes-compose))

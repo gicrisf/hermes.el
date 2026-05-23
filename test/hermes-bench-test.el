@@ -12,11 +12,13 @@
 (defvar hermes-bench-test--counter 0)
 
 (defun hermes-bench-test--make-parent ()
-  "Return a fresh parent buffer in `hermes-mode' with a registered session."
+  "Return a fresh parent buffer with `hermes-org-minor-mode' active and a registered session."
   (let* ((sid (format "bench-test-%d" (cl-incf hermes-bench-test--counter)))
          (buf (generate-new-buffer (format " *hermes-bench-test-%s*" sid))))
     (with-current-buffer buf
-      (hermes-mode)
+      (org-mode)
+      (hermes--ensure-container)
+      (hermes-org-minor-mode 1)
       (hermes--register-session
        sid
        (make-hermes-state :session-id sid :connection 'connected)

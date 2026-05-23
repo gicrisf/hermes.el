@@ -178,8 +178,7 @@ such as tests, or in-buffer dispatch loops)."
     (cond
      ((buffer-live-p buf)
       (with-current-buffer buf (hermes--render-1 old new)))
-     ((or (derived-mode-p 'hermes-mode)
-          (bound-and-true-p hermes-minor-mode))
+     ((bound-and-true-p hermes-org-minor-mode)
       (hermes--render-1 old new)))))
 
 (defun hermes--render-1 (old new)

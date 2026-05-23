@@ -114,8 +114,7 @@ The bench shows an optimistic placeholder immediately; the entry is
 updated with width/height/token estimate when the gateway responds,
 or removed with an error status if the gateway rejects the file."
   (interactive "fImage file: ")
-  (unless (or (derived-mode-p 'hermes-mode)
-              (bound-and-true-p hermes-minor-mode)
+  (unless (or (bound-and-true-p hermes-org-minor-mode)
               (and (boundp 'hermes-bench--parent-buffer)
                    hermes-bench--parent-buffer))
     (user-error "Not in a Hermes buffer"))

@@ -1,4 +1,4 @@
-;;; hermes-mode.el --- Org-derived major mode and session entry point -*- lexical-binding: t; -*-
+;;; hermes-mode.el --- Hermes minor mode and session entry point -*- lexical-binding: t; -*-
 
 ;; Author: Giovanni Crisalfi
 ;; Keywords: tools, ai
@@ -6,10 +6,11 @@
 
 ;;; Commentary:
 
-;; `hermes-mode' is the major mode for a conversation buffer.  It derives
-;; from `org-mode' so headlines, folding, properties and links work for
-;; free.  The buffer's textual history is read-only; input happens via
-;; `hermes-send' (minibuffer prompt) bound to `C-c C-i'.
+;; `hermes-org-minor-mode' is the minor mode that turns an `org-mode'
+;; buffer into a Hermes conversation surface.  It owns the streaming
+;; renderer, keybindings, mode-line, and hook wiring.  Activation
+;; requires a `:hermes:' container heading at point-min; the entry
+;; point and DB-resume path create it.
 ;;
 ;; `hermes' is the entrypoint: start the gateway, create a session, open
 ;; a buffer.
@@ -144,9 +145,29 @@ explicit close."
   (add-hook 'hermes-rpc-protocol-error-functions #'hermes--route-protocol-error)
   (add-hook 'hermes-rpc-start-timeout-functions #'hermes--route-start-timeout))
 
-;;;; Major mode
+;;;; Container heading helpers
 
-(defvar hermes-mode-map
+(defun hermes--container-heading-in-buffer-p ()
+  "Return non-nil when the buffer holds at least one `:hermes:'-tagged heading."
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward "^\\*+ .*:hermes:" nil t)))
+
+(defun hermes--ensure-container ()
+  "Insert a Hermes session container heading at point-min if absent.
+Called by the `hermes' entry point and the DB-resume installer before
+activating `hermes-org-minor-mode', which requires a container to
+exist somewhere in the buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (unless (hermes--container-heading-in-buffer-p)
+      (insert (concat (make-string (or (bound-and-true-p hermes--container-level) 1)
+                                   ?*)
+                      " Hermes session :hermes:\n")))))
+
+;;;; Minor mode
+
+(defvar hermes-org-minor-mode-map
   (let ((m (make-sparse-keymap)))
     (define-key m (kbd "C-c C-i") #'hermes-bench-focus)
     (define-key m (kbd "C-c C-l") #'hermes-compose)
@@ -156,11 +177,11 @@ explicit close."
     (define-key m (kbd "C-c C-f") #'hermes-toggle-fast)
     (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
     m)
-  "Keymap for `hermes-mode'.")
+  "Keymap for `hermes-org-minor-mode'.")
 
 (with-eval-after-load 'which-key
   (when (fboundp 'which-key-add-keymap-based-replacements)
-    (which-key-add-keymap-based-replacements hermes-mode-map
+    (which-key-add-keymap-based-replacements hermes-org-minor-mode-map
       "C-c C-i" "Focus bench"
       "C-c C-l" "Compose multi-line"
       "C-c C-k" "Interrupt session"
@@ -169,11 +190,16 @@ explicit close."
       "C-c C-f" "Toggle fast mode"
       "C-c C-a" "Attach image file")))
 
-(defun hermes-minor-mode--on ()
-  "Setup for `hermes-minor-mode': org-local config, hooks, header-line.
-Idempotent — safe to run when already armed.  In Phase 1 the major mode
-creates the state atom before enabling the minor mode; if no state is
-present (Phase 2: arbitrary Org buffers), one is created here."
+(defun hermes-org-minor-mode--on ()
+  "Setup for `hermes-org-minor-mode': org-local config, hooks, mode-line.
+Requires a `:hermes:' container heading at point-min — the entry point
+and DB-resume installer create it before activation.  Idempotent: safe
+to run when already armed."
+  (unless (derived-mode-p 'org-mode)
+    (error "hermes-org-minor-mode requires org-mode"))
+  (unless (hermes--container-heading-in-buffer-p)
+    (error "No Hermes session heading found — use M-x hermes to create one"))
+  (setq-local hermes--container-level 1)
   (setq-local org-startup-folded nil)
   (setq-local org-hide-leading-stars t)
   (setq-local org-todo-keywords
@@ -211,22 +237,14 @@ present (Phase 2: arbitrary Org buffers), one is created here."
   ;; so explicit close is required to discard it.
   (add-hook 'kill-buffer-hook            #'hermes--org-detach nil t)
   ;; Move Hermes status from the top header-line to the bottom mode-line.
-  ;; Use a self-contained format that preserves basic mode-line elements
-  ;; alongside the Hermes status segment.
+  ;; The `:lighter " Hermes"' handles the right-side indicator.
   (setq-local mode-line-format
               '("%e"
                 mode-line-modified
                 " "
                 mode-line-buffer-identification
                 "  "
-                (:eval hermes--mode-line-status)
-                (:eval (let* ((label (if (derived-mode-p 'hermes-mode) "Hermes-Org"))
-                             (text  (concat " " label)))
-                          (concat
-                           (propertize " " 'display
-                                       (list 'space :align-to
-                                             (list '- 'right (length text))))
-                           (propertize label 'face 'mode-line-emphasis))))))
+                (:eval hermes--mode-line-status)))
   (setq header-line-format nil)
   ;; Initial paint of the mode-line for this buffer.
   (let* ((sid (catch 'found
@@ -238,8 +256,8 @@ present (Phase 2: arbitrary Org buffers), one is created here."
          (state (hermes--state-slot-read sid)))
     (hermes--mode-line-update nil state)))
 
-(defun hermes-minor-mode--off ()
-  "Teardown for `hermes-minor-mode': remove buffer-local hooks, clear header.
+(defun hermes-org-minor-mode--off ()
+  "Teardown for `hermes-org-minor-mode': remove buffer-local hooks, clear header.
 The global state-change-hook subscribers are intentionally left in
 place — they are global and shared by every Hermes buffer; removing
 them here would tear down other live viewers."
@@ -251,39 +269,25 @@ them here would tear down other live viewers."
   (setq header-line-format nil))
 
 ;;;###autoload
-(define-minor-mode hermes-minor-mode
+(define-minor-mode hermes-org-minor-mode
   "Minor mode for Hermes presentation in Org buffers.
-Provides streaming render, auto-fold, header-line, and key bindings.
-When enabled in the dedicated `*hermes*' buffer, it is the full
-presentation layer.  When enabled in arbitrary Org buffers (Phase 2),
-it renders a heading-scoped session into that subtree."
+Provides streaming render, auto-fold, mode-line, and key bindings.
+Works in any `org-mode' buffer with a `:hermes:' container heading at
+point-min."
   :init-value nil
   :lighter " Hermes"
-  :keymap hermes-mode-map
-  (if hermes-minor-mode
-      (hermes-minor-mode--on)
-    (hermes-minor-mode--off)))
-
-(define-derived-mode hermes-mode org-mode "Hermes"
-  "Major mode for a dedicated Hermes conversation buffer.
-Thin wrapper: enables `org-mode', turns on `hermes-minor-mode' (which
-owns all presentation logic), initialises session state, and inserts
-the session container heading."
-  (hermes-state-init)
-  (hermes-minor-mode 1)
-  (setq-local hermes--container-level 1)
-  (save-excursion
-    (goto-char (point-min))
-    (insert (concat (make-string hermes--container-level ?*)
-                    " Hermes session :hermes:\n"))))
+  :keymap hermes-org-minor-mode-map
+  (if hermes-org-minor-mode
+      (hermes-org-minor-mode--on)
+    (hermes-org-minor-mode--off)))
 
 (defun hermes-bench-focus ()
   "Move cursor to the bench input zone for the current Hermes buffer.
 If the bench window is hidden, redisplay it first.  When no bench is
-attached to the buffer (e.g. `hermes-minor-mode' rather than the major
-mode), fall back to `hermes-send' for a minibuffer prompt."
+attached to the buffer, fall back to `hermes-send' for a minibuffer
+prompt."
   (interactive)
-  (let ((bench (and (derived-mode-p 'hermes-mode)
+  (let ((bench (and hermes-org-minor-mode
                     (hermes-bench-active-p))))
     (cond
      ((and bench (get-buffer-window bench))
@@ -316,7 +320,9 @@ mode), fall back to `hermes-send' for a minibuffer prompt."
          (let* ((sid (gethash "session_id" result))
                 (buf (generate-new-buffer (format "*hermes:%s*" sid))))
            (with-current-buffer buf
-             (hermes-mode)
+             (org-mode)
+             (hermes--ensure-container)
+             (hermes-org-minor-mode 1)
              (let ((state (make-hermes-state :connection 'connected
                                              :session-id sid
                                              :cwd detected-cwd)))
@@ -371,15 +377,15 @@ background; for the user-facing entry that also pops the buffer, see
 ;;;###autoload
 (defun hermes ()
   "Context-aware entry point — never sends a prompt.
-- In a `hermes-mode' buffer: ensure the bench is visible and focus its
-  input area.
+- In an org-mode buffer with `hermes-org-minor-mode' active: ensure the
+  bench is visible and focus its input area.
 - In a generic `org-mode' buffer: create a Hermes session heading as a
   direct child of the heading at/above point.
 - Everywhere else: pop the most-recently-touched live session, or
   create a fresh one if none exists."
   (interactive)
   (cond
-   ((derived-mode-p 'hermes-mode)
+   (hermes-org-minor-mode
     (hermes-bench-ensure (current-buffer))
     (let* ((bench (hermes-bench-active-p))
            (win   (and bench (get-buffer-window bench))))
@@ -452,7 +458,7 @@ from `hermes--org-buffers' once the new one is bound; the buffer is
 renamed accordingly; the slash-command catalog is re-fetched; and any
 queued input is drained."
   (interactive)
-  (unless (derived-mode-p 'hermes-mode)
+  (unless hermes-org-minor-mode
     (user-error "Not in a Hermes buffer"))
   (hermes--install-hooks)
   (unless (hermes-rpc-live-p)
@@ -500,9 +506,8 @@ queued input is drained."
 
 (defun hermes-interrupt-current-session ()
   "Send `session.interrupt' for the Hermes session at point.
-In the dedicated `*hermes*' buffer this is always the buffer's
-session; in an arbitrary Org buffer with `hermes-minor-mode' enabled,
-it resolves to the `:hermes:' container containing point."
+In an Org buffer with `hermes-org-minor-mode' enabled, it resolves to
+the `:hermes:' container containing point."
   (interactive)
   (let* ((target (hermes--resolve-session-target))
          (sid (car target)))
@@ -524,8 +529,6 @@ text is never split.  `hermes--container-level' is set buffer-locally
 so turn insertion follows the relative depth."
   (unless (derived-mode-p 'org-mode)
     (user-error "Not in an Org buffer"))
-  (unless (bound-and-true-p hermes-minor-mode)
-    (hermes-minor-mode 1))
   (hermes--install-hooks)
   (unless (hermes-rpc-live-p)
     (hermes-rpc-start))
@@ -548,6 +551,9 @@ so turn insertion follows the relative depth."
                               (make-string container-level ?*))))
            (marker (copy-marker heading-pos nil)))
       (setq-local hermes--container-level container-level)
+      (unless hermes-org-minor-mode
+        (hermes-org-minor-mode 1)
+        (setq-local hermes--container-level container-level))
       (hermes-rpc-request
        "session.create" '(:cols 100)
        (lambda (result error)
@@ -621,7 +627,7 @@ the first outgoing prompt (see `hermes--build-history-text').  The
 gateway does not accept a history parameter on session creation, so
 this is the only way to re-attach an Org snapshot to a live session."
   (interactive)
-  (unless (derived-mode-p 'hermes-mode)
+  (unless hermes-org-minor-mode
     (user-error "Not in a Hermes buffer"))
   (let* ((history (hermes--parse-buffer-messages)))
     (hermes--install-hooks)

@@ -366,8 +366,8 @@ the registry with marker + state entries for each.  Returns nothing
 returns the (sid . state) pair for whichever container contains point."
   (with-temp-buffer
     (org-mode)
-    (hermes-minor-mode 1)
     (hermes-org-test--two-session-buffer)
+    (hermes-org-minor-mode 1)
     (goto-char (point-min))
     (re-search-forward "Coding help")
     (let ((res (hermes--resolve-session-target)))
@@ -384,8 +384,8 @@ returns the (sid . state) pair for whichever container contains point."
   "Outside any `:hermes:' subtree the resolver returns nil."
   (with-temp-buffer
     (org-mode)
-    (hermes-minor-mode 1)
-    (insert "* Plain heading\nnot a hermes container\n")
+    (insert "* Hermes session :hermes:\n* Plain heading\nnot a hermes container\n")
+    (hermes-org-minor-mode 1)
     (re-search-backward "not a hermes")
     (should (null (hermes--resolve-session-target)))))
 
@@ -473,13 +473,13 @@ of message structs, which the reducer's `(cons text history)' +
 no entry, the resolver returns (sid . nil) so the caller can resume."
   (with-temp-buffer
     (org-mode)
-    (hermes-minor-mode 1)
     (insert "* Stale :hermes:
 :PROPERTIES:
 :HERMES_SESSION: cold-sid
 :END:
 inside
 ")
+    (hermes-org-minor-mode 1)
     (re-search-backward "inside")
     (let ((res (hermes--resolve-session-target)))
       (should res)
@@ -1065,7 +1065,7 @@ back via `hermes--parse-turn-at-point' and verify kind + text."
   (require 'hermes-render)
   (require 'hermes-mode)
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let* ((msg (make-hermes-message
                  :kind 'user
                  :segments (vector (make-hermes-segment

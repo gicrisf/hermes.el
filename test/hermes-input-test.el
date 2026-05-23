@@ -26,7 +26,9 @@
                ((symbol-function 'hermes-rpc-live-p)
                 (lambda () t)))
        (with-temp-buffer
-         (hermes-mode)
+         (org-mode)
+         (hermes--ensure-container)
+         (hermes-org-minor-mode 1)
          (hermes--register-session
           "sess-1"
           (make-hermes-state :session-id "sess-1" :connection 'connected)

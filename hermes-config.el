@@ -14,9 +14,8 @@
 ;; `hermes-toolsets-toggle').
 ;;
 ;; All commands operate on the session targeted by
-;; `hermes--resolve-session-target' — i.e. the current `hermes-mode'
-;; buffer or the `:hermes:' container around point in an Org buffer
-;; with `hermes-minor-mode' enabled.
+;; `hermes--resolve-session-target' — i.e. the `:hermes:' container
+;; around point in an Org buffer with `hermes-org-minor-mode' enabled.
 
 ;;; Code:
 

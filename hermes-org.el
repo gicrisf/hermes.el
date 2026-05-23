@@ -31,7 +31,7 @@
 (declare-function hermes-rpc-start "hermes-rpc" ())
 (declare-function hermes--install-hooks "hermes-mode" ())
 (declare-function hermes-input--send-1 "hermes-input" (text))
-(defvar hermes-minor-mode)
+(defvar hermes-org-minor-mode)
 (defvar hermes--container-level)
 (defvar hermes--last-gateway-ready)
 
@@ -164,25 +164,30 @@ entry point, which can safely ask the user when ambiguous."
 
 (defun hermes--resolve-session-target ()
   "Return (SID . STATE) for the active session of the current buffer.
-- In a `hermes-mode' (primary) buffer, returns the session registered
-  for this buffer in `hermes--org-buffers'.
-- In an arbitrary Org buffer with `hermes-minor-mode' enabled, walks
-  up from point to find the enclosing `:hermes:' container and looks
-  the corresponding state up in `hermes--sessions'.
+- In a primary session buffer (registered in `hermes--org-buffers'),
+  returns the session registered for this buffer.
+- In an arbitrary Org buffer with `hermes-org-minor-mode' enabled,
+  walks up from point to find the enclosing `:hermes:' container and
+  looks the corresponding state up in `hermes--sessions'.
 - In a `hermes-bench-mode' buffer, delegates to the paired parent
   buffer so commands invoked from the bench resolve against the
   parent's session.
 Returns nil when no session is reachable."
   (cond
-   ((derived-mode-p 'hermes-mode)
-    (let* ((buf (current-buffer))
-           (sid (catch 'found
-                  (maphash (lambda (k b) (when (eq b buf) (throw 'found k)))
-                           hermes--org-buffers)
-                  nil))
-           (state (and sid (hermes--state-slot-read sid))))
-      (and sid (cons sid state))))
-   ((bound-and-true-p hermes-minor-mode)
+   ;; Single-session host buffer: when this buffer is registered as the
+   ;; host for exactly one session, take it directly from the registry.
+   ;; Avoids requiring a `:HERMES_SESSION:' property on the container
+   ;; heading (which `hermes--ensure-container' does not set).
+   ((let* ((buf (current-buffer))
+           (sids (let (acc)
+                   (maphash (lambda (k b) (when (eq b buf) (push k acc)))
+                            hermes--org-buffers)
+                   acc)))
+      (when (and sids (null (cdr sids)))
+        (let* ((sid (car sids))
+               (state (hermes--state-slot-read sid)))
+          (cons sid state)))))
+   ((bound-and-true-p hermes-org-minor-mode)
     (let* ((sid (hermes--session-at-point))
            (state (and sid (hermes--lookup-session-state sid))))
       ;; Return (sid . nil) for the *stale* case — the heading carries
@@ -681,7 +686,8 @@ and usage from visible buffer structure."
            nil 'tree))))
     (vconcat (nreverse messages))))
 
-(declare-function hermes-minor-mode "hermes-mode" (&optional arg))
+(declare-function hermes-org-minor-mode "hermes-mode" (&optional arg))
+(declare-function hermes--ensure-container "hermes-mode" ())
 (declare-function hermes-bench-ensure "hermes-bench" (parent))
 
 (defun hermes--rebuild-session-state (sid marker)
@@ -689,8 +695,8 @@ and usage from visible buffer structure."
 The state atom holds only ephemeral data (stream / queue / pending);
 committed history already lives in the Org subtree as visible text
 plus heading properties, so there's nothing to seed.  Also ensures
-`hermes-minor-mode' is on and the bench is visible so the user can
-interact with the resumed session.  Returns the new state."
+`hermes-org-minor-mode' is on and the bench is visible so the user
+can interact with the resumed session.  Returns the new state."
   (let* ((cwd-prop (save-excursion
                      (goto-char (marker-position marker))
                      (when (org-at-heading-p)
@@ -701,9 +707,9 @@ interact with the resumed session.  Returns the new state."
                                    :connection 'connected
                                    :cwd cwd-prop)))
     (hermes--register-session sid state marker)
-    (unless (or (derived-mode-p 'hermes-mode)
-                (bound-and-true-p hermes-minor-mode))
-      (hermes-minor-mode 1))
+    (unless (bound-and-true-p hermes-org-minor-mode)
+      (hermes--ensure-container)
+      (hermes-org-minor-mode 1))
     (unless noninteractive
       (hermes-bench-ensure (current-buffer)))
     state))

@@ -368,9 +368,8 @@ ends."
            (add-hook 'completion-at-point-functions
                      #'hermes-input-completion-at-point nil t))
        (list (read-string "Hermes> " nil sym)))))
-  (unless (or (derived-mode-p 'hermes-mode)
-              (bound-and-true-p hermes-minor-mode))
-    (user-error "Not in a Hermes buffer (enable `hermes-minor-mode' in this Org buffer first)"))
+  (unless (bound-and-true-p hermes-org-minor-mode)
+    (user-error "Not in a Hermes buffer (enable `hermes-org-minor-mode' in this Org buffer first)"))
   ;; Resolve which session this send targets and bind
   ;; `hermes--current-session-id' so dispatch routes to the right slot.
   (let* ((target (hermes--resolve-session-target))

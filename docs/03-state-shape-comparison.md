@@ -149,7 +149,7 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
 
 | Aspect | TUI | Emacs |
 |--------|-----|-------|
-| **Canonical history** | `messages` array in TUI state | **Org buffer** — every field parsed back from visible structure (heading properties, body text, blocks, child headings); no hidden drawers |
+| **Canonical history** | `messages` array in TUI state | **`turns` vector** (event-canonical): accumulated by `hermes--push-committed` across three reducer paths, never cleared except by `:turns-load`. Equivalent body-canonical representation: the Org buffer (lossless interconversion via `hermes--parse-buffer-messages`). |
 | **Busy flag** | `uiState.busy` — explicit boolean | Implicit: `(hermes-state-stream state)` |
 | **Activity feed** | `turnState.activity` — array of items, capped at 8 | Not present |
 | **Tool active list** | `turnState.tools` — active tools with context, tokens | `segments` — all tools in stream as typed tool segments |

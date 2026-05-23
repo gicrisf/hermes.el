@@ -791,6 +791,7 @@ and they shift to level 4."
 during cooldown stash a pending snapshot instead of painting.
 (`stream-begin' is always immediate and does not arm the timer.)"
   (with-temp-buffer
+    (set-window-buffer (selected-window) (current-buffer))
     (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))      ; effectively never fires
       ;; stream-begin path — immediate, no timer.
@@ -823,6 +824,7 @@ during cooldown stash a pending snapshot instead of painting.
 (ert-deftest hermes-render-test/throttle-disabled-paints-every-delta ()
   "Throttle = 0 reproduces the legacy behaviour: every delta paints, no timer."
   (with-temp-buffer
+    (set-window-buffer (selected-window) (current-buffer))
     (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 0))
       ;; stream-begin
@@ -882,6 +884,7 @@ down the bench, so the final tokens never get dropped."
 (ert-deftest hermes-render-test/throttle-cancelled-on-minor-mode-off ()
   "Disabling the minor mode cancels any in-flight throttle timer."
   (with-temp-buffer
+    (set-window-buffer (selected-window) (current-buffer))
     (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))
       ;; stream-begin then a real delta to arm the timer.

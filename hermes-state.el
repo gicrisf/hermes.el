@@ -373,6 +373,11 @@ Recognises every viewer kind:
           (kill-buffer bench))
         (remhash sid hermes--bench-buffers)))))
 
+(defun hermes--buffer-visible-p (buf)
+  "Return non-nil if BUF is live and shown in some window on any visible frame."
+  (and (buffer-live-p buf)
+       (get-buffer-window buf 'visible)))
+
 (defmacro hermes--on-session-buffer (registry &rest body)
   "If the current session has a live buffer in REGISTRY, run BODY there.
 Reads `hermes--current-session-id', looks up REGISTRY (a hash-table

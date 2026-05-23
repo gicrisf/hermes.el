@@ -590,7 +590,10 @@ into a synthetic `hermes-message', then runs it through the normal
         (set-window-point win (point-max))))))
 
 (defun hermes-section--stream-flush (buf)
-  "Timer callback: paint `--stream-pending' into BUF and re-arm cooldown."
+  "Timer callback: paint `--stream-pending' into BUF and re-arm cooldown.
+Skips the paint when BUF is not visible (plan 17) — the section viewer's
+`--stream-commit' rebuilds from state, so any skipped deltas are caught
+up there."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (setq hermes-section--stream-timer nil)
@@ -598,7 +601,8 @@ into a synthetic `hermes-message', then runs it through the normal
         (setq hermes-section--stream-pending nil)
         (when (and ns
                    hermes-section--stream-sentinel
-                   (hermes-state-stream ns))
+                   (hermes-state-stream ns)
+                   (hermes--buffer-visible-p buf))
           (hermes-section--paint-stream ns)
           (setq hermes-section--stream-timer
                 (run-with-timer
@@ -616,19 +620,26 @@ into a synthetic `hermes-message', then runs it through the normal
     (hermes-section--paint-stream new)))
 
 (defun hermes-section--stream-update (new)
-  "Throttled repaint of the streaming region from NEW state."
-  (if (null hermes-section--stream-timer)
-      ;; First paint after idle: paint synchronously, arm cooldown.
-      (progn
-        (hermes-section--paint-stream new)
-        (setq hermes-section--stream-timer
-              (run-with-timer
-               (hermes-section--stream-throttle-interval
-                (hermes-state-stream new))
-               nil
-               #'hermes-section--stream-flush (current-buffer))))
-    ;; Within cooldown: stash the latest snapshot for the timer.
-    (setq hermes-section--stream-pending new)))
+  "Throttled repaint of the streaming region from NEW state.
+Skips the paint and the cooldown arm when this buffer is not visible
+\(plan 17): the next delta will re-enter and check visibility again,
+and `--stream-commit' will rebuild from state when the turn finishes."
+  (cond
+   ;; Invisible — let the next delta retry.
+   ((not (hermes--buffer-visible-p (current-buffer)))
+    nil)
+   ;; First paint after idle: paint synchronously, arm cooldown.
+   ((null hermes-section--stream-timer)
+    (hermes-section--paint-stream new)
+    (setq hermes-section--stream-timer
+          (run-with-timer
+           (hermes-section--stream-throttle-interval
+            (hermes-state-stream new))
+           nil
+           #'hermes-section--stream-flush (current-buffer))))
+   ;; Within cooldown: stash the latest snapshot for the timer.
+   (t
+    (setq hermes-section--stream-pending new))))
 
 (defun hermes-section--stream-commit (new)
   "End streaming: cancel timer, drop the region, rebuild from NEW.

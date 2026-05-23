@@ -228,20 +228,40 @@ such as tests, or in-buffer dispatch loops)."
          ;; keeps the bench-anchored writes contained.
         (let* ((os old-stream-snapshot)
                (ns (hermes-state-stream new))
+               ;; A bench-buf that exists but whose window is closed should
+               ;; not hijack the streaming target — fall through to the org
+               ;; buffer so the user actually sees the stream.  Folding the
+               ;; visibility check in here keeps the rest of the dispatch
+               ;; (including the commit catch-up's `unless bench-buf')
+               ;; consistent.
                (bench-buf (and (fboundp 'hermes-bench-active-p)
-                               (hermes-bench-active-p (current-buffer)))))
+                               (let ((b (hermes-bench-active-p
+                                         (current-buffer))))
+                                 (and b (hermes--buffer-visible-p b) b))))
+               ;; Paint only if the target viewer is visible (plan 17).
+               ;; For bench, the target is the bench buffer; otherwise the
+               ;; in-flight region lives in the current org buffer.
+               (target-visible
+                (if bench-buf
+                    (hermes--buffer-visible-p bench-buf)
+                  (hermes--buffer-visible-p (current-buffer)))))
           (cond ((and (null os) ns)
+                 ;; Stream-begin: always run (structural setup must happen
+                 ;; even when the target is hidden — see plan 17 §5).
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
                  (if bench-buf
                      (hermes-bench--stream-begin bench-buf)
                    (hermes--stream-begin)))
                 ((and os (null ns))
-                 ;; Pending delayed paint? Flush `os' synchronously.
-                 (when (timerp hermes--stream-render-timer)
-                   (if bench-buf
-                       (hermes-bench--stream-update bench-buf nil os)
-                     (hermes--stream-update nil os)))
+                 ;; Stream-commit: for non-bench, the commit logic freezes
+                 ;; the in-flight buffer region rather than rebuilding from
+                 ;; state, so any deltas skipped due to throttle stash OR
+                 ;; visibility must be painted synchronously first.  Bench
+                 ;; commit rebuilds from state via `hermes--message-from-
+                 ;; stream', so no catchup paint is needed there.
+                 (unless bench-buf
+                   (hermes--stream-update nil os))
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
                  (if bench-buf
@@ -251,19 +271,24 @@ such as tests, or in-buffer dispatch loops)."
                    (setq committed-region (hermes--stream-commit os))))
                 ((not (eq os ns))
                  (cond
-                  ;; Throttling disabled — always paint.
+                  ;; Throttling disabled — always paint if visible.
                   ((zerop hermes-render-stream-throttle)
-                   (setq bench-touched-p t)
-                   (if bench-buf
-                       (hermes-bench--stream-update bench-buf os ns)
-                     (hermes--stream-update os ns)))
-                  ;; Cooldown idle — paint now and start cooldown.
+                   (when target-visible
+                     (setq bench-touched-p t)
+                     (if bench-buf
+                         (hermes-bench--stream-update bench-buf os ns)
+                       (hermes--stream-update os ns))))
+                  ;; Cooldown idle — paint now (if visible) and arm cooldown.
+                  ;; Skip the cooldown arm when invisible: the next delta
+                  ;; will re-enter this same branch.  Catchup at commit
+                  ;; ensures the final state lands in the buffer.
                   ((null hermes--stream-render-timer)
-                   (setq bench-touched-p t)
-                   (if bench-buf
-                       (hermes-bench--stream-update bench-buf os ns)
-                     (hermes--stream-update os ns))
-                   (hermes--stream-flush-reschedule))
+                   (when target-visible
+                     (setq bench-touched-p t)
+                     (if bench-buf
+                         (hermes-bench--stream-update bench-buf os ns)
+                       (hermes--stream-update os ns))
+                     (hermes--stream-flush-reschedule)))
                   ;; Within cooldown — stash for the timer to flush.
                   (t
                    (setq hermes--stream-render-pending ns))))))
@@ -1452,11 +1477,20 @@ happens, re-arms the cooldown so further deltas continue to throttle."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (setq hermes--stream-render-timer nil)
-      (let ((ns hermes--stream-render-pending)
-            (bench-buf (and (fboundp 'hermes-bench-active-p)
-                            (hermes-bench-active-p (current-buffer)))))
+      (let* ((ns hermes--stream-render-pending)
+             ;; Mirror `--render-1': a closed-but-alive bench window
+             ;; must not hijack streaming.
+             (bench-buf (and (fboundp 'hermes-bench-active-p)
+                             (let ((b (hermes-bench-active-p
+                                       (current-buffer))))
+                               (and b (hermes--buffer-visible-p b) b))))
+             (target-visible
+              (if bench-buf
+                  (hermes--buffer-visible-p bench-buf)
+                (hermes--buffer-visible-p (current-buffer)))))
         (setq hermes--stream-render-pending nil)
         (when (and ns
+                   target-visible
                    (hermes--current-state)
                    (eq ns (hermes-state-stream (hermes--current-state)))
                    (or bench-buf

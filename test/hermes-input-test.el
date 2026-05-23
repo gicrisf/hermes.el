@@ -10,7 +10,7 @@
                          (or load-file-name buffer-file-name))))
 
 (defvar hermes-input-test--rpc-calls nil
-  "Captured (METHOD . PARAMS) pairs from stubbed `hermes-rpc-request'.")
+  "Captured (METHOD . PARAMS) pairs from stubbed `hermes--request'.")
 
 (defun hermes-input-test--stub-rpc (method params &optional _cb)
   (push (cons method params) hermes-input-test--rpc-calls))
@@ -21,11 +21,10 @@
   `(let ((hermes-input-test--rpc-calls nil)
          (hermes--current-session-id "sess-1"))
      (hermes-test--reset-global-state)
-     (cl-letf (((symbol-function 'hermes-rpc-request)
-                #'hermes-input-test--stub-rpc)
-               ((symbol-function 'hermes-rpc-live-p)
-                (lambda () t)))
-       (with-temp-buffer
+     (let ((hermes--backend-send-function #'hermes-input-test--stub-rpc))
+       (cl-letf (((symbol-function 'hermes-rpc-live-p)
+                  (lambda () t)))
+         (with-temp-buffer
          (org-mode)
          (hermes--ensure-container)
          (hermes-org-minor-mode 1)
@@ -33,7 +32,7 @@
           "sess-1"
           (make-hermes-state :session-id "sess-1" :connection 'connected)
           (copy-marker (point-min) nil))
-         ,@body))))
+           ,@body)))))
 
 (defun hermes-input-test--buffer-has-user-heading-p (text)
   "Return non-nil if the current buffer contains a `** U: TEXT …' heading."

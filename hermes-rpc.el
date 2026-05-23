@@ -201,6 +201,18 @@ lost."
        (error "hermes-rpc: process alive but state is %s" hermes-rpc--state)))
     id))
 
+(defvar hermes--backend-send-function #'hermes-rpc-request
+  "Function called by `hermes--request' to send a request to the backend.
+Must accept (METHOD PARAMS &optional CALLBACK).  CALLBACK is
+\(RESULT ERROR).  A different backend (e.g. pi) replaces this value.")
+
+(defun hermes--request (method params &optional callback)
+  "Send a request to the current backend via `hermes--backend-send-function'.
+METHOD is a string (e.g. \"prompt.submit\"), PARAMS is a plist or alist.
+CALLBACK, if non-nil, is called as (RESULT ERROR) when the response
+arrives."
+  (funcall hermes--backend-send-function method params callback))
+
 (defun hermes-rpc--flush-pending ()
   "Send every frame buffered while the gateway was `starting'."
   (let ((frames hermes-rpc--pending-frames))

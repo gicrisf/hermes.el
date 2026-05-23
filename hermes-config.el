@@ -46,7 +46,7 @@
 CALLBACK, if non-nil, is called as (RESULT ERROR) when the response
 arrives."
   (let ((sid (hermes--config-resolve-target)))
-    (hermes-rpc-request
+    (hermes--request
      "config.get"
      (list :key key :session_id sid)
      (or callback (lambda (_r _e) nil)))))
@@ -56,7 +56,7 @@ arrives."
 CALLBACK, if non-nil, is called as (RESULT ERROR) when the response
 arrives."
   (let ((sid (hermes--config-resolve-target)))
-    (hermes-rpc-request
+    (hermes--request
      "config.set"
      (list :key key :value value :session_id sid)
      (or callback (lambda (_r _e) nil)))))
@@ -202,7 +202,7 @@ the message is also shown above its reasoning zone."
       (user-error "Empty steer message"))
     (when (fboundp 'hermes-bench-add-steer)
       (hermes-bench-add-steer sid trimmed))
-    (hermes-rpc-request
+    (hermes--request
      "session.steer"
      (list :session_id sid :text trimmed)
      (lambda (r e)
@@ -296,7 +296,7 @@ with `completing-read-multiple', then prompts for an action and issues
 `tools.configure'."
   (interactive)
   (let ((sid (hermes--config-resolve-target)))
-    (hermes-rpc-request
+    (hermes--request
      "toolsets.list" (list :session_id sid)
      (lambda (result error)
        (cond
@@ -329,7 +329,7 @@ with `completing-read-multiple', then prompts for an action and issues
                                (completing-read
                                 "Action: " '("enable" "disable") nil t))))
              (when (and names action)
-               (hermes-rpc-request
+               (hermes--request
                 "tools.configure"
                 (list :session_id sid
                       :action     action
@@ -348,7 +348,7 @@ with `completing-read-multiple', then prompts for an action and issues
 (defun hermes-skills-reload ()
   "Rescan the skills directory and report added/removed skills."
   (interactive)
-  (hermes-rpc-request
+  (hermes--request
    "skills.reload" '()
    (lambda (r e)
      (cond
@@ -382,7 +382,7 @@ with `completing-read-multiple', then prompts for an action and issues
 (defun hermes-skills-list ()
   "List installed skills grouped by category in `*Hermes Skills*'."
   (interactive)
-  (hermes-rpc-request
+  (hermes--request
    "skills.manage" (list :action "list")
    (lambda (r e)
      (cond
@@ -408,7 +408,7 @@ with `completing-read-multiple', then prompts for an action and issues
 (defun hermes--skills-search (query callback)
   "Run `skills.manage search' for QUERY, then invoke CALLBACK with the
 selected skill name (or nil if the user aborted or no results)."
-  (hermes-rpc-request
+  (hermes--request
    "skills.manage" (list :action "search" :query query)
    (lambda (r e)
      (cond
@@ -443,7 +443,7 @@ With prefix arg PROMPT-NAME, prompts for a skill name verbatim."
   (let ((install
          (lambda (name)
            (when (and name (not (string-empty-p name)))
-             (hermes-rpc-request
+             (hermes--request
               "skills.manage" (list :action "install" :name name)
               (lambda (r e)
                 (cond
@@ -506,7 +506,7 @@ invalidation).  Requires an active session."
   (interactive "P")
   (let ((sid (hermes--config-resolve-target))
         (parent-buf (current-buffer)))
-    (hermes-rpc-request
+    (hermes--request
      "skills.manage" (list :action "list")
      (lambda (r e)
        (cond
@@ -518,7 +518,7 @@ invalidation).  Requires an active session."
                (let* ((choice (completing-read "Uninstall skill: " names nil t))
                       (cmd (format "skills uninstall %s%s"
                                    choice (if now " --now" ""))))
-                  (hermes-rpc-request
+                  (hermes--request
                    "slash.exec" (list :session_id sid :command cmd)
                    (lambda (r2 e2)
                      (cond

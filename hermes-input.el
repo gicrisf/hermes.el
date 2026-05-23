@@ -90,7 +90,7 @@ for v1 — the pickers carry the entire selection workflow."
 Strips the /bg prefix; on RPC response, dispatches `:background-start'
 into the local state so the bench can show `[bg: N running]'."
   (let ((clean (replace-regexp-in-string hermes-input--bg-re "" text)))
-    (hermes-rpc-request
+    (hermes--request
      "prompt.background"
      (list :session_id sid :text clean)
      (lambda (result error)
@@ -226,7 +226,7 @@ Subsequent items keep draining via the normal `message.complete' hook."
       (let* ((head (car q))
              (wire (hermes-input--wire-prefix head)))
         (hermes-dispatch '(:dequeue))
-        (hermes-rpc-request
+        (hermes--request
          "prompt.submit"
          (list :session_id sid :text wire)
          (lambda (_r e)
@@ -250,7 +250,7 @@ remains correct under the global state-change-hook."
       (hermes-dispatch (cons :user-submit (list :text head)) sid)
       (when sid
         (let ((wire (hermes-input--wire-prefix head)))
-          (hermes-rpc-request
+          (hermes--request
            "prompt.submit"
            (list :session_id sid :text wire)
            (lambda (_r e)
@@ -261,7 +261,7 @@ remains correct under the global state-change-hook."
 (defun hermes-input-fetch-catalog ()
   "Request `commands.catalog' and dispatch the result into this buffer."
   (let ((buf (current-buffer)))
-    (hermes-rpc-request
+    (hermes--request
      "commands.catalog" nil
      (lambda (result error)
        (cond
@@ -485,7 +485,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
      for m in matches do
      (let ((i idx)
            (cmd (nth 2 m)))
-       (hermes-rpc-request
+       (hermes--request
         "shell.exec" (list :command cmd)
         (lambda (r e)
           (let ((out (cond
@@ -532,7 +532,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
             (buf (current-buffer)))
         (if (string-empty-p cmd)
             (message "hermes: empty shell command")
-          (hermes-rpc-request
+          (hermes--request
            "shell.exec" (list :command cmd)
            (lambda (r e)
              (let* ((body (cond
@@ -569,7 +569,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
      ;; Slash command — fire immediately, no transcript, no history.
      ((eq (aref text 0) ?/)
       (let ((buf (current-buffer)))
-        (hermes-rpc-request
+        (hermes--request
          "slash.exec"
          (list :session_id sid :command (substring text 1))
          (lambda (result error)
@@ -598,7 +598,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
         ("steer"
          (when (fboundp 'hermes-bench-add-steer)
            (hermes-bench-add-steer sid text))
-         (hermes-rpc-request
+         (hermes--request
           "session.steer"
           (list :session_id sid :text text)
           (lambda (r e)
@@ -622,7 +622,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
       ;; gateway only, not the transcript.
       (hermes-dispatch (cons :user-submit (list :text text)))
       (let ((wire-text (hermes-input--wire-prefix text)))
-        (hermes-rpc-request
+        (hermes--request
          "prompt.submit"
          (list :session_id sid :text wire-text)
          (lambda (_r e)

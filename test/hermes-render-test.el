@@ -706,10 +706,9 @@ but still clears the vector via :pending-turns-clear."
   "Realistic reproduction: user enqueues while busy, then `message.complete'
 fires.  The dequeued user heading must land *after* the assistant
 subtree has been fully committed (heading + body), not interleaved."
-  (cl-letf (((symbol-function 'hermes-rpc-request)
-             (lambda (&rest _) nil))
-            ((symbol-function 'hermes-rpc-live-p)
-             (lambda () t)))
+  (let ((hermes--backend-send-function (lambda (&rest _) nil)))
+    (cl-letf (((symbol-function 'hermes-rpc-live-p)
+               (lambda () t)))
     (hermes-test--reset-global-state)
     (with-temp-buffer
       (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
@@ -744,7 +743,7 @@ subtree has been fully committed (heading + body), not interleaved."
         (should user-next)
         (should resp-body)
         (should (< assist-head resp-body))
-        (should (< resp-body user-next)))))))
+        (should (< resp-body user-next))))))))
 
 ;;;; Relative turn levels
 

@@ -26,7 +26,7 @@
 (declare-function make-hermes-message "hermes-state" (&rest _))
 (declare-function make-hermes-tool "hermes-state" (&rest _))
 (declare-function hermes--plist-to-subagent "hermes-state" (p))
-(declare-function hermes-rpc-request "hermes-rpc" (method params callback))
+(declare-function hermes--request "hermes-rpc" (method params &optional callback))
 (declare-function hermes-rpc-live-p "hermes-rpc" ())
 (declare-function hermes-rpc-start "hermes-rpc" ())
 (declare-function hermes--install-hooks "hermes-mode" ())
@@ -738,7 +738,7 @@ to the new id, registries re-keyed, and any pre-send queue entries
 keyed by OLD-SID are drained against the new session."
   (let ((buf (current-buffer))
         (marker-pos (marker-position marker)))
-    (hermes-rpc-request
+    (hermes--request
      "session.create" '(:cols 100)
      (lambda (result error)
        (cond

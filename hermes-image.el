@@ -69,7 +69,7 @@ entry in `hermes-state-attachments'."
 (defun hermes-image--rpc-attach (session-id path callback)
   "Send `image.attach' RPC for SESSION-ID and PATH.
 CALLBACK receives (RESULT ERROR)."
-  (hermes-rpc-request
+  (hermes--request
    "image.attach"
    (list :session_id session-id :path path)
    callback))
@@ -77,7 +77,7 @@ CALLBACK receives (RESULT ERROR)."
 (defun hermes-image--rpc-clipboard-paste (session-id callback)
   "Send `clipboard.paste' RPC for SESSION-ID.
 CALLBACK receives (RESULT ERROR)."
-  (hermes-rpc-request
+  (hermes--request
    "clipboard.paste"
    (list :session_id session-id)
    callback))
@@ -85,7 +85,7 @@ CALLBACK receives (RESULT ERROR)."
 (defun hermes-image--rpc-detect-drop (session-id text callback)
   "Send `input.detect_drop' RPC for SESSION-ID with TEXT.
 CALLBACK receives (RESULT ERROR)."
-  (hermes-rpc-request
+  (hermes--request
    "input.detect_drop"
    (list :session_id session-id :text text)
    callback))

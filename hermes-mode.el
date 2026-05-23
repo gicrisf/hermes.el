@@ -311,7 +311,7 @@ prompt."
   ;; async response, when `default-directory' still points at whatever
   ;; the user was visiting.
   (let ((detected-cwd (ignore-errors (hermes-project-detect-cwd))))
-    (hermes-rpc-request
+    (hermes--request
      "session.create" '(:cols 100)
      (lambda (result error)
        (cond
@@ -470,7 +470,7 @@ queued input is drained."
   (unless (hermes-rpc-live-p)
     (hermes-rpc-start))
   (let ((buf (current-buffer)))
-    (hermes-rpc-request
+    (hermes--request
      "session.create" '(:cols 100)
      (lambda (result error)
        (cond
@@ -520,7 +520,7 @@ the `:hermes:' container containing point."
     (unless target
       (user-error "No Hermes session at point"))
     (unless sid (user-error "No session id assigned yet"))
-    (hermes-rpc-request "session.interrupt"
+    (hermes--request "session.interrupt"
                         (list :session_id sid)
                         (lambda (_r e)
                           (when e (message "hermes: interrupt error: %S" e))))
@@ -560,7 +560,7 @@ so turn insertion follows the relative depth."
       (unless hermes-org-minor-mode
         (hermes-org-minor-mode 1)
         (setq-local hermes--container-level container-level))
-      (hermes-rpc-request
+      (hermes--request
        "session.create" '(:cols 100)
        (lambda (result error)
          (cond
@@ -639,7 +639,7 @@ this is the only way to re-attach an Org snapshot to a live session."
     (hermes--install-hooks)
     (unless (hermes-rpc-live-p)
       (hermes-rpc-start))
-    (hermes-rpc-request
+    (hermes--request
      "session.create" '(:cols 100)
      (lambda (result error)
        (cond

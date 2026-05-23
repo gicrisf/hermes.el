@@ -181,7 +181,7 @@ current project's cwd (if any) is sent as the `:cwd' parameter."
   (let ((params (when with-cwd
                   (when-let ((cwd (ignore-errors (hermes-project-detect-cwd))))
                     (list :cwd cwd)))))
-    (hermes-rpc-request
+    (hermes--request
      "session.list" params
      (lambda (result error)
        (funcall then (and (not error) (hermes--stored-rows-from-result result))
@@ -247,7 +247,7 @@ current project's CWD."
      (let ((short (hermes--sessions-short-sid sid)))
        (unless (yes-or-no-p (format "Delete session %s from gateway DB? " sid))
          (user-error "Cancelled"))
-       (hermes-rpc-request
+       (hermes--request
         "session.delete" (list :session_id sid)
         (lambda (_result error)
           (cond
@@ -264,7 +264,7 @@ current project's CWD."
    "Save session: " cwd-filter
    (lambda (sid)
      (let ((short (hermes--sessions-short-sid sid)))
-       (hermes-rpc-request
+       (hermes--request
         "session.save" (list :session_id sid)
         (lambda (result error)
           (cond
@@ -448,7 +448,7 @@ the gateway already has full context."
   (unless (hermes-rpc-live-p)
     (hermes--install-hooks)
     (hermes-rpc-start))
-  (hermes-rpc-request
+  (hermes--request
    "session.resume" (list :session_id sid)
    (lambda (result error)
      (hermes--db-handle-resume-response result error sid nil))))
@@ -467,7 +467,7 @@ to receive prompts."
   (unless (hermes-rpc-live-p)
     (hermes--install-hooks)
     (hermes-rpc-start))
-  (hermes-rpc-request
+  (hermes--request
    "session.branch" (list :session_id sid)
    (lambda (result error)
      (cond
@@ -484,7 +484,7 @@ to receive prompts."
           ((not new-sid)
            (message "hermes: branch %s: no session_id in response" sid))
           (t
-           (hermes-rpc-request
+           (hermes--request
             "session.resume" (list :session_id new-sid)
             (lambda (r2 e2)
               (hermes--db-handle-resume-response r2 e2 new-sid nil parent)))))))))))

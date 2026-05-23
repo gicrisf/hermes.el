@@ -84,7 +84,7 @@ Canonical choices match the TUI: once, session, always, deny."
                  (?s "session")
                  (?a "always")
                  (_  "deny"))))
-    (hermes-rpc-request
+    (hermes--request
      "approval.respond"
      (list :session_id sid :request_id rid :choice resp))))
 
@@ -100,7 +100,7 @@ Canonical choices match the TUI: once, session, always, deny."
          (answer (if choices
                      (completing-read (concat question " ") choices nil nil)
                    (read-string (concat question " ")))))
-    (hermes-rpc-request "clarify.respond"
+    (hermes--request "clarify.respond"
                         (list :request_id rid :answer answer))))
 
 ;;;; Sudo / secret
@@ -108,7 +108,7 @@ Canonical choices match the TUI: once, session, always, deny."
 (defun hermes--prompt-sudo (rid)
   "Read a sudo password and dispatch `sudo.respond'."
   (let ((pw (read-passwd "sudo password: ")))
-    (hermes-rpc-request "sudo.respond"
+    (hermes--request "sudo.respond"
                         (list :request_id rid :password pw))))
 
 (defun hermes--prompt-secret (rid payload)
@@ -118,7 +118,7 @@ Canonical choices match the TUI: once, session, always, deny."
                    (and var (format "Value for %s: " var))
                    "Secret: "))
          (val (read-passwd hint)))
-    (hermes-rpc-request "secret.respond"
+    (hermes--request "secret.respond"
                         (list :request_id rid :value val))))
 
 (provide 'hermes-prompts)

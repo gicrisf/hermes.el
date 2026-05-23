@@ -170,6 +170,29 @@ or `hermes--route-connection' without a session-id argument.")
 (defvar hermes--bench-buffers (make-hash-table :test 'equal)
   "Map session-id (string) → bench buffer.")
 
+(defvar hermes-section--buffers (make-hash-table :test 'equal)
+  "Map session-id (string) → magit-section conversation buffer.")
+
+(defun hermes--session-exists-p ()
+  "Return non-nil when at least one session is in `hermes--sessions'."
+  (> (hash-table-count hermes--sessions) 0))
+
+(defun hermes--most-recent-session-id ()
+  "Return the session-id of the session with the newest committed turn, or nil.
+Walks `hermes--sessions' and returns the one whose `turns' vector
+has the latest `hermes-message-timestamp' on its last entry."
+  (let (best-id best-ts)
+    (maphash
+     (lambda (sid st)
+       (let ((turns (hermes-state-turns st)))
+         (when (> (length turns) 0)
+           (let ((ts (hermes-message-timestamp
+                      (aref turns (1- (length turns))))))
+             (when (or (null best-ts) (time-less-p best-ts ts))
+               (setq best-id sid best-ts ts))))))
+     hermes--sessions)
+    best-id))
+
 (defvar-local hermes--ui-state nil
   "Current ephemeral UI state (a `hermes-ui-state').")
 

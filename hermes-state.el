@@ -94,7 +94,8 @@
   kind        ; 'user | 'assistant | 'system
   segments    ; vector of hermes-segment
   usage timestamp
-  subagents)  ; vector of hermes-subagent
+  subagents   ; vector of hermes-subagent
+  (id nil))   ; unique string like "msg-42" — set by `hermes--push-committed'
 
 (cl-defstruct (hermes-stream (:copier hermes-stream-copy))
   segments    ; vector of hermes-segment, ordered by arrival
@@ -113,6 +114,10 @@
   stream             ; hermes-stream or nil (in-flight only)
   pending            ; hermes-pending or nil
   (pending-turns []) ; vector of hermes-message structs awaiting buffer insert
+  (turns [])         ; vector of hermes-message — canonical conversation log,
+                     ; accumulates every committed user/assistant turn, never
+                     ; cleared except by `:turns-load'.  System messages are
+                     ; excluded (they live in `pending-turns' only).
   slash-catalog
   (queue nil)
   (history nil)
@@ -316,6 +321,13 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
   "Return a fresh segment ID string."
   (format "seg-%d" (cl-incf hermes--segment-counter)))
 
+(defvar hermes--message-counter 0
+  "Monotonic counter for message IDs.")
+
+(defun hermes--next-message-id ()
+  "Return a fresh message ID string."
+  (format "msg-%d" (cl-incf hermes--message-counter)))
+
 ;;;; Segment helpers
 
 (defun hermes--normalize-for-dedup (s)
@@ -395,10 +407,28 @@ containment so truncated echoes are caught."
 ;;;; Pending-turns helper
 
 (defun hermes--push-pending (state msg)
-  "Return a new STATE with MSG pushed onto `pending-turns'."
+  "Return a new STATE with MSG pushed onto `pending-turns' only.
+Used for system messages — they render in the org buffer but are not
+part of the canonical conversation log."
   (hermes--with-copy state hermes-state-copy s
     (setf (hermes-state-pending-turns s)
           (hermes--vector-append (hermes-state-pending-turns state) msg))))
+
+(defun hermes--push-committed (state msg)
+  "Return a new STATE with MSG committed as a conversation turn.
+Assigns a fresh monotonic `:id' to a copy of MSG, then appends it to
+`pending-turns' (for the org renderer) AND `turns' (canonical log).
+Used by `:user-submit', `\"message.complete\"', and the `\"error\"' path
+that commits a partial assistant turn.  Both `setf' branches read from
+the original STATE — not the in-flight copy — matching the
+`hermes--push-pending' convention."
+  (let ((m (hermes--with-copy msg hermes-message-copy x
+             (setf (hermes-message-id x) (hermes--next-message-id)))))
+    (hermes--with-copy state hermes-state-copy s
+      (setf (hermes-state-pending-turns s)
+            (hermes--vector-append (hermes-state-pending-turns state) m))
+      (setf (hermes-state-turns s)
+            (hermes--vector-append (hermes-state-turns state) m)))))
 
 ;;;; Serialization — struct ↔ plist
 
@@ -550,6 +580,7 @@ hash-tables (usage)."
                        ((null ts) nil)
                        (t (format-time-string "%Y-%m-%dT%H:%M:%S%z" ts)))))
     (list :kind (hermes-message-kind msg)
+          :id (hermes-message-id msg)
           :segments seg-plists
           :subagents sa-plists
           :usage usage-plist
@@ -578,6 +609,7 @@ Inverse of `hermes--message-to-plist'."
                     (t []))))
     (make-hermes-message
      :kind (plist-get plist :kind)
+     :id (plist-get plist :id)
      :segments segs
      :subagents sas
      :usage (plist-get plist :usage)
@@ -697,7 +729,7 @@ untouched — their bodies are structured."
                     :kind 'user
                     :segments segs
                     :timestamp (current-time)))
-              (s1 (hermes--push-pending state msg)))
+              (s1 (hermes--push-committed state msg)))
          (hermes--with-copy s1 hermes-state-copy s
            (setf (hermes-state-history s)
                  (let ((h (cons text (hermes-state-history state))))
@@ -764,6 +796,10 @@ untouched — their bodies are structured."
       (:pending-turns-clear
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-pending-turns s) [])))
+      (:turns-load
+       (let ((new-turns (or (plist-get p :turns) [])))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-turns s) new-turns))))
       ;; --- Background tasks (client-side synthetic events) ---------------
       (:background-start
        (let* ((tid (plist-get p :task-id))
@@ -912,7 +948,7 @@ untouched — their bodies are structured."
                (puthash "tokens_received" (+ (or (gethash "tokens_received" acc-usage) 0)
                                              received)
                         acc-usage))
-             (let ((s1 (hermes--push-pending state msg)))
+             (let ((s1 (hermes--push-committed state msg)))
                (hermes--with-copy s1 hermes-state-copy s
                  (setf (hermes-state-usage s) acc-usage
                        (hermes-state-stream s) nil)))))))
@@ -1227,7 +1263,7 @@ untouched — their bodies are structured."
          (if (null str)
              state
            (let* ((amsg (hermes--message-from-stream str nil))
-                  (s1 (hermes--push-pending state amsg)))
+                  (s1 (hermes--push-committed state amsg)))
              (hermes--with-copy s1 hermes-state-copy s
                (setf (hermes-state-stream s) nil))))))
       ;; --- Gateway diagnostics -------------------------------------------

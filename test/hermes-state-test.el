@@ -94,6 +94,79 @@
          (s1 (hermes--reduce s0 '(:pending-turns-clear))))
     (should (equal [] (hermes-state-pending-turns s1)))))
 
+;;;; turns slot — canonical conversation log
+
+(ert-deftest hermes-state-test/turns-initial-empty ()
+  (should (equal [] (hermes-state-turns (make-hermes-state)))))
+
+(ert-deftest hermes-state-test/user-submit-appends-to-turns ()
+  (let* ((s (hermes--reduce nil (cons :user-submit '(:text "hi"))))
+         (turns (hermes-state-turns s)))
+    (should (= 1 (length turns)))
+    (should (eq 'user (hermes-message-kind (aref turns 0))))
+    (should (stringp (hermes-message-id (aref turns 0))))))
+
+(ert-deftest hermes-state-test/message-complete-appends-to-turns ()
+  (let* ((s (hermes-test--reduce* nil
+              '("message.start")
+              (cons "message.delta" (hermes-test--ht "text" "yo"))
+              (cons "message.complete" nil)))
+         (turns (hermes-state-turns s)))
+    (should (= 1 (length turns)))
+    (should (eq 'assistant (hermes-message-kind (aref turns 0))))
+    (should (stringp (hermes-message-id (aref turns 0))))))
+
+(ert-deftest hermes-state-test/error-commits-partial-turn-to-turns ()
+  "An `error' mid-stream commits the partial assistant turn to `turns'."
+  (let* ((s (hermes-test--reduce* nil
+              '("message.start")
+              (cons "message.delta" (hermes-test--ht "text" "partial"))
+              (cons "error" (hermes-test--ht "message" "boom"))))
+         (turns (hermes-state-turns s)))
+    (should (= 1 (length turns)))
+    (should (eq 'assistant (hermes-message-kind (aref turns 0))))
+    (should (null (hermes-state-stream s)))))
+
+(ert-deftest hermes-state-test/system-message-does-not-append-to-turns ()
+  (let* ((s (hermes--reduce nil (cons :system-message '(:text "resumed")))))
+    (should (equal [] (hermes-state-turns s)))
+    (should (= 1 (length (hermes-state-pending-turns s))))
+    (should (eq 'system (hermes-message-kind
+                         (aref (hermes-state-pending-turns s) 0))))))
+
+(ert-deftest hermes-state-test/turns-load-overwrites ()
+  (let* ((s0 (hermes-test--reduce* nil
+               (cons :user-submit '(:text "a"))
+               (cons :user-submit '(:text "b"))
+               (cons :user-submit '(:text "c"))))
+         (replacement (vector (make-hermes-message :kind 'user :id "imported-1")))
+         (s1 (hermes--reduce s0 (cons :turns-load (list :turns replacement)))))
+    (should (= 3 (length (hermes-state-turns s0))))
+    (should (= 1 (length (hermes-state-turns s1))))
+    (should (equal "imported-1"
+                   (hermes-message-id (aref (hermes-state-turns s1) 0))))))
+
+(ert-deftest hermes-state-test/message-id-monotonic ()
+  (let* ((hermes--message-counter 0)
+         (s (hermes-test--reduce* nil
+              (cons :user-submit '(:text "one"))
+              (cons :user-submit '(:text "two"))))
+         (turns (hermes-state-turns s)))
+    (should (= 2 (length turns)))
+    (let ((a (hermes-message-id (aref turns 0)))
+          (b (hermes-message-id (aref turns 1))))
+      (should (stringp a))
+      (should (stringp b))
+      (should (not (equal a b))))))
+
+(ert-deftest hermes-state-test/message-id-round-trips-via-plist ()
+  (let* ((m (make-hermes-message :kind 'user :id "msg-42"
+                                 :segments [] :subagents []))
+         (pl (hermes--message-to-plist m))
+         (m2 (hermes--plist-to-message pl)))
+    (should (equal "msg-42" (plist-get pl :id)))
+    (should (equal "msg-42" (hermes-message-id m2)))))
+
 ;;;; Stream lifecycle
 
 (ert-deftest hermes-state-test/message-start-creates-empty-stream ()

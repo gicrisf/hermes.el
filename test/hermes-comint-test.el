@@ -432,7 +432,30 @@ live-state projection, both invocations converge to the same buffer."
                                    :connection 'connected
                                    :queue '("a" "b" "c"))))
     (should (string-match-p "queue: 3"
-                            (hermes-comint--format-mode-line state sid)))))
+                             (hermes-comint--format-mode-line state sid)))))
+
+;;;; Image insertion
+
+(ert-deftest hermes-comint-test/image-fallback-terminal ()
+  "On terminal, image segment produces [image: name] placeholder before text."
+  (let* ((msg (make-hermes-message
+               :kind 'user
+               :segments (vector
+                          (make-hermes-segment
+                           :type 'image
+                           :content (list :path "/tmp/test.png" :name "test.png"))
+                          (make-hermes-segment
+                           :type 'text :content "Hello"))
+               :timestamp (current-time))))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) nil)))
+        (hermes-comint--insert-user-body msg))
+      (let ((text (buffer-string)))
+        (should (string-match-p "\\[image:" text))
+        (should (string-match-p "test\\.png" text))
+        (should (string-match-p "Hello" text))
+        (should (< (string-match-p "\\[image:" text)
+                   (string-match-p "Hello" text)))))))
 
 (provide 'hermes-comint-test)
 ;;; hermes-comint-test.el ends here

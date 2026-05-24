@@ -36,6 +36,7 @@
 (declare-function hermes-image-clipboard-paste "hermes-image" ())
 (declare-function hermes-bg--list-for-sid "hermes-bg" (sid))
 (declare-function hermes-tool--truncate "hermes-tool-formatters" (s n))
+(declare-function hermes--image-display-dims "hermes-org-render" (width height))
 
 (defvar hermes--last-gateway-ready)
 
@@ -138,21 +139,44 @@ When nil, the bench falls back to the gateway skin color
           (setq found t))))
     found))
 
-(defun hermes-comint--image-lines (msg)
-  "Return list of `[image: name]' strings for image segments in MSG."
-  (let ((segs (hermes-message-segments msg))
-        (out nil))
+(defun hermes-comint--insert-image-segment (seg)
+  "Insert the image described by segment SEG as an inline image.
+SEG's content is a plist with :path, :name, :width, :height, :token-estimate.
+On graphical displays, renders via `insert-image' with dimensions capped at
+`hermes-image-display-max-dim'.  On terminals or when the file is missing,
+falls back to `[image: name]' placeholder text.
+A `keymap' property on the image span binds RET to `find-file' on PATH."
+  (let* ((c    (hermes-segment-content seg))
+         (path (and (listp c) (plist-get c :path)))
+         (name (or (and (listp c) (plist-get c :name))
+                   (and path (file-name-nondirectory path))
+                   "image")))
+    (if (and (display-graphic-p) path (file-readable-p path))
+        (let* ((w    (and (listp c) (plist-get c :width)))
+               (h    (and (listp c) (plist-get c :height)))
+               (dims (hermes--image-display-dims w h))
+               (img  (apply #'create-image path nil nil
+                            (if dims
+                                (list :width (car dims) :height (cdr dims))
+                              nil))))
+          (insert-image img (or name path))
+          (let ((km (make-sparse-keymap))
+                (p path))
+            (define-key km (kbd "RET")
+              (lambda () (interactive) (find-file p)))
+            (put-text-property (1- (point)) (point) 'keymap km))
+          (insert "\n"))
+      (insert (format "[image: %s]\n" name)))))
+
+(defun hermes-comint--insert-image-segments (msg)
+  "Insert inline images for all image segments in MSG.
+Images come first (matching the org buffer's [image…, text] ordering)."
+  (let ((segs (hermes-message-segments msg)))
     (when (vectorp segs)
       (dotimes (i (length segs))
         (let ((seg (aref segs i)))
           (when (eq 'image (hermes-segment-type seg))
-            (let* ((c (hermes-segment-content seg))
-                   (name (or (and (listp c) (plist-get c :name))
-                             (let ((p (and (listp c) (plist-get c :path))))
-                               (and p (file-name-nondirectory p)))
-                             "image")))
-              (push (format "[image: %s]" name) out))))))
-    (nreverse out)))
+            (hermes-comint--insert-image-segment seg)))))))
 
 ;;; Turn metadata helpers
 
@@ -412,9 +436,8 @@ copy commands are always allowed in the read-only history region."
                (concat text (unless (string-suffix-p "\n" text) "\n")))))))
 
 (defun hermes-comint--insert-user-body (msg)
-  (hermes-comint--insert-full-text msg)
-  (dolist (line (hermes-comint--image-lines msg))
-    (insert line "\n")))
+  (hermes-comint--insert-image-segments msg)
+  (hermes-comint--insert-full-text msg))
 
 (defun hermes-comint--insert-system-body (msg)
   (hermes-comint--insert-full-text msg))

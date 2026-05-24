@@ -25,7 +25,7 @@
 (require 'hermes-state)
 (require 'hermes-org)
 
-(declare-function hermes--model-short-name "hermes-render" (slug))
+(declare-function hermes--model-short-name "hermes-org-render" (slug))
 
 ;;;; Target resolution
 

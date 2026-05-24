@@ -457,29 +457,42 @@ Caller is responsible for positioning point and for advancing
 
 ;;;; State refresh dispatch
 
-(defun hermes-comint--refresh (old new)
-  "Dispatch state diffs.  Subscriber on `hermes-state-change-hook'."
+(defun hermes-comint--refresh (_old _new)
+  "Project the current session state into the buffer.
+The `(old, new)' hook arguments are intentionally ignored — the
+renderer reads `(hermes--current-state)' directly and dispatches based
+on the live state plus its own snapshot (`hermes-comint--turns-snapshot')
+and lifecycle flag (`hermes-comint--stream-active').
+
+This makes the projection idempotent across re-entrant hook firings:
+when another subscriber dispatches an inner event mid-hook (e.g. the
+org renderer firing `:pending-turns-clear' after a `message.complete'),
+both the inner and outer hook invocations see the same post-commit
+state and converge to the same buffer content."
   (hermes--on-session-buffer hermes-comint--buffers
-    (let ((old-stream (and old (hermes-state-stream old)))
-          (new-stream (hermes-state-stream new)))
-      (cond
-       ;; Stream began.
-       ((and (null old-stream) new-stream)
-        (hermes-comint--stream-begin new))
-       ;; Stream ended → commit pending region.
-       ((and old-stream (null new-stream))
-        (hermes-comint--stream-commit new))
-       ;; Stream delta → throttled repaint.
-       ((and old-stream new-stream (not (eq old-stream new-stream)))
-        (hermes-comint--stream-update new))
-       ;; New committed turn(s) with no active stream.
-       ((not (eq (hermes-state-turns new)
-                 hermes-comint--turns-snapshot))
-        (hermes-comint--append-new-turns new))
-       ;; Otherwise: refresh header-line (bg / attachments may have changed).
-       (t
-        (hermes-comint--refresh-header-line new))))
-    (hermes-comint--refresh-header-line new)))
+    (let* ((state  (hermes--current-state))
+           (stream (and state (hermes-state-stream state)))
+           (turns  (and state (hermes-state-turns state))))
+      (when state
+        (cond
+         ;; A stream lifecycle is in flight (stream-begin already ran).
+         ;; Whether the live stream is still set (mid-flight delta) or
+         ;; already cleared (commit pending — possibly via a re-entrant
+         ;; inner firing before the outer message.complete hook reaches
+         ;; us), the right action is the corresponding step.
+         (hermes-comint--stream-active
+          (if stream
+              (hermes-comint--stream-update state)
+            (hermes-comint--stream-commit state)))
+         ;; No active lifecycle, but a stream has appeared → open one.
+         (stream
+          (hermes-comint--stream-begin state))
+         ;; No stream activity; `turns' grew (or was loaded) → append.
+         ((not (eq turns hermes-comint--turns-snapshot))
+          (hermes-comint--append-new-turns state)))
+        ;; Always refresh the header-line: bg / attachments / status may
+        ;; have changed independent of the streaming dispatch above.
+        (hermes-comint--refresh-header-line state)))))
 
 ;;;; Committed appends
 
@@ -522,6 +535,33 @@ Caller is responsible for positioning point and for advancing
   (setq hermes-comint--stream-active t)
   (hermes-comint--paint-stream state))
 
+;; `hermes-render-stream-throttle' is defined in `hermes-org-render.el'.
+;; Forward-declared here so we can reference it as the cooldown floor
+;; without taking a hard dep on the org renderer.
+(defvar hermes-render-stream-throttle)
+
+(defun hermes-comint--adaptive-throttle-interval ()
+  "Cooldown seconds, scaled by the byte size of the pending region.
+Mirrors `hermes--adaptive-throttle-interval' in `hermes-org-render.el':
+the step table is identical, but the size measurement reads the comint
+pending region (between `hermes-comint--output-end' and
+`hermes-comint--prompt-start') instead of the org segment snapshot.
+Floors at `hermes-render-stream-throttle' so the user's customisation
+applies to both renderers."
+  (let* ((floor (if (boundp 'hermes-render-stream-throttle)
+                    hermes-render-stream-throttle
+                  0.04))
+         (out  (and (markerp hermes-comint--output-end)
+                    (marker-position hermes-comint--output-end)))
+         (pr   (and (markerp hermes-comint--prompt-start)
+                    (marker-position hermes-comint--prompt-start)))
+         (len  (max 0 (if (and out pr) (- pr out) 0))))
+    (max floor
+         (cond ((< len 1000)  0.04)
+               ((< len 5000)  0.20)
+               ((< len 10000) 1.00)
+               (t             2.00)))))
+
 (defun hermes-comint--stream-update (state)
   "Throttled repaint of the streaming region."
   (cond
@@ -530,24 +570,32 @@ Caller is responsible for positioning point and for advancing
    ((null hermes-comint--stream-timer)
     (hermes-comint--paint-stream state)
     (setq hermes-comint--stream-timer
-          (run-with-timer 0.04 nil
+          (run-with-timer (hermes-comint--adaptive-throttle-interval) nil
                           #'hermes-comint--stream-flush
                           (current-buffer))))
    (t
     (setq hermes-comint--stream-pending state))))
 
 (defun hermes-comint--stream-flush (buf)
-  "Timer callback: paint the latest pending snapshot into BUF."
+  "Timer callback: paint the latest pending snapshot into BUF.
+Validates that the stashed state's stream pointer still matches the
+current in-flight stream — if `message.complete' has since fired and
+cleared the stream, the stale paint is silently discarded.  Matches
+the org renderer's `eq' check on stream identity."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (setq hermes-comint--stream-timer nil)
-      (let ((ns hermes-comint--stream-pending))
+      (let* ((ns hermes-comint--stream-pending)
+             (cur (hermes--current-state))
+             (stashed-stream (and ns (hermes-state-stream ns))))
         (setq hermes-comint--stream-pending nil)
-        (when (and ns (hermes-state-stream ns)
+        (when (and stashed-stream cur
+                   (eq stashed-stream (hermes-state-stream cur))
                    (hermes--buffer-visible-p buf))
           (hermes-comint--paint-stream ns)
           (setq hermes-comint--stream-timer
-                (run-with-timer 0.04 nil
+                (run-with-timer (hermes-comint--adaptive-throttle-interval)
+                                nil
                                 #'hermes-comint--stream-flush buf)))))))
 
 (defun hermes-comint--stream-cancel-timer ()

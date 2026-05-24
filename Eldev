@@ -8,7 +8,7 @@
       '("hermes-events.el"
         "hermes-rpc.el"
         "hermes-state.el"
-        "hermes-render.el"
+        "hermes-org-render.el"
         "hermes-prompts.el"
         "hermes-input.el"
         "hermes-sessions.el"
@@ -27,7 +27,7 @@
         "hermes-comint.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"
-                           "test/hermes-render-test.el"
+                           "test/hermes-org-render-test.el"
                            "test/hermes-md-test.el"
                            "test/hermes-input-test.el"
                            "test/hermes-org-test.el"

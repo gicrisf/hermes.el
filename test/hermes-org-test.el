@@ -288,7 +288,7 @@ deep inside the reasoning subtree
 
 ;;;; Subtree-scoped rendering (slice C)
 
-(require 'hermes-render)
+(require 'hermes-org-render)
 
 (defun hermes-org-test--two-session-buffer ()
   "Insert a buffer with two `:hermes:' container subtrees and seed
@@ -391,7 +391,7 @@ returns the (sid . state) pair for whichever container contains point."
 
 ;;;; Resume / rehydration
 
-(require 'hermes-render)
+(require 'hermes-org-render)
 (require 'hermes-input)
 
 (defun hermes-org-test--seed-subtree-with-drawer (text)
@@ -517,7 +517,7 @@ removed from the alist."
 ;;;; v2 parser: hermes--parse-turn-at-point
 
 (require 'hermes-state)
-(require 'hermes-render)
+(require 'hermes-org-render)
 
 (defun hermes-org-test--at-first-turn ()
   "Move point to the first level-2 turn heading.  Assumes the buffer is
@@ -1029,7 +1029,7 @@ done well (2.5s)
 
 (ert-deftest hermes-org-test/round-trip-subagent-via-buffer ()
   "Formatter → parser round-trip preserves subagent fields."
-  (require 'hermes-render)
+  (require 'hermes-org-render)
   (let* ((sa (make-hermes-subagent
               :id "sa-rt" :goal "do thing" :status 'complete
               :thinking "hmm"
@@ -1062,7 +1062,7 @@ done well (2.5s)
 (ert-deftest hermes-org-test/parse-subtree-roundtrip-after-renderer ()
   "End-to-end: insert a committed turn via the renderer, then parse it
 back via `hermes--parse-turn-at-point' and verify kind + text."
-  (require 'hermes-render)
+  (require 'hermes-org-render)
   (require 'hermes-mode)
   (with-temp-buffer
     (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
@@ -1296,7 +1296,7 @@ partial
 (ert-deftest hermes-org-test/roundtrip-body-canonical-fields ()
   "Render→parse→render preserves bytes for :inline-diff, :output, and
 :error when they are body-canonical at terminal status."
-  (require 'hermes-render)
+  (require 'hermes-org-render)
   (let* ((render-msg
           (lambda (m)
             (with-temp-buffer
@@ -1536,7 +1536,7 @@ attr_hermes values."
 
 (ert-deftest hermes-org-test/round-trip-image-via-buffer ()
   "Formatter → parser round-trip preserves image segment fields."
-  (require 'hermes-render)
+  (require 'hermes-org-render)
   (let ((tmp (make-temp-file "hermes-img-" nil ".png")))
     (unwind-protect
         (let* ((img (list :path tmp

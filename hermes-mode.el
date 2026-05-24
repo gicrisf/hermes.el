@@ -21,7 +21,7 @@
 (require 'hermes-rpc)
 (require 'hermes-events)
 (require 'hermes-state)
-(require 'hermes-render)
+(require 'hermes-org-render)
 (require 'hermes-prompts)
 (require 'hermes-input)
 (require 'hermes-sessions)
@@ -39,7 +39,11 @@
   "Most recent `gateway.ready' payload, cached for replay into new buffers.
 The event broadcasts to every existing session when it arrives, but the
 first session is typically created AFTER `gateway.ready' lands — so
-without this cache, the very first session would never see the skin.")
+without this cache, the very first session would never see the skin.
+
+TEA: this is de-facto global session state living outside
+`hermes--global-state', mutated via raw `setq'.  Move into the state
+atom (slot + reducer cases for `\"gateway.ready\"' / `\"skin.changed\"').")
 
 (defun hermes--lookup-buffer (session-id)
   "Return any live viewer buffer for SESSION-ID, or nil.

@@ -1,8 +1,8 @@
-;;; hermes-render-test.el --- ERT tests for the segmented renderer -*- lexical-binding: t; -*-
+;;; hermes-org-render-test.el --- ERT tests for the segmented renderer -*- lexical-binding: t; -*-
 
 (require 'ert)
 (require 'hermes-state)
-(require 'hermes-render)
+(require 'hermes-org-render)
 (require 'hermes-mode)
 
 (defun hermes-render-test--setup ()
@@ -1528,5 +1528,5 @@ on every subsequent dispatch."
       (when (buffer-live-p org-buf) (kill-buffer org-buf))
       (when (buffer-live-p origin) (kill-buffer origin)))))
 
-(provide 'hermes-render-test)
-;;; hermes-render-test.el ends here
+(provide 'hermes-org-render-test)
+;;; hermes-org-render-test.el ends here

@@ -449,6 +449,10 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
   "Return a new vector that is VEC with ELT pushed onto the end."
   (vconcat vec (vector elt)))
 
+;; TEA violation (reducer purity): these counters are global mutable
+;; state read+incremented from inside the reducer.  Same (msg, state)
+;; pair yields different output across calls.  Fix would move them into
+;; `hermes-state' slots and `setf' on the copy.  No current bug.
 (defvar hermes--segment-counter 0
   "Monotonic counter for segment IDs.")
 
@@ -556,8 +560,13 @@ Assigns a fresh monotonic `:id' to a copy of MSG, then appends it to
 Used by `:user-submit', `\"message.complete\"', and the `\"error\"' path
 that commits a partial assistant turn.  Both `setf' branches read from
 the original STATE — not the in-flight copy — matching the
-`hermes--push-pending' convention."
+`hermes--push-pending' convention.
+
+TEA: `hermes-message-copy' is shallow — the `:segments' vector is
+shared between MSG and the committed copy.  Safe today (no mutation
+sites), latent risk if a future writer mutates the shared vector."
   (let ((m (hermes--with-copy msg hermes-message-copy x
+             ;; TEA: see `hermes--next-message-id' header.
              (setf (hermes-message-id x) (hermes--next-message-id)))))
     (hermes--with-copy state hermes-state-copy s
       (setf (hermes-state-pending-turns s)
@@ -822,7 +831,19 @@ untouched — their bodies are structured."
 ;; (e.g. :user-submit, :connected).  PAYLOAD is a hash-table or plist.
 
 (defun hermes--reduce (state msg)
-  "Pure: produce a new `hermes-state' from STATE and MSG."
+  "Pure: produce a new `hermes-state' from STATE and MSG.
+
+TEA known impurities (pragmatic concessions, kept out of equality
+branching so they don't affect reducer determinism):
+- `current-time' / `format-time-string' for message and bg-task
+  timestamps (sites at 825, 875, 1190, 1401, 961, 1459, 1468).
+  Strict fix would capture the timestamp in the transport layer and
+  pass it in the message payload.
+- `hermes--next-message-id' / `hermes--next-segment-id' mutate global
+  counters (see their defvars).
+- `hermes--log-write' calls in several gateway-error handlers below
+  perform a buffer write from inside the reducer.  Move to a hook
+  subscriber if reducer purity ever needs to be auditable."
   (unless state (setq state (make-hermes-state :connection 'disconnected)))
   (let ((type (car msg))
         (p    (cdr msg)))
@@ -983,9 +1004,16 @@ untouched — their bodies are structured."
       ("session.info"
        (hermes--with-copy state hermes-state-copy s
          (when (hash-table-p p)
+           ;; `copy-hash-table' is required: without it, `puthash' below
+           ;; mutates the *old* state's hash in place, leaving (eq old.X
+           ;; new.X) = t for subscribers that diff old vs new and
+           ;; silently suppressing UI updates (e.g. mode-line token
+           ;; refresh).  Reducer purity invariant — see same fix in
+           ;; "message.complete" usage branch.
            (let ((sid (hermes--get p "session_id"))
-                 (merged (or (hermes-state-session-info state)
-                             (make-hash-table :test 'equal)))
+                 (merged (if (hermes-state-session-info state)
+                             (copy-hash-table (hermes-state-session-info state))
+                           (make-hash-table :test 'equal)))
                  (usage-payload (hermes--get p "usage")))
              (maphash (lambda (k v) (puthash k v merged)) p)
              (setf (hermes-state-session-info s) merged)
@@ -994,8 +1022,9 @@ untouched — their bodies are structured."
                (when (and busy (stringp busy) (not (string-empty-p busy)))
                  (setf (hermes-state-busy-mode s) busy)))
              (when usage-payload
-               (let ((u (or (hermes-state-usage state)
-                            (make-hash-table :test 'equal))))
+               (let ((u (if (hermes-state-usage state)
+                            (copy-hash-table (hermes-state-usage state))
+                          (make-hash-table :test 'equal))))
                  (cond
                   ((hash-table-p usage-payload)
                    (maphash (lambda (k v) (puthash k v u)) usage-payload))
@@ -1074,8 +1103,12 @@ untouched — their bodies are structured."
                        (when received (puthash "tokens_received" received msg-usage))))
                   (msg (hermes--message-from-stream str msg-usage))
                   ;; Cumulative session-wide counter lives in state.
-                  (acc-usage (or (hermes-state-usage state)
-                                 (make-hash-table :test 'equal))))
+                  ;; `copy-hash-table' is required: mutating the old hash
+                  ;; in place would leave (eq old.usage new.usage) = t,
+                  ;; suppressing mode-line refresh.  Reducer purity.
+                  (acc-usage (if (hermes-state-usage state)
+                                 (copy-hash-table (hermes-state-usage state))
+                               (make-hash-table :test 'equal))))
              (when sent
                (puthash "tokens_sent" (+ (or (gethash "tokens_sent" acc-usage) 0) sent)
                         acc-usage))

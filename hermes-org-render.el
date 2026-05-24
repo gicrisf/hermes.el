@@ -1,4 +1,4 @@
-;;; hermes-render.el --- Segmented renderer for the Hermes Org buffer -*- lexical-binding: t; -*-
+;;; hermes-org-render.el --- Segmented renderer for the Hermes Org buffer -*- lexical-binding: t; -*-
 
 ;; Author: Giovanni Crisalfi
 ;; Keywords: tools, ai
@@ -290,6 +290,11 @@ such as tests, or in-buffer dispatch loops)."
                           (hermes-state-queue new)))
           (hermes--mode-line-update new))))
     ;; Clear pending-turns once they've been written to the buffer.
+    ;; TEA violation (view-dispatches-mutation): this re-entrant
+    ;; dispatch fires the full hook chain synchronously *before* the
+    ;; outer dispatch's hook iteration completes.  Comint guards against
+    ;; this by reading live state in `hermes-comint--refresh' (F2);
+    ;; defense-in-depth fix at source would be `run-at-time 0 …'.
     (when drain-pending
       (hermes-dispatch '(:pending-turns-clear)))
     (when (derived-mode-p 'org-mode)
@@ -1088,6 +1093,9 @@ O(total bench text) to O(delta size)."
             (setq diverged t)
           (let* ((new-text (hermes--segment-block seg))
                  (new-len (length new-text)))
+            ;; TEA: view reads its own output.  Storing `:text' in the
+            ;; snapshot entries would let us compare without touching
+            ;; the buffer.
             (unless (and (= old-len new-len)
                          (string= new-text
                                   (buffer-substring-no-properties
@@ -1532,5 +1540,5 @@ outside of dispatch (e.g. mode setup), falls back to current buffer."
           (paint (hermes--state-slot-read hermes--current-session-id)))
       (paint (hermes--current-state)))))
 
-(provide 'hermes-render)
-;;; hermes-render.el ends here
+(provide 'hermes-org-render)
+;;; hermes-org-render.el ends here

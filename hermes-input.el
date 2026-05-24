@@ -32,7 +32,7 @@
 (declare-function hermes-reconnect "hermes-mode" ())
 (declare-function hermes--parse-buffer-messages "hermes-mode" ())
 (declare-function hermes--buffer-message-count "hermes-mode" ())
-(declare-function hermes--message-text-for-display "hermes-render" (msg))
+(declare-function hermes--message-text-for-display "hermes-org-render" (msg))
 (declare-function hermes-interrupt-current-session "hermes-mode" ())
 (declare-function hermes-resume-from-db "hermes-sessions" (sid))
 (declare-function hermes-branch-from-db "hermes-sessions" (sid))
@@ -129,7 +129,11 @@ gateway session — fresh start, reconnect, post-reconnect drain, or
 opening a saved file while the gateway is already up — is seeded
 exactly once, no matter which call path reached `prompt.submit'.
 Slash commands take a different RPC path (`slash.exec') and never
-participate in the comparison.")
+participate in the comparison.
+
+TEA: session-scoped state mutated via raw `setq' outside the reducer.
+Move into a `:seed-stamp' slot on `hermes-state' with a dedicated
+reducer action.")
 
 (defun hermes--build-history-text ()
   "Return a text block reconstructed from buffer history, or nil.

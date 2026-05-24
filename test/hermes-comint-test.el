@@ -190,6 +190,109 @@ Returns the buffer."
           (let ((c (hermes-comint-test--committed-text)))
             (should (string-match-p "final answer" c))))))))
 
+(ert-deftest hermes-comint-test/full-send-cycle-no-duplicate-assistant ()
+  "Full hook-driven dispatch — user submit → stream begin → delta → complete.
+Reproduces the dup-rendering bug seen when sending from the comint buffer."
+  (let* ((sid     (hermes-comint-test--fresh-sid))
+         (initial (make-hermes-state :session-id sid))
+         (user    (make-hermes-message
+                   :kind 'user
+                   :segments (vector (make-hermes-segment
+                                      :type 'text :content "hi"))
+                   :timestamp (current-time)))
+         (stream0 (make-hermes-stream :segments []))
+         (stream1 (make-hermes-stream
+                   :segments (vector (make-hermes-segment
+                                      :type 'text :content "Hey."))))
+         (final   (make-hermes-message
+                   :kind 'assistant
+                   :segments (vector (make-hermes-segment
+                                      :type 'text :content "Hey."))
+                   :timestamp (current-time)))
+         (s1 (make-hermes-state :session-id sid :turns (vector user)))
+         (s2 (make-hermes-state :session-id sid :turns (vector user)
+                                :stream stream0))
+         (s3 (make-hermes-state :session-id sid :turns (vector user)
+                                :stream stream1))
+         (s4 (make-hermes-state :session-id sid
+                                :turns (vector user final))))
+    (hermes-comint-test--with-buffer buf sid initial
+      (with-current-buffer buf
+        (let ((hermes--current-session-id sid))
+          ;; user-submit
+          (puthash sid s1 hermes--sessions)
+          (hermes-comint--refresh initial s1)
+          ;; message.start
+          (puthash sid s2 hermes--sessions)
+          (hermes-comint--refresh s1 s2)
+          ;; message.delta
+          (puthash sid s3 hermes--sessions)
+          (hermes-comint--refresh s2 s3)
+          ;; message.complete
+          (puthash sid s4 hermes--sessions)
+          (hermes-comint--refresh s3 s4))
+        (let* ((c (buffer-substring-no-properties (point-min) (point-max)))
+               (count (cl-count-if
+                       (lambda (s) (string-match-p "Assistant" s))
+                       (split-string c "\n"))))
+          (should (= 1 count)))))))
+
+(ert-deftest hermes-comint-test/reentrant-pending-clear-no-duplicate ()
+  "Inner re-entrant firing before outer `message.complete' does not dup the assistant.
+Reproduces the observed bug: another subscriber dispatches an
+event (e.g. `:pending-turns-clear') from inside the hook chain for
+`message.complete'.  The hook then fires recursively in B→C order
+*before* the outer A→B firing reaches the comint subscriber.  With the
+live-state projection, both invocations converge to the same buffer."
+  (let* ((sid     (hermes-comint-test--fresh-sid))
+         (initial (make-hermes-state :session-id sid))
+         (user    (make-hermes-message
+                   :kind 'user
+                   :segments (vector (make-hermes-segment
+                                      :type 'text :content "hi"))
+                   :timestamp (current-time)))
+         (stream0 (make-hermes-stream :segments []))
+         (final   (make-hermes-message
+                   :kind 'assistant
+                   :segments (vector (make-hermes-segment
+                                      :type 'reasoning :content "match the energy")
+                                     (make-hermes-segment
+                                      :type 'text :content "Hey."))
+                   :timestamp (current-time)))
+         ;; A: turns=[user], stream=inflight.   (before message.complete)
+         ;; B: turns=[user, assistant], stream=nil.   (after message.complete)
+         ;; C: turns=[user, assistant], stream=nil.   (after :pending-turns-clear)
+         (sA (make-hermes-state :session-id sid :turns (vector user)
+                                :stream stream0))
+         (sB (make-hermes-state :session-id sid :turns (vector user final)))
+         (sC (make-hermes-state :session-id sid :turns (vector user final))))
+    (hermes-comint-test--with-buffer buf sid initial
+      (with-current-buffer buf
+        (let ((hermes--current-session-id sid))
+          ;; Get the buffer into the streaming lifecycle (mirrors what
+          ;; message.start did).
+          (puthash sid sA hermes--sessions)
+          (hermes-comint--refresh initial sA)
+          (should hermes-comint--stream-active)
+          ;; Outer dispatch reduces A→B and writes B to the slot.
+          (puthash sid sB hermes--sessions)
+          ;; Now another subscriber runs first, dispatches its inner
+          ;; event (B→C), the inner hook fires synchronously, and the
+          ;; comint subscriber sees the inner firing BEFORE the outer
+          ;; one reaches it.
+          (puthash sid sC hermes--sessions)
+          (hermes-comint--refresh sB sC)    ; inner firing (B → C)
+          (hermes-comint--refresh sA sB))   ; outer firing resumes (A → B)
+        ;; Exactly one assistant heading in the buffer.
+        (let* ((c (buffer-substring-no-properties (point-min) (point-max)))
+               (n (cl-count-if (lambda (s) (string-match-p "Assistant" s))
+                               (split-string c "\n"))))
+          (should (= 1 n)))
+        ;; Pending region empty: commit ran exactly once and snapshot is current.
+        (should-not hermes-comint--stream-active)
+        (should (= (marker-position hermes-comint--output-end)
+                   (marker-position hermes-comint--prompt-start)))))))
+
 ;;;; Header line
 
 (ert-deftest hermes-comint-test/header-line-bg-running ()

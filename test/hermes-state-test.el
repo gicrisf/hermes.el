@@ -80,6 +80,54 @@
     (should (hash-table-p usage))
     (should (= 100 (gethash "tokens_sent" usage)))))
 
+(ert-deftest hermes-state-test/session-info-does-not-mutate-old-hashes ()
+  "Reducer purity: `session.info' must NOT mutate the old state's hashes.
+Regression for the in-place-mutation bug where `puthash' on the old
+`session-info' / `usage' hashes left (eq old.X new.X) = t for diffing
+subscribers, silently suppressing UI refresh."
+  (let* ((p1 (hermes-test--ht "session_id" "abc" "model" "opus"
+                              "usage" (hermes-test--ht "tokens_sent" 100)))
+         (s1 (hermes--reduce nil (cons "session.info" p1)))
+         (p2 (hermes-test--ht "model" "sonnet"
+                              "usage" (hermes-test--ht "tokens_sent" 250)))
+         (s2 (hermes--reduce s1 (cons "session.info" p2))))
+    ;; Distinct hash references on each transition.
+    (should-not (eq (hermes-state-session-info s1)
+                    (hermes-state-session-info s2)))
+    (should-not (eq (hermes-state-usage s1) (hermes-state-usage s2)))
+    ;; s1's hashes still reflect their original values (not mutated).
+    (should (equal "opus" (gethash "model" (hermes-state-session-info s1))))
+    (should (= 100 (gethash "tokens_sent" (hermes-state-usage s1))))
+    ;; s2's hashes reflect the merge.
+    (should (equal "sonnet" (gethash "model" (hermes-state-session-info s2))))
+    (should (= 250 (gethash "tokens_sent" (hermes-state-usage s2))))))
+
+(ert-deftest hermes-state-test/message-complete-does-not-mutate-old-usage ()
+  "Reducer purity: `message.complete' must NOT mutate the old state's usage.
+Same regression class as `session-info-does-not-mutate-old-hashes'."
+  (let* ((s0 (hermes--reduce nil
+                             (cons "session.info"
+                                   (hermes-test--ht
+                                    "usage" (hermes-test--ht
+                                             "tokens_sent" 100
+                                             "tokens_received" 50)))))
+         (s1 (hermes--reduce s0 (cons "message.start" nil)))
+         (s2 (hermes--reduce s1
+                             (cons "message.delta"
+                                   (hermes-test--ht "text" "hi"))))
+         (s3 (hermes--reduce s2
+                             (cons "message.complete"
+                                   (hermes-test--ht
+                                    "tokens_sent" 25
+                                    "tokens_received" 10)))))
+    (should-not (eq (hermes-state-usage s2) (hermes-state-usage s3)))
+    ;; s2's usage unchanged from before commit.
+    (should (= 100 (gethash "tokens_sent"     (hermes-state-usage s2))))
+    (should (= 50  (gethash "tokens_received" (hermes-state-usage s2))))
+    ;; s3's usage carries the accumulated totals.
+    (should (= 125 (gethash "tokens_sent"     (hermes-state-usage s3))))
+    (should (= 60  (gethash "tokens_received" (hermes-state-usage s3))))))
+
 ;;;; User submit (optimistic) — pushes to pending-turns
 
 (ert-deftest hermes-state-test/user-submit-pushes-pending-turn ()

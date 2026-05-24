@@ -211,7 +211,11 @@ Returns nil when no session is reachable."
   "Alist of (SESSION-ID . TEXT) waiting for a stale session to resume.
 Populated by `hermes-send' when the user targets a heading whose
 `:HERMES_SESSION:' has no active in-memory state.  `hermes--drain-pre-send-queue'
-flushes the matching entry once resume / fresh-create completes.")
+flushes the matching entry once resume / fresh-create completes.
+
+TEA: global mutable state outside the reducer (push/setq).  Move into
+a `:pre-send-queue' slot on `hermes-state' with `:pre-send-enqueue'
+and `:pre-send-dequeue' reducer actions.")
 
 (defun hermes--extract-named-block (text name)
   "Find an Org block labelled NAME in TEXT and return its unwrapped content.

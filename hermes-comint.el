@@ -467,14 +467,7 @@ copy commands are always allowed in the read-only history region."
     (setq hermes-comint--stream-pending nil)
     ;; output-end starts at point-min; advances as committed turns arrive.
     (setq hermes-comint--output-end (copy-marker (point-min) nil))
-    (hermes-comint--insert-prompt)
-    (unless hermes-comint--bench-p
-      (save-excursion
-        (goto-char (point-min))
-        (let ((start (point)))
-          (hermes-comint--insert-splash)
-          (hermes-comint--apply-output-props start (point)))
-        (set-marker hermes-comint--output-end (point)))))
+    (hermes-comint--insert-prompt))
   (add-hook 'hermes-state-change-hook #'hermes-comint--refresh t)
   (add-hook 'hermes-state-change-hook #'hermes-comint--refresh-mode-line t)
   (add-hook 'hermes-ui-state-change-hook #'hermes-comint--refresh-mode-line t)
@@ -1260,14 +1253,21 @@ CALLBACK is called with the new buffer (or nil on error)."
          (message "hermes: session.create failed: %S" error)
          (when callback (funcall callback nil)))
         (result
-         (let* ((sid (gethash "session_id" result))
-                (name (format "*hermes:%s*" sid))
-                (buf (generate-new-buffer name)))
+           (let* ((sid (gethash "session_id" result))
+                 (name (format "*hermes:%s*" sid))
+                 (buf (generate-new-buffer name)))
            (with-current-buffer buf
              (hermes-comint-mode)
              (setq-local hermes--current-session-id sid)
              (puthash sid buf hermes-comint--buffers)
              (hermes-comint--install-mode-line)
+             (let ((inhibit-read-only t))
+               (save-excursion
+                 (goto-char (point-min))
+                 (let ((start (point)))
+                   (hermes-comint--insert-splash)
+                   (hermes-comint--apply-output-props start (point)))
+                 (set-marker hermes-comint--output-end (point))))
              (let ((state (make-hermes-state :connection 'connected
                                              :session-id sid
                                              :cwd detected-cwd)))

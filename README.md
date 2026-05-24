@@ -1,5 +1,8 @@
 # hermes.el
 
+> **Warning:** This project works but is highly unstable and under active
+> development.  This is not the definitive documentation.
+
 Emacs client for the [Hermes AI agent](https://github.com/NousResearch/hermes-agent).
 Chat in Org-mode buffers with streaming responses, tool use, subagents, and a
 comint bench prompt — all over JSON-RPC 2.0 to the agent's `tui_gateway`.

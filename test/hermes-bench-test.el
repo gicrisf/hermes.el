@@ -1,7 +1,7 @@
 ;;; hermes-bench-test.el --- ERT tests for comint-backed bench -*- lexical-binding: t; -*-
 
 (require 'ert)
-(require 'hermes-mode)
+(require 'hermes)
 (require 'hermes-comint)
 (require 'hermes-input)
 (require 'hermes-state)

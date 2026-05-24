@@ -23,9 +23,9 @@
 (require 'hermes-state)
 
 (declare-function projectile-project-root "projectile" (&optional dir))
-(declare-function hermes--container-marker-at-point "hermes-mode" ())
-(declare-function hermes--primary-session-buffer "hermes-mode" ())
-(declare-function hermes--buffer-message-count "hermes-mode" ())
+(declare-function hermes--container-marker-at-point "hermes-org" ())
+(declare-function hermes--primary-session-buffer "hermes-session" ())
+(declare-function hermes--buffer-message-count "hermes-org-minor-mode" ())
 (declare-function hermes-bench-live-p "hermes-comint" (&optional buffer))
 
 (defvar hermes--container-level)

@@ -3,7 +3,7 @@
 (require 'ert)
 (require 'hermes-state)
 (require 'hermes-org-render)
-(require 'hermes-mode)
+(require 'hermes)
 
 (defun hermes-render-test--setup ()
   "Initialise an in-flight stream in the current buffer.

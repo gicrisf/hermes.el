@@ -17,7 +17,7 @@
 (require 'tabulated-list)
 (require 'hermes-state)
 
-(declare-function hermes--lookup-buffer "hermes-mode" (session-id))
+(declare-function hermes--lookup-buffer "hermes-session" (session-id))
 
 (defface hermes-bg-heading-face
   '((t :inherit org-level-1 :weight bold))

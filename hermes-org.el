@@ -29,7 +29,7 @@
 (declare-function hermes--request "hermes-rpc" (method params &optional callback))
 (declare-function hermes-rpc-live-p "hermes-rpc" ())
 (declare-function hermes-rpc-start "hermes-rpc" ())
-(declare-function hermes--install-hooks "hermes-mode" ())
+(declare-function hermes--install-hooks "hermes" ())
 (declare-function hermes-input--send-1 "hermes-input" (text))
 (defvar hermes-org-minor-mode)
 (defvar hermes--container-level)
@@ -692,8 +692,8 @@ and usage from visible buffer structure."
            nil 'tree))))
     (vconcat (nreverse messages))))
 
-(declare-function hermes-org-minor-mode "hermes-mode" (&optional arg))
-(declare-function hermes--ensure-container "hermes-mode" ())
+(declare-function hermes-org-minor-mode "hermes-org-minor-mode" (&optional arg))
+(declare-function hermes--ensure-container "hermes-org-minor-mode" ())
 (declare-function hermes-bench-ensure "hermes-comint" (parent))
 
 (defun hermes--rebuild-session-state (sid marker)

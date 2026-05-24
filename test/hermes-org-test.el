@@ -1063,7 +1063,7 @@ done well (2.5s)
   "End-to-end: insert a committed turn via the renderer, then parse it
 back via `hermes--parse-turn-at-point' and verify kind + text."
   (require 'hermes-org-render)
-  (require 'hermes-mode)
+  (require 'hermes-org-minor-mode)
   (with-temp-buffer
     (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let* ((msg (make-hermes-message

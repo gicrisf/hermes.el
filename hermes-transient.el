@@ -19,7 +19,8 @@
 ;;; Code:
 
 (require 'transient nil t)
-(require 'hermes-mode)
+(require 'hermes)
+(require 'hermes-session)
 
 (defun hermes-transient--in-session-p ()
   "Non-nil when the current buffer has a reachable Hermes session target.
@@ -112,7 +113,7 @@ skills commands only when a Hermes session is reachable."
      ("v" "View log" hermes-view-log)])
 
   ;;;###autoload
-  (with-eval-after-load 'hermes-mode
+  (with-eval-after-load 'hermes
     (define-key hermes-org-minor-mode-map (kbd "C-c C-t") #'hermes-transient)))
 
 (provide 'hermes-transient)

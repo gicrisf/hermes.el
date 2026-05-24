@@ -17,7 +17,7 @@
 
 ;;; Code:
 
-(require 'hermes-mode)
+(require 'hermes)
 
 ;; Ensure `evil-define-key' macro is available at compile time so
 ;; byte-compilation in environments without Evil loaded does not

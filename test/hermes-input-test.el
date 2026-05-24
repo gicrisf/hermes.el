@@ -4,7 +4,7 @@
 (require 'cl-lib)
 (require 'hermes-state)
 (require 'hermes-input)
-(require 'hermes-mode)
+(require 'hermes)
 (load (expand-file-name "hermes-test-helpers.el"
                         (file-name-directory
                          (or load-file-name buffer-file-name))))

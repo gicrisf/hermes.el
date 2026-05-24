@@ -34,13 +34,13 @@
 
 ;; hermes--org-buffers is defined in hermes-state.el
 (defvar hermes--seeded-session-id)      ; defined in hermes-input.el (buffer-local)
-(declare-function hermes-org-minor-mode "hermes-mode" (&optional arg))
-(declare-function hermes--ensure-container "hermes-mode" ())
-(declare-function hermes--install-hooks "hermes-mode" ())
+(declare-function hermes-org-minor-mode "hermes-org-minor-mode" (&optional arg))
+(declare-function hermes--ensure-container "hermes-org-minor-mode" ())
+(declare-function hermes--install-hooks "hermes" ())
 (declare-function hermes--register-session "hermes-org" (sid state marker))
-(declare-function hermes--buffer-message-count "hermes-mode" ())
+(declare-function hermes--buffer-message-count "hermes-org-minor-mode" ())
 (declare-function hermes-bench-ensure "hermes-comint" (sid))
-(declare-function hermes--focus-bench-input "hermes-mode" (buf))
+(declare-function hermes--focus-bench-input "hermes-session" (buf))
 
 ;;;; Field accessors (hash-table / alist tolerant)
 

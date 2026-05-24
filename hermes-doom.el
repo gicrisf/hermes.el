@@ -17,7 +17,7 @@
 
 ;;; Code:
 
-(require 'hermes-mode)
+(require 'hermes)
 
 ;; ── Leader prefix: SPC h ──────────────────────────────────────────────────
 

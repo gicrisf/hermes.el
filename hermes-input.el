@@ -28,12 +28,12 @@
 (require 'hermes-state)
 (require 'hermes-org)
 
-(declare-function hermes-new-session "hermes-mode" (&optional callback))
-(declare-function hermes-reconnect "hermes-mode" ())
-(declare-function hermes--parse-buffer-messages "hermes-mode" ())
-(declare-function hermes--buffer-message-count "hermes-mode" ())
+(declare-function hermes-new-session "hermes-session" (&optional callback))
+(declare-function hermes-reconnect "hermes-org-minor-mode" ())
+(declare-function hermes--parse-buffer-messages "hermes-org-minor-mode" ())
+(declare-function hermes--buffer-message-count "hermes-org-minor-mode" ())
 (declare-function hermes--message-text-for-display "hermes-org-render" (msg))
-(declare-function hermes-interrupt-current-session "hermes-mode" ())
+(declare-function hermes-interrupt-current-session "hermes-session" ())
 (declare-function hermes-resume-from-db "hermes-sessions" (sid))
 (declare-function hermes-branch-from-db "hermes-sessions" (sid))
 

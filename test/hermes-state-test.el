@@ -1215,7 +1215,7 @@ Gateway shape: list of hash-tables with \"content\" / \"status\" / \"id\"."
                             (hermes-ui-state-status-text s)))))
 
 (ert-deftest hermes-state-test/install-hooks-is-idempotent ()
-  (require 'hermes-mode)
+  (require 'hermes)
   (hermes--install-hooks)
   (let ((after-once (length hermes-rpc-stderr-functions)))
     (hermes--install-hooks)

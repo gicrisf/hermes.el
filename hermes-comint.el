@@ -25,12 +25,12 @@
 
 (declare-function hermes-send "hermes-input" (text))
 (declare-function hermes-compose "hermes-compose" ())
-(declare-function hermes-interrupt-current-session "hermes-mode" ())
+(declare-function hermes-interrupt-current-session "hermes-session" ())
 (declare-function hermes--maybe-kill-bench "hermes-state" (sid))
-(declare-function hermes--install-hooks "hermes-mode" ())
-(declare-function hermes-new-session "hermes-mode" (&optional callback))
+(declare-function hermes--install-hooks "hermes" ())
 (declare-function hermes-rpc-live-p "hermes-rpc" ())
 (declare-function hermes-rpc-start "hermes-rpc" ())
+(declare-function hermes--request "hermes-rpc" (method params &optional callback))
 (declare-function hermes-input--slash-complete "hermes-input" (beg end catalog))
 (declare-function hermes-image-attach-file "hermes-image" (&optional file))
 (declare-function hermes-image-clipboard-paste "hermes-image" ())
@@ -1152,32 +1152,68 @@ Projects from the same `turns' state as the org viewer.
       (hermes-comint--ensure-prompt-visible))
     buf))
 
+(declare-function hermes-input-fetch-catalog "hermes-input" ())
+(declare-function hermes-project-detect-cwd "hermes-project" ())
+
+(defvar hermes--last-gateway-ready)
+
+(defun hermes-comint--create-session (callback)
+  "Create a new session and open a `hermes-comint-mode' buffer for it.
+CALLBACK is called with the new buffer (or nil on error)."
+  (let ((detected-cwd (ignore-errors (hermes-project-detect-cwd))))
+    (hermes--request
+     "session.create" '(:cols 100)
+     (lambda (result error)
+       (cond
+        (error
+         (message "hermes: session.create failed: %S" error)
+         (when callback (funcall callback nil)))
+        (result
+         (let* ((sid (gethash "session_id" result))
+                (name (format "*hermes:%s*" sid))
+                (buf (generate-new-buffer name)))
+           (with-current-buffer buf
+             (hermes-comint-mode)
+             (setq-local hermes--current-session-id sid)
+             (puthash sid buf hermes-comint--buffers)
+             (hermes-comint--install-mode-line)
+             (let ((state (make-hermes-state :connection 'connected
+                                             :session-id sid
+                                             :cwd detected-cwd)))
+               (puthash sid state hermes--sessions))
+             (when (bound-and-true-p hermes--last-gateway-ready)
+               (hermes-dispatch
+                (cons "gateway.ready" hermes--last-gateway-ready)
+                sid))
+             (hermes-input-fetch-catalog))
+           (when callback (funcall callback buf)))))))))
+
 ;;;###autoload
 (defun hermes-comint (&optional arg)
   "Open a comint-mode conversation viewer.
 With prefix ARG, always create a new session."
   (interactive "P")
-  (require 'hermes-mode)
+  (require 'hermes)
   (hermes--install-hooks)
   (unless (hermes-rpc-live-p) (hermes-rpc-start))
   (cond
    ((derived-mode-p 'hermes-comint-mode)
     (message "Already in a Hermes comint buffer"))
    (arg
-    (hermes-new-session
+    (hermes-comint--create-session
      (lambda (buf)
-       (when buf
-         (hermes-comint--open
-          (buffer-local-value 'hermes--current-session-id buf))))))
+       (when (buffer-live-p buf)
+         (pop-to-buffer-same-window buf)
+         (goto-char (point-max))))))
    ((hermes--session-exists-p)
     (let ((sid (hermes-comint--pick-session)))
       (when sid (hermes-comint--open sid))))
    (t
-    (hermes-new-session
+    (hermes-comint--create-session
      (lambda (buf)
-       (when buf
-         (hermes-comint--open
-          (buffer-local-value 'hermes--current-session-id buf))))))))
+       (when (buffer-live-p buf)
+         (pop-to-buffer-same-window buf)
+         (goto-char (point-max))))))))
 
 ;;;; Bench: skin background
 

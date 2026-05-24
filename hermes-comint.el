@@ -491,8 +491,6 @@ copy commands are always allowed in the read-only history region."
 
 (defun hermes-comint--insert-reasoning-block (seg)
   (let ((c (or (hermes-segment-content seg) "")))
-    (insert (propertize "--- Reasoning ---\n"
-                        'font-lock-face 'hermes-comint-face-reasoning))
     (insert (propertize
              (hermes-comint--fontify-org
               (concat c (if (or (string-empty-p c)
@@ -564,6 +562,7 @@ copy commands are always allowed in the read-only history region."
     ;; Single pass: render segments in natural order (matching backend progression).
     (dotimes (i (length segs))
       (let ((seg (aref segs i)))
+        (when (> i 0) (insert "\n"))
         (pcase (hermes-segment-type seg)
           ('reasoning (hermes-comint--insert-reasoning-block seg))
           ('text (hermes-comint--insert-text-segment seg))

@@ -79,7 +79,7 @@ Returns the buffer."
           (should (string-match-p "Hello world" committed)))))))
 
 (ert-deftest hermes-comint-test/insert-assistant-turn-with-all-segments ()
-  "Assistant turn renders reasoning, text, and tool blocks."
+  "Assistant turn renders reasoning, text, and tool blocks in natural order."
   (let* ((sid (hermes-comint-test--fresh-sid))
          (tool (make-hermes-tool :id "t1" :name "write_file"
                                  :status 'complete :summary "wrote foo"))
@@ -98,11 +98,14 @@ Returns the buffer."
       (with-current-buffer buf
         (let ((c (hermes-comint-test--committed-text)))
           (should (string-match-p "Assistant" c))
-          (should (string-match-p "Reasoning" c))
           (should (string-match-p "thinking step" c))
           (should (string-match-p "Here is the answer" c))
           (should (string-match-p "write_file" c))
-          (should (string-match-p "wrote foo" c)))))))
+          (should (string-match-p "wrote foo" c))
+          (should (< (string-match-p "thinking step" c)
+                     (string-match-p "Here is the answer" c)))
+          (should (< (string-match-p "Here is the answer" c)
+                     (string-match-p "write_file" c))))))))
 
 (ert-deftest hermes-comint-test/insert-system-turn ()
   (let* ((sid (hermes-comint-test--fresh-sid))

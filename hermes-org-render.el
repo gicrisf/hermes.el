@@ -27,7 +27,7 @@
 (require 'hermes-md)
 (require 'hermes-tool-formatters)
 
-(declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
+(declare-function hermes-bench-active-p "hermes-comint" (&optional parent))
 
 ;;;; Buffer-local markers for the in-flight region
 

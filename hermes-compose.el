@@ -37,7 +37,7 @@
   "Pop a `*hermes-compose*' buffer for multi-line input to the current session."
   (interactive)
   (unless (or (bound-and-true-p hermes-org-minor-mode)
-              (derived-mode-p 'hermes-bench-mode)
+              (derived-mode-p 'hermes-comint-mode)
               (derived-mode-p 'hermes-section-mode))
     (user-error "Not in a Hermes buffer"))
   (let ((target (current-buffer))

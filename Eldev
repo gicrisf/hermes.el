@@ -18,13 +18,12 @@
         "hermes-dashboard.el"
         "hermes-org.el"
         "hermes-config.el"
-        "hermes-bench.el"
         "hermes-image.el"
         "hermes-project.el"
         "hermes-bg.el"
         "hermes-migrate.el"
-        "hermes-mode.el"
-        "hermes-comint.el"))
+        "hermes-comint.el"
+        "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"
                            "test/hermes-org-render-test.el"

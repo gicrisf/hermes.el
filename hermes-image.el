@@ -21,9 +21,10 @@
 (require 'hermes-rpc)
 (require 'hermes-state)
 
-(declare-function hermes-bench-active-p "hermes-bench" (&optional buffer-or-sid))
-(declare-function hermes-bench-show-status "hermes-bench" (sid text &optional error-p))
-(declare-function hermes--paint-bench "hermes-bench" ())
+(declare-function hermes-comint--refresh-header-line "hermes-comint" (state))
+
+(declare-function hermes-bench-active-p "hermes-comint" (&optional buffer-or-sid))
+(declare-function hermes-bench-show-status "hermes-comint" (sid text &optional error-p))
 
 (defvar hermes-image--attach-counter 0
   "Monotonic counter for client-side attach ids.")
@@ -93,15 +94,19 @@ CALLBACK receives (RESULT ERROR)."
 ;;;; Bench repaint
 
 (defun hermes-image--repaint-bench (sid)
-  "Trigger a bench status refresh for SID after an attachment change.
-The bench reads `hermes-state-attachments' from its session state and
-renders one line per attachment in the status header."
+  "Trigger a bench header-line refresh for SID after an attachment change.
+The bench renders attachment counts in its comint header-line.  The
+`:attachment-add'/`:attachment-remove' dispatches that surround calls
+to this helper already fire `hermes-state-change-hook', which the
+bench listens to — this is a defensive nudge for any path that mutates
+attachments without going through dispatch."
   (when (and sid (fboundp 'hermes-bench-active-p))
     (let ((bench (hermes-bench-active-p sid)))
       (when (buffer-live-p bench)
         (with-current-buffer bench
-          (when (fboundp 'hermes-bench--refresh-status)
-            (hermes-bench--refresh-status)))))))
+          (let ((state (hermes--state-slot-read sid)))
+            (when state
+              (hermes-comint--refresh-header-line state))))))))
 
 ;;;; Interactive commands
 

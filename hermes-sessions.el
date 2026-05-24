@@ -39,7 +39,7 @@
 (declare-function hermes--install-hooks "hermes-mode" ())
 (declare-function hermes--register-session "hermes-org" (sid state marker))
 (declare-function hermes--buffer-message-count "hermes-mode" ())
-(declare-function hermes-bench-ensure "hermes-bench" (sid))
+(declare-function hermes-bench-ensure "hermes-comint" (sid))
 (declare-function hermes--focus-bench-input "hermes-mode" (buf))
 
 ;;;; Field accessors (hash-table / alist tolerant)

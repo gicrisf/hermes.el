@@ -348,14 +348,12 @@ Same resolution as `hermes--current-state' but returns the id."
 (defun hermes--buffer-sid (&optional buffer)
   "Return the session-id for BUFFER (or current buffer), or nil.
 Recognises every viewer kind:
-- Section and bench buffers (buffer-local `hermes--current-session-id'
-  or `hermes-bench--session-id').
+- Comint, bench, and section buffers (buffer-local
+  `hermes--current-session-id').
 - Org viewers (walked through `hermes--org-buffers')."
   (let ((buf (or buffer (current-buffer))))
     (when (buffer-live-p buf)
       (or (buffer-local-value 'hermes--current-session-id buf)
-          (and (local-variable-p 'hermes-bench--session-id buf)
-               (buffer-local-value 'hermes-bench--session-id buf))
           (catch 'found
             (maphash (lambda (sid b) (when (eq b buf) (throw 'found sid)))
                      hermes--org-buffers)

@@ -185,9 +185,9 @@ Bound around the `completing-read' call in `hermes--set-model-prompt'.")
 
 ;;;; Steer (mid-turn injection)
 
-(declare-function hermes-bench-active-p "hermes-bench" (&optional buffer-or-sid))
-(declare-function hermes-bench-live-p "hermes-bench" (&optional buffer-or-sid))
-(declare-function hermes-bench-show-status "hermes-bench" (sid text &optional error-p))
+(declare-function hermes-bench-active-p "hermes-comint" (&optional buffer-or-sid))
+(declare-function hermes-bench-live-p "hermes-comint" (&optional buffer-or-sid))
+(declare-function hermes-bench-show-status "hermes-comint" (sid text &optional error-p))
 
 (defun hermes-steer (text)
   "Send TEXT as a steer message to the current session's in-flight turn.

@@ -26,7 +26,7 @@
 (declare-function hermes--container-marker-at-point "hermes-mode" ())
 (declare-function hermes--primary-session-buffer "hermes-mode" ())
 (declare-function hermes--buffer-message-count "hermes-mode" ())
-(declare-function hermes-bench-live-p "hermes-bench" (&optional buffer))
+(declare-function hermes-bench-live-p "hermes-comint" (&optional buffer))
 
 (defvar hermes--container-level)
 

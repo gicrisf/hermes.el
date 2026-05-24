@@ -199,8 +199,7 @@ Returns nil when no session is reachable."
    ;; variable installed at creation.  Look the state up directly in
    ;; `hermes--sessions' (not via `hermes--state-slot-read', which
    ;; would mask absence by returning `hermes--global-state').
-   ((or (derived-mode-p 'hermes-comint-mode)
-        (derived-mode-p 'hermes-bench-mode))
+   ((derived-mode-p 'hermes-comint-mode)
     (let ((sid (buffer-local-value 'hermes--current-session-id
                                    (current-buffer))))
       (and sid (cons sid (gethash sid hermes--sessions)))))))
@@ -695,7 +694,7 @@ and usage from visible buffer structure."
 
 (declare-function hermes-org-minor-mode "hermes-mode" (&optional arg))
 (declare-function hermes--ensure-container "hermes-mode" ())
-(declare-function hermes-bench-ensure "hermes-bench" (parent))
+(declare-function hermes-bench-ensure "hermes-comint" (parent))
 
 (defun hermes--rebuild-session-state (sid marker)
   "Build a fresh `hermes-state' for SID and register it under MARKER.

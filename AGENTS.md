@@ -15,8 +15,7 @@ hermes-org.el        Heading-scoped session helpers + v2 buffer-canonical turn p
 hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
-hermes-bench.el      Persistent bottom bench for hermes-mode (user prompt, reasoning, answer, input)
-hermes-comint.el     Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer; zero external deps)
+hermes-comint.el     Comint-derived conversation viewer with inline prompt — also hosts the bench (a `hermes-comint--bench-p = t` variant displayed as a bottom side-window)
 hermes-sessions.el   Minibuffer selectors: hermes-current-sessions (live), hermes-stored-{resume,branch,delete,save} (DB); also hosts the DB→Org renderer + install helper for hermes-resume-from-db / hermes-branch-from-db
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
@@ -66,12 +65,14 @@ Tool segments are body-canonical in `#+name:'d blocks and heading properties;
 subagents are body-canonical in child `HERMES_KIND: SUBAGENT` headings.
 
 **Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
-bench (`*hermes-bench:<sid>*`) — a 20-line side-window that is a pure input
-surface: status header (background tasks, pending attachments) + separator +
-editable prompt. Streaming content lives in the primary viewer (org or
-section); the bench never renders the assistant's in-flight turn. On `RET`
-the input dispatches via `hermes-send` and the response streams into the
-viewer above. Minor mode buffers do not show the bench (header-line only).
+side-window (`*hermes-bench:<sid>*`) — a `hermes-comint-mode` buffer with
+`hermes-comint--bench-p = t` that renders the in-flight turn ephemerally
+(user heading, steer, status, assistant stream) above a writable prompt.
+Committed turns live only in the paired org buffer; the bench wipes its
+ephemeral region on stream commit. The bench provides comint's history ring
+(M-p / M-n) and field-based prompt handling. Bg-task counters and attachment
+counts surface in the comint header-line. Minor mode buffers do not show the
+bench (header-line only).
 
 **Doom Emacs integration (separate files, optional):**
 

@@ -28,7 +28,7 @@
 (require 'hermes-skin)
 (require 'hermes-compose)
 (require 'hermes-org)
-(require 'hermes-bench)
+(require 'hermes-comint)
 (require 'hermes-config)
 (require 'hermes-image)
 (require 'hermes-project)

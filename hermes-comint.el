@@ -18,6 +18,7 @@
 (require 'comint)
 (require 'org)
 (require 'ring)
+(require 'subr-x)
 (require 'hermes-state)
 (require 'hermes-md)
 (require 'hermes-tool-formatters)
@@ -30,6 +31,43 @@
 (declare-function hermes-new-session "hermes-mode" (&optional callback))
 (declare-function hermes-rpc-live-p "hermes-rpc" ())
 (declare-function hermes-rpc-start "hermes-rpc" ())
+(declare-function hermes-input--slash-complete "hermes-input" (beg end catalog))
+(declare-function hermes-image-attach-file "hermes-image" (&optional file))
+(declare-function hermes-image-clipboard-paste "hermes-image" ())
+(declare-function hermes-bg--list-for-sid "hermes-bg" (sid))
+(declare-function hermes-tool--truncate "hermes-tool-formatters" (s n))
+
+(defvar hermes--last-gateway-ready)
+
+;;; Bench: defcustoms
+
+(defcustom hermes-bench-height 20
+  "Height in lines of the bench side-window."
+  :type 'integer :group 'hermes)
+
+(defcustom hermes-bench-background-color nil
+  "Explicit background color for the bench buffer.
+When nil, the bench falls back to the gateway skin color
+(`ui_bench'), or to `hermes-bench-buffer-face' as a last resort."
+  :type '(choice (const :tag "Use skin / theme default" nil)
+                 (color :tag "Custom color"))
+  :group 'hermes)
+
+;;; Bench: faces
+
+(defface hermes-bench-buffer-face
+  '((((class color) (background dark))
+     :background "#1c1f26" :extend t)
+    (((class color) (background light))
+     :background "#f4f4f4" :extend t)
+    (t :inherit default))
+  "Background face applied to the entire bench buffer window."
+  :group 'hermes)
+
+(defface hermes-bench-status-face
+  '((t :inherit warning :weight bold))
+  "Face for transient bench status messages (config/cmd feedback, errors)."
+  :group 'hermes)
 
 ;;; Faces — turn headings
 
@@ -233,6 +271,29 @@ position (pending stream growing before the prompt).")
 
 (defvar-local hermes-comint--stream-active nil
   "Non-nil while a streaming region is open.")
+
+(defvar-local hermes-comint--bench-p nil
+  "When non-nil, this comint buffer acts as a bench.
+Only the current ephemeral turn is rendered (user prompt + stream);
+committed history lives in the paired org buffer.  On stream commit
+the ephemeral region clears — no turns are accumulated locally.")
+
+(defvar-local hermes-comint--current-user-prompt nil
+  "Last user prompt text, preserved across stream ticks (bench mode).
+Set on send; read by `hermes-comint--paint-stream'; overwritten on
+the next send.")
+
+(defvar-local hermes-comint--steer-messages nil
+  "List of [steer] strings shown in the ephemeral area (bench mode).
+Cleared on stream commit.")
+
+(defvar-local hermes-comint--status-message nil
+  "Transient status plist (:text :error-p) for bench mode.
+Set by `hermes-bench-show-status'; cleared on stream commit.")
+
+(defvar-local hermes-comint--bg-cookie nil
+  "`face-remap-add-relative' cookie for the bench background.
+Removed and recreated when the skin changes.")
 
 ;;;; Constants
 
@@ -497,38 +558,89 @@ state and converge to the same buffer content."
 ;;;; Committed appends
 
 (defun hermes-comint--append-new-turns (state)
-  "Append turns from STATE not yet visible in the buffer."
-  (let* ((inhibit-read-only t)
-         (turns (hermes-state-turns state))
-         (start-idx (if hermes-comint--turns-snapshot
-                        (length hermes-comint--turns-snapshot)
-                      0))
-         (total (length turns)))
-    (when (> total start-idx)
-      (save-excursion
-        (goto-char (marker-position hermes-comint--output-end))
-        (cl-loop for i from start-idx below total
-                 do (hermes-comint--insert-turn (aref turns i) (1+ i)))
-        (set-marker hermes-comint--output-end (point))))
-    (setq hermes-comint--turns-snapshot turns)))
+  "Append turns from STATE not yet visible in the buffer.
+No-op in bench mode — committed history lives in the paired org buffer."
+  (unless hermes-comint--bench-p
+    (let* ((inhibit-read-only t)
+           (turns (hermes-state-turns state))
+           (start-idx (if hermes-comint--turns-snapshot
+                          (length hermes-comint--turns-snapshot)
+                        0))
+           (total (length turns)))
+      (when (> total start-idx)
+        (save-excursion
+          (goto-char (marker-position hermes-comint--output-end))
+          (cl-loop for i from start-idx below total
+                   do (hermes-comint--insert-turn (aref turns i) (1+ i)))
+          (set-marker hermes-comint--output-end (point))))
+      (setq hermes-comint--turns-snapshot turns))))
 
 ;;;; Streaming
 
 (defun hermes-comint--paint-stream (state)
-  "Replace the pending region with the current in-flight turn."
+  "Replace the pending region with the current in-flight turn.
+In bench mode, also prepends the user-prompt heading and any steer /
+status lines so the entire ephemeral surface rebuilds atomically per
+tick."
   (let* ((inhibit-read-only t)
          (stream (hermes-state-stream state))
          (turns  (hermes-state-turns state))
          (index  (1+ (length turns)))
-         (msg    (hermes--message-from-stream stream nil)))
+         (msg    (and stream (hermes--message-from-stream stream nil))))
     (when stream
       (let ((out-end (marker-position hermes-comint--output-end))
             (pr-start (marker-position hermes-comint--prompt-start)))
         (delete-region out-end pr-start)
         (save-excursion
           (goto-char (marker-position hermes-comint--output-end))
+          (when hermes-comint--bench-p
+            (hermes-comint-bench--insert-ephemeral-prelude))
           (hermes-comint--insert-turn msg index))))
     (hermes-comint--ensure-prompt-visible)))
+
+(defun hermes-comint-bench--insert-ephemeral-prelude ()
+  "Insert user heading + steer + status above the assistant stream.
+Bench-only.  Caller positions point inside the ephemeral region; this
+inserts everything that lives above the assistant turn."
+  (when hermes-comint--current-user-prompt
+    (hermes-comint-bench--insert-user-heading
+     hermes-comint--current-user-prompt))
+  (when hermes-comint--steer-messages
+    (hermes-comint-bench--insert-steer-lines))
+  (when hermes-comint--status-message
+    (hermes-comint-bench--insert-status-line)))
+
+(defun hermes-comint-bench--insert-user-heading (text)
+  "Insert `> User · HH:MM' heading and TEXT as a fontified body.
+Marked as committed output (field `output', read-only)."
+  (let ((start (point))
+        (time (format-time-string "%H:%M")))
+    (insert (propertize (format "> User · %s\n" time)
+                        'font-lock-face 'hermes-comint-face-user))
+    (insert (hermes-comint--fontify-org
+             (concat text (unless (string-suffix-p "\n" text) "\n"))))
+    (insert "\n")
+    (hermes-comint--apply-output-props start (point))))
+
+(defun hermes-comint-bench--insert-steer-lines ()
+  "Insert `[steer] <msg>\\n' lines from `hermes-comint--steer-messages'."
+  (let ((start (point)))
+    (dolist (m hermes-comint--steer-messages)
+      (insert (propertize (format "[steer] %s\n" m)
+                          'font-lock-face 'hermes-bench-status-face)))
+    (hermes-comint--apply-output-props start (point))))
+
+(defun hermes-comint-bench--insert-status-line ()
+  "Insert the single transient status line from `hermes-comint--status-message'."
+  (when-let ((plist hermes-comint--status-message))
+    (let ((start (point))
+          (text  (plist-get plist :text))
+          (err-p (plist-get plist :error-p)))
+      (when (and text (> (length text) 0))
+        (insert (propertize (concat text "\n")
+                            'font-lock-face
+                            (if err-p 'error 'hermes-bench-status-face)))
+        (hermes-comint--apply-output-props start (point))))))
 
 (defun hermes-comint--stream-begin (state)
   "Open a streaming region at output-end and paint the initial turn."
@@ -606,28 +718,32 @@ the org renderer's `eq' check on stream identity."
 
 (defun hermes-comint--stream-commit (state)
   "End streaming: pending region becomes part of committed history.
-Advances `output-end' past the just-finished turn so future appends
-land at the right boundary."
+In full-viewer mode, advances `output-end' past the just-finished turn
+so future appends land at the right boundary.  In bench mode, clears
+the ephemeral region — committed turns live only in the paired org
+buffer."
   (hermes-comint--stream-cancel-timer)
   (setq hermes-comint--stream-active nil)
-  ;; The pending region was painted from the now-finished stream.  But
-  ;; the reducer pushed the finished message into `turns' before clearing
-  ;; the stream, so the turn is also present in state.  We re-paint from
-  ;; the committed turn (which carries final usage / timestamps), then
-  ;; advance output-end past it.
-  (let* ((inhibit-read-only t)
-         (turns (hermes-state-turns state))
-         (out-end (marker-position hermes-comint--output-end))
-         (pr-start (marker-position hermes-comint--prompt-start)))
-    (delete-region out-end pr-start)
-    (when (and (vectorp turns) (> (length turns) 0))
-      (save-excursion
-        (goto-char (marker-position hermes-comint--output-end))
-        (hermes-comint--insert-turn
-         (aref turns (1- (length turns)))
-         (length turns))
-        (set-marker hermes-comint--output-end (point))))
-    (setq hermes-comint--turns-snapshot turns))
+  (if hermes-comint--bench-p
+      (let ((inhibit-read-only t))
+        (setq hermes-comint--steer-messages nil)
+        (setq hermes-comint--status-message nil)
+        (delete-region (marker-position hermes-comint--output-end)
+                       (marker-position hermes-comint--prompt-start)))
+    ;; Full viewer: re-paint from the committed turn and advance output-end.
+    (let* ((inhibit-read-only t)
+           (turns (hermes-state-turns state))
+           (out-end (marker-position hermes-comint--output-end))
+           (pr-start (marker-position hermes-comint--prompt-start)))
+      (delete-region out-end pr-start)
+      (when (and (vectorp turns) (> (length turns) 0))
+        (save-excursion
+          (goto-char (marker-position hermes-comint--output-end))
+          (hermes-comint--insert-turn
+           (aref turns (1- (length turns)))
+           (length turns))
+          (set-marker hermes-comint--output-end (point))))
+      (setq hermes-comint--turns-snapshot turns)))
   (hermes-comint--ensure-prompt-visible))
 
 ;;;; Header-line
@@ -684,7 +800,10 @@ land at the right boundary."
 
 (defun hermes-comint-send ()
   "Send the prompt text via `hermes-send'.
-Pushes to `comint-input-ring' for M-p/M-n cycling."
+Pushes to `comint-input-ring' for M-p/M-n cycling.  In bench mode,
+also wipes any prior ephemeral region and paints the new user heading
+immediately so the user sees their prompt without waiting for the
+first stream tick."
   (interactive)
   (let* ((text (hermes-comint--prompt-text))
          (input (string-trim text)))
@@ -697,6 +816,15 @@ Pushes to `comint-input-ring' for M-p/M-n cycling."
         (ring-insert comint-input-ring input)))
     (setq comint-input-ring-index nil)
     (hermes-comint--clear-prompt)
+    (when hermes-comint--bench-p
+      (setq hermes-comint--current-user-prompt input)
+      (let ((inhibit-read-only t)
+            (out-end (marker-position hermes-comint--output-end))
+            (pr-start (marker-position hermes-comint--prompt-start)))
+        (delete-region out-end pr-start)
+        (save-excursion
+          (goto-char (marker-position hermes-comint--output-end))
+          (hermes-comint-bench--insert-user-heading input))))
     (hermes-send input)))
 
 (defun hermes-comint-previous-input (arg)
@@ -742,17 +870,19 @@ Pushes to `comint-input-ring' for M-p/M-n cycling."
 
 (defun hermes-comint--load-from-state (state)
   "Populate the buffer with all committed turns from STATE.
-Assumes the prompt is already inserted at point-max."
-  (let* ((inhibit-read-only t)
-         (turns (hermes-state-turns state))
-         (total (length turns)))
-    (save-excursion
-      (goto-char (marker-position hermes-comint--output-end))
-      (dotimes (i total)
-        (hermes-comint--insert-turn (aref turns i) (1+ i)))
-      (set-marker hermes-comint--output-end (point)))
-    (setq hermes-comint--turns-snapshot turns)
-    (hermes-comint--refresh-header-line state)))
+Assumes the prompt is already inserted at point-max.  No-op in bench
+mode — committed history lives in the paired org buffer."
+  (unless hermes-comint--bench-p
+    (let* ((inhibit-read-only t)
+           (turns (hermes-state-turns state))
+           (total (length turns)))
+      (save-excursion
+        (goto-char (marker-position hermes-comint--output-end))
+        (dotimes (i total)
+          (hermes-comint--insert-turn (aref turns i) (1+ i)))
+        (set-marker hermes-comint--output-end (point)))
+      (setq hermes-comint--turns-snapshot turns)
+      (hermes-comint--refresh-header-line state))))
 
 (defun hermes-comint-refresh ()
   "Rebuild the buffer from state."
@@ -771,16 +901,22 @@ Assumes the prompt is already inserted at point-max."
 ;;;; Detach
 
 (defun hermes-comint--detach ()
-  "Detach this buffer from the registry on kill."
+  "Detach this buffer from its registry on kill.
+For bench buffers, removes from `hermes--bench-buffers' and does NOT
+call `hermes--maybe-kill-bench' (which would recursively kill us).
+For full-viewer buffers, removes from `hermes-comint--buffers' and
+calls `hermes--maybe-kill-bench' so an orphan bench gets cleaned up."
   (hermes-comint--stream-cancel-timer)
-  (when (and hermes--current-session-id
-             (eq (current-buffer)
-                 (gethash hermes--current-session-id
-                          hermes-comint--buffers)))
+  (when hermes--current-session-id
     (let ((sid hermes--current-session-id))
-      (remhash sid hermes-comint--buffers)
-      (when (fboundp 'hermes--maybe-kill-bench)
-        (hermes--maybe-kill-bench sid)))))
+      (cond
+       (hermes-comint--bench-p
+        (when (eq (current-buffer) (gethash sid hermes--bench-buffers))
+          (remhash sid hermes--bench-buffers)))
+       ((eq (current-buffer) (gethash sid hermes-comint--buffers))
+        (remhash sid hermes-comint--buffers)
+        (when (fboundp 'hermes--maybe-kill-bench)
+          (hermes--maybe-kill-bench sid)))))))
 
 ;;;; Keymap
 
@@ -795,6 +931,10 @@ Assumes the prompt is already inserted at point-max."
     (define-key m (kbd "C-c C-l") #'hermes-compose)
     (define-key m (kbd "C-c C-i") #'hermes-comint-focus-prompt)
     (define-key m (kbd "C-c C-r") #'hermes-comint-refresh)
+    ;; Bench-only bindings — harmless in full viewer (functions self-check).
+    (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
+    (define-key m (kbd "C-c C-v") #'hermes-image-clipboard-paste)
+    (define-key m (kbd "C-c C-b") #'hermes-bench-bg-list)
     m)
   "Keymap for `hermes-comint-mode'.")
 
@@ -891,6 +1031,179 @@ With prefix ARG, always create a new session."
        (when buf
          (hermes-comint--open
           (buffer-local-value 'hermes--current-session-id buf))))))))
+
+;;;; Bench: skin background
+
+(defun hermes-comint-bench--effective-bg (skin)
+  "Return the background color string to use for the bench buffer.
+Respects `hermes-bench-background-color'; otherwise uses SKIN's
+`ui_bench' color; otherwise the default from `hermes-bench-buffer-face'."
+  (or hermes-bench-background-color
+      (and (hash-table-p skin)
+           (let ((colors (gethash "colors" skin)))
+             (and (hash-table-p colors) (gethash "ui_bench" colors))))
+      (face-background 'hermes-bench-buffer-face nil 'default)))
+
+(defun hermes-comint-bench--apply-bg (&optional skin)
+  "Refresh the bench buffer's background remap from SKIN.
+If SKIN is nil, falls back to the cached `hermes--last-gateway-ready'.
+Removes the previous cookie first so the effect is idempotent."
+  (let ((bg (hermes-comint-bench--effective-bg
+             (or skin (and (boundp 'hermes--last-gateway-ready)
+                           hermes--last-gateway-ready)))))
+    (when hermes-comint--bg-cookie
+      (face-remap-remove-relative hermes-comint--bg-cookie)
+      (setq hermes-comint--bg-cookie nil))
+    (when bg
+      (setq hermes-comint--bg-cookie
+            (face-remap-add-relative 'default :background bg)))))
+
+(defun hermes-comint-bench--refresh-bg-all (skin)
+  "Refresh every live bench buffer's background from SKIN.
+Subscribed to `hermes-skin-applied-hook'."
+  (maphash (lambda (_sid buf)
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (when hermes-comint--bench-p
+                   (hermes-comint-bench--apply-bg skin)))))
+           hermes--bench-buffers))
+
+(with-eval-after-load 'hermes-skin
+  (add-hook 'hermes-skin-applied-hook
+            #'hermes-comint-bench--refresh-bg-all))
+
+;;;; Bench: slash-command CAPF
+
+(defun hermes-comint-bench--slash-complete ()
+  "Slash-command CAPF for the bench input area.
+The slash must appear immediately after the bench prompt prefix.
+Pulls the catalog from the session state in `hermes--sessions' and
+delegates to `hermes-input--slash-complete'."
+  (when (and hermes--current-session-id
+             hermes-comint--bench-p
+             (hermes-comint--in-input-area-p))
+    (let* ((p (marker-position hermes-comint--prompt-start))
+           (input-start (and p (+ p (length hermes-comint--prompt-string)))))
+      (when (and input-start
+                 (> (point) input-start)
+                 (eq (char-after input-start) ?/))
+        (let* ((state (gethash hermes--current-session-id hermes--sessions))
+               (catalog (and state (hermes-state-slash-catalog state))))
+          (when catalog
+            (hermes-input--slash-complete input-start (point) catalog)))))))
+
+;;;; Bench: public API
+
+(defun hermes-bench-ensure (sid)
+  "Ensure a bench buffer exists and is displayed for session SID.
+The bench is a `hermes-comint-mode' buffer with `hermes-comint--bench-p'
+set to t and displayed as a bottom side-window."
+  (let* ((name (format "*hermes-bench:%s*" sid))
+         (existing (gethash sid hermes--bench-buffers))
+         (buf (or (and (buffer-live-p existing) existing)
+                  (get-buffer-create name))))
+    (puthash sid buf hermes--bench-buffers)
+    (with-current-buffer buf
+      (unless (and (derived-mode-p 'hermes-comint-mode)
+                   (equal hermes--current-session-id sid)
+                   hermes-comint--bench-p)
+        (hermes-comint-mode)
+        ;; `define-derived-mode' runs `kill-all-local-variables', so
+        ;; setting the flag before entering the mode would be lost.
+        ;; Assert bench identity AFTER mode entry, then install the
+        ;; bench-specific CAPF.
+        (setq-local hermes-comint--bench-p t)
+        (setq-local hermes--current-session-id sid)
+        (add-hook 'completion-at-point-functions
+                  #'hermes-comint-bench--slash-complete nil t)
+        (hermes-comint-bench--apply-bg)
+        (setq-local header-line-format nil)))
+    (display-buffer-in-side-window
+     buf `((side . bottom)
+           (slot . 0)
+           (window-height . ,hermes-bench-height)
+           (dedicated . t)
+           (preserve-size . (nil . t))
+           (window-parameters . ((no-other-window . nil)
+                                 (no-delete-other-windows . t)))))
+    buf))
+
+(defun hermes-bench-active-p (&optional buffer-or-sid)
+  "Return the live bench buffer for BUFFER-OR-SID, or nil.
+BUFFER-OR-SID can be a session-id string, a viewer buffer (any kind),
+or nil (= current buffer)."
+  (let ((sid (cond
+              ((stringp buffer-or-sid) buffer-or-sid)
+              ((bufferp buffer-or-sid) (hermes--buffer-sid buffer-or-sid))
+              (t (hermes--buffer-sid (current-buffer))))))
+    (and sid
+         (let ((buf (gethash sid hermes--bench-buffers)))
+           (and (buffer-live-p buf) buf)))))
+
+(defalias 'hermes-bench-live-p #'hermes-bench-active-p
+  "Alias for `hermes-bench-active-p'.")
+
+(defun hermes-bench-hide (sid)
+  "Delete the bench window for SID and kill the bench buffer."
+  (let ((buf (gethash sid hermes--bench-buffers)))
+    (when (buffer-live-p buf)
+      (dolist (w (get-buffer-window-list buf nil t))
+        (when (window-live-p w) (delete-window w)))
+      (kill-buffer buf))
+    (remhash sid hermes--bench-buffers)))
+
+(defun hermes-bench-show-status (sid text &optional error-p)
+  "Show TEXT as a transient status line in the bench ephemeral area for SID.
+ERROR-P selects the `error' face.  When no bench is visible, falls
+back to the echo area."
+  (let ((bench (and sid (gethash sid hermes--bench-buffers))))
+    (cond
+     ((buffer-live-p bench)
+      (with-current-buffer bench
+        (setq hermes-comint--status-message
+              (list :text text :error-p error-p))
+        ;; Repaint immediately so the status appears even when no
+        ;; stream is in flight (the ephemeral region is empty otherwise).
+        (let ((state (hermes--state-slot-read sid)))
+          (if (and state (hermes-state-stream state))
+              (hermes-comint--paint-stream state)
+            (hermes-comint-bench--repaint-ephemeral)))))
+     (t
+      (message "%s" (if error-p (propertize text 'face 'error) text))))))
+
+(defun hermes-bench-add-steer (sid text)
+  "Append TEXT as a [steer] line in the bench for SID and repaint."
+  (let ((bench (and sid (gethash sid hermes--bench-buffers))))
+    (when (buffer-live-p bench)
+      (with-current-buffer bench
+        (setq hermes-comint--steer-messages
+              (append hermes-comint--steer-messages (list text)))
+        (let ((state (hermes--state-slot-read sid)))
+          (if (and state (hermes-state-stream state))
+              (hermes-comint--paint-stream state)
+            (hermes-comint-bench--repaint-ephemeral)))))))
+
+(defun hermes-comint-bench--repaint-ephemeral ()
+  "Repaint the bench ephemeral region without an in-flight stream.
+Clears [output-end, prompt-start) and re-inserts user heading + steer
++ status (no stream content)."
+  (let ((inhibit-read-only t)
+        (out-end (marker-position hermes-comint--output-end))
+        (pr-start (marker-position hermes-comint--prompt-start)))
+    (delete-region out-end pr-start)
+    (save-excursion
+      (goto-char (marker-position hermes-comint--output-end))
+      (hermes-comint-bench--insert-ephemeral-prelude))
+    (hermes-comint--ensure-prompt-visible)))
+
+(defun hermes-bench-bg-list ()
+  "Pop the background-task list for this bench's session."
+  (interactive)
+  (let ((sid hermes--current-session-id))
+    (if sid
+        (progn (require 'hermes-bg)
+               (hermes-bg--list-for-sid sid))
+      (message "hermes: no active session"))))
 
 (provide 'hermes-comint)
 ;;; hermes-comint.el ends here

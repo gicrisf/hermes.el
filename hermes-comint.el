@@ -300,42 +300,39 @@ Removed and recreated when the skin changes.")
 (defconst hermes-comint--prompt-string "> "
   "Prompt prefix string shown at the bottom of the buffer.")
 
-(defconst hermes-comint--motion-commands
-  '(nil
-    forward-char backward-char
-    next-line previous-line
-    beginning-of-line end-of-line
-    beginning-of-buffer end-of-buffer
-    scroll-up scroll-down
-    scroll-up-command scroll-down-command
-    goto-char mouse-set-point mouse-goto-line
-    kill-ring-save clipboard-kill-ring-save
-    mouse-save-then-kill
-    isearch-forward isearch-backward
-    isearch-forward-regexp isearch-backward-regexp
-    isearch-repeat-forward isearch-repeat-backward
-    set-mark-command mark-page exchange-point-and-mark
-    evil-forward-char evil-backward-char
-    evil-next-line evil-previous-line
-    evil-beginning-of-line evil-end-of-line
-    evil-goto-first-line evil-goto-line
-    evil-scroll-page-down evil-scroll-page-up
-    evil-scroll-line-down evil-scroll-line-up
-    evil-goto-mark evil-set-marker
-    evil-jump-forward evil-jump-backward
-    evil-search-next evil-search-previous
-    evil-ex-search-next evil-ex-search-previous
-    evil-find-char evil-find-char-backward
-    evil-find-char-to evil-find-char-to-backward
-    evil-repeat-find-char evil-repeat-find-char-reverse
-    evil-goto-percentage
-    evil-window-top evil-window-middle evil-window-bottom
-    evil-visual-char evil-visual-line evil-visual-block
-    evil-exit-visual-state
-    evil-escape)
-  "Commands that move or inspect text without modifying it.
-These are allowed to run when point is outside the writable input
-area.  All other commands trigger an auto-jump to `(point-max)'.")
+(defconst hermes-comint--evil-enter-insert-commands
+  '(evil-insert evil-append evil-open-below evil-open-above
+    evil-insert-line evil-append-line
+    evil-change evil-change-line evil-change-whole-line
+    evil-substitute evil-replace evil-replace-state)
+  "Evil commands that enter an inserting state.
+When point is outside the input area and one of these fires, we
+auto-jump to the prompt before the command executes so insert mode
+starts in the writable region.")
+
+(defconst hermes-comint--vanilla-insert-commands
+  '(self-insert-command
+    newline newline-and-indent
+    electric-newline-and-maybe-indent
+    delete-backward-char
+    delete-char backward-delete-char-untabify
+    yank yank-pop)
+  "Vanilla Emacs commands that insert or delete text.
+Only these trigger auto-focus when point is outside the input
+area; motion, copy, and search commands are always allowed.")
+
+(defun hermes-comint--command-requires-input-p ()
+  "Return non-nil if `this-command' needs point in the writable input area.
+With Evil active: only when in `insert' or `replace' state, or when
+this-command is about to enter one of those states.  Without Evil:
+only on commands that insert or delete text."
+  (cond
+   ((or (bound-and-true-p evil-local-mode)
+        (bound-and-true-p evil-mode))
+    (or (memq (and (fboundp 'evil-state) (evil-state)) '(insert replace))
+        (memq this-command hermes-comint--evil-enter-insert-commands)))
+   (t
+    (memq this-command hermes-comint--vanilla-insert-commands))))
 
 ;;;; Mode setup
 
@@ -376,11 +373,12 @@ The writable area starts after the `> ' prompt prefix."
     (and p (>= (point) (+ p (length hermes-comint--prompt-string))))))
 
 (defun hermes-comint--ensure-input-point ()
-  "If point is outside the writable input area, jump to `(point-max)'.
-Does nothing when the current command is a whitelisted motion command."
+  "If point is outside the writable input area and `this-command' will
+insert or delete text, jump to `(point-max)'.  Motion, search, and
+copy commands are always allowed in the read-only history region."
   (when (and hermes-comint--prompt-start
              (not (hermes-comint--in-input-area-p))
-             (not (memq this-command hermes-comint--motion-commands)))
+             (hermes-comint--command-requires-input-p))
     (goto-char (point-max))))
 
 (defun hermes-comint--setup ()

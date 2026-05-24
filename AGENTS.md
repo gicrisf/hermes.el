@@ -160,9 +160,8 @@ M-x hermes
 `M-x hermes` is the single entry point. It pops the most-recently-touched
 live session if one exists; otherwise it starts the gateway and creates a
 fresh session, popping the new buffer when `session.create` resolves. The
-bench appears at the bottom showing a splash banner + status; cursor lands
-in the bench input area. The splash is replaced by normal ephemeral content
-on the first `RET`.
+bench appears at the bottom as a writable prompt; cursor lands in the input
+area.
 
 ### Optional modules
 
@@ -287,7 +286,7 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (361/361 green)
+eldev test                           # run all ERT tests (412/412 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
@@ -300,7 +299,7 @@ nix-shell --run 'eldev emacs --batch -L . -l hermes-mode -l hermes-render \
 
 Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
 
-**377/377 green, 0 unexpected** — all tests pass.
+**412/412 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

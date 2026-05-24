@@ -37,11 +37,11 @@ hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes-mode.el: route-
                                                         │
                                                         ├─► diff & edit ──► Org buffer (*hermes:SID*)
                                                         │
-                                                        └─► bench active? ──► hermes-bench--stream-update
-                                                                    │
-                                                                    │  rebuild ephemeral zones
-                                                                    ▼
-                                                            Bench buffer (*hermes-bench:SID*)
+                                                         └─► bench active? ──► hermes-comint--paint-stream
+                                                                     │
+                                                                     │  atomic ephemeral rebuild
+                                                                     ▼
+                                                     Comint bench buffer (*hermes-bench:SID*)
 
                    hermes-comint.el: hermes-comint--refresh
                                                        │
@@ -52,7 +52,7 @@ hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes-mode.el: route-
 
 **Comint view path:** The comint view (`hermes-comint.el`) attaches a separate renderer to `hermes-state-change-hook`. When a dispatch modifies `turns`, `hermes-comint--refresh` fires independently from the org renderer. It appends only new turns to the read-only output region above its inline `> ` prompt; the active stream is painted into a pending region between `output-end` and `prompt-start` and sealed on `message.complete`. It has no awareness of org buffers, `pending-turns`, or `hermes-org-minor-mode` — it is a pure projection of the state atom.
 
-**Org view path:** The org renderer (`hermes-render.el`) drains `pending-turns` into the org buffer and renders the live stream segment-by-segment. The bench (`hermes-bench.el`) mirrors the latest turn's ephemeral zones (prompt, reasoning, answer, input).
+**Org view path:** The org renderer (`hermes-org-render.el`) drains `pending-turns` into the org buffer and renders the live stream segment-by-segment. The bench (`hermes-comint-mode` with `hermes-comint--bench-p = t`) renders the current ephemeral turn (user prompt, steer, status, stream) above a writable prompt.
 
 Both viewers coexist: opening a comint view for an existing session does not affect the org buffer, and vice versa. The `turns` vector is the shared, sole authority.
 
@@ -73,11 +73,11 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-state.el` | 399 | Buffer-local state atoms + pure reducer |
 | `hermes-render.el` | 409 | Diff-based Org buffer renderer |
 | `hermes-mode.el` | 225 | org-mode derived major mode + event routing + entrypoint |
-| `hermes-bench.el` | ~350 | Persistent bottom bench (major mode only): last-turn display + input |
+| `hermes-comint.el` (bench mode) | — | Bench lives in comint via `hermes-comint--bench-p = t`; see line above for comint line count |
 | `hermes-input.el` | 209 | Input queue, slash commands, history |
 | `hermes-prompts.el` | 116 | Minibuffer prompt handlers (approval, clarify, secret, sudo) |
 | `hermes-compose.el` | 81 | Multi-line org-mode composer |
-| `hermes-comint.el` | 802 | Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer; zero external deps) |
+| `hermes-comint.el` | 1,209 | Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer; zero external deps); also hosts the bench via `hermes-comint--bench-p = t` |
 | `hermes-sessions.el` | ~420 | Minibuffer selectors (`hermes-current-sessions`, `hermes-stored-{resume,branch,delete,save}`); also hosts the DB→Org renderer and the resume/branch install path |
 | `hermes-skin.el` | 83 | Gateway skin → face-remap |
 | `hermes-md.el` | 164 | Markdown → Org syntax converter |
@@ -259,16 +259,17 @@ sub-renderers:
   (when (derived-mode-p 'org-mode)
     (org-element-cache-reset)
     (hermes--refresh-region msg-append-start (point-max))        ; committed tail
-    (hermes--refresh-region bench-start bench-end)))             ; live bench
+    (hermes--refresh-region stream-start stream-end)))           ; live stream region
 ```
 
-### Bench architecture
+### Stream region architecture
 
-The **bench** is the live (in-flight) assistant turn region. Renderers mutate
-inside the bench every stream tick; everything outside is frozen — never touched
-after the previous turn committed. This means:
+The **stream region** is the live (in-flight) assistant turn area in the org
+buffer.  Renderers mutate inside the stream region every stream tick;
+everything outside is frozen — never touched after the previous turn committed.
+This means:
 
-- The user's manual fold state above the bench survives forever.
+- The user's manual fold state above the stream region survives forever.
 - Post-passes scope their work to only the changed tail, not the whole buffer.
 
 ### `hermes--refresh-region` — post-pass repairs
@@ -673,7 +674,7 @@ identify tools. (See [13-operational-notes.md](13-operational-notes.md) for deta
 `with-silent-modifications` suppresses Org change hooks. The cache is reset
 after the render exits the silent block, but only when `structural-change` or
 `bench-touched-p` is true. Streaming ticks (`stream-update`) do **not** reset
-the cache — they only reshape the live bench, so the cache stays valid for
+the cache — they only reshape the live stream region, so the cache stays valid for
 the frozen portion of the buffer. This is a major performance win in long
 conversations.
 

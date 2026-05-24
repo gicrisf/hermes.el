@@ -33,7 +33,7 @@ Same architecture, same role. Emacs replaces Ink as the display layer.
 - `hermes-state.el` — TEA-style reducer (persistent + ephemeral UI state)
 - `hermes-render.el` — diff-based Org buffer renderer
 - `hermes-mode.el` — major mode, event routing, entry points
-- `hermes-bench.el` — persistent bottom bench (major mode only): user prompt, reasoning, answer, input
+- `hermes-comint.el` — comint-derived conversation viewer; also hosts the bench (`hermes-comint--bench-p = t` variant) displayed as a bottom side-window
 - `hermes-prompts.el` — minibuffer handlers for blocking prompts
 - `hermes-input.el` — input queue, slash commands, history
 

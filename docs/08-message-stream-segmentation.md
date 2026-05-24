@@ -62,24 +62,26 @@ The existing `hermes-render-stream-throttle` custom variable acts as a **floor**
 ### Bench Renderer (Major Mode Only)
 
 When `hermes-bench-active-p` returns non-nil (i.e. a `hermes-mode` buffer has its
-bottom bench visible), the org renderer's stream lifecycle is **bypassed** for
-stream updates. Instead:
+bottom bench visible), the bench — a `hermes-comint-mode` buffer with
+`hermes-comint--bench-p = t` — handles its own stream rendering independently
+from the org renderer:
 
-- `hermes-bench--stream-begin` — called when the first delta arrives; clears the
-  bench ephemeral area and shows the user prompt
-- `hermes-bench--stream-update` — called on every throttled delta; rebuilds the
-  reasoning and answer zones from scratch (no incremental diff)
-- `hermes-bench--stream-commit` — called on `message.complete`; builds a
-  `hermes-message` from the final stream and calls `hermes--insert-committed-turn`
-  in the parent org buffer
+- `hermes-comint--stream-begin` — fires on first delta; opens a streaming
+  region between `hermes-comint--output-end` and `hermes-comint--prompt-start`
+- `hermes-comint--paint-stream` — replaces the streaming region atomically on
+  every throttle tick.  In bench mode, prepends the user heading, steer lines,
+  and transient status before the in-flight assistant turn.
+- `hermes-comint--stream-commit` — on `message.complete`, the bench-mode branch
+  deletes the ephemeral region (no committed-turn accumulation).  The
+  committed turn lands in the org buffer only.
 
-The bench renderer does **not** use org markup, markers, or incremental diffing.
-It is a plain-text rebuild: delete ephemeral region, reinsert user prompt +
-reasoning header + answer text, restore separator + input. This is fast enough
-for a 20-line text buffer and eliminates marker-drift issues entirely.
+The bench does **not** accumulate committed turns — its `load-from-state` and
+`append-new-turns` paths are no-ops when `bench-p` is t.  The header-line shows
+persistent session-level status (bg tasks, attachments); turn-specific ephemera
+(steer, config feedback) render in the paint-stream output.
 
-The org buffer still receives the full rich turn (headings, property drawers,
-meta drawers, org IDs) on commit via `hermes--insert-committed-turn`.
+The org buffer receives the full rich turn (headings, property drawers, meta
+drawers, org IDs) on commit via `hermes--insert-committed-turn`.
 
 ### Stream Markers
 

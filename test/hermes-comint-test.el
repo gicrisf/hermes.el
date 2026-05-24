@@ -378,5 +378,61 @@ live-state projection, both invocations converge to the same buffer."
       (remhash sid hermes--sessions)
       (remhash sid hermes-comint--buffers))))
 
+;;;; Mode-line formatter
+
+(ert-deftest hermes-comint-test/mode-line-nil-on-empty ()
+  "Empty state returns the empty string."
+  (should (equal "" (hermes-comint--format-mode-line nil nil))))
+
+(ert-deftest hermes-comint-test/mode-line-basic ()
+  "Connection dot and session info appear in the formatted string."
+  (let* ((sid "abc12345xyz")
+         (state (make-hermes-state :session-id sid :connection 'connected)))
+    (let ((s (hermes-comint--format-mode-line state sid)))
+      (should (string-match-p "●" s))
+      (should (string-match-p "session abc12345 ready" s)))))
+
+(ert-deftest hermes-comint-test/mode-line-model ()
+  "Model name (from session-info) appears in the formatted string."
+  (let* ((sid "s1")
+         (info (let ((h (make-hash-table :test 'equal)))
+                 (puthash "model" "claude-opus-4-7" h) h))
+         (state (make-hermes-state :session-id sid
+                                   :connection 'connected
+                                   :session-info info)))
+    (should (string-match-p "claude-opus-4-7"
+                            (hermes-comint--format-mode-line state sid)))))
+
+(ert-deftest hermes-comint-test/mode-line-streaming-status ()
+  "Streaming text from session-scoped UI state appears in the mode-line."
+  (hermes-test--reset-global-state)
+  (let* ((sid "s2")
+         (state (make-hermes-state :session-id sid :connection 'connected))
+         (ui    (make-hermes-ui-state :status-text "Thinking…")))
+    (puthash sid ui hermes--ui-states)
+    (should (string-match-p "Thinking…"
+                            (hermes-comint--format-mode-line state sid)))))
+
+(ert-deftest hermes-comint-test/mode-line-usage ()
+  "Token counts appear in the formatted string."
+  (let* ((sid "s3")
+         (usage (let ((h (make-hash-table :test 'equal)))
+                  (puthash "tokens_sent" 100 h)
+                  (puthash "tokens_received" 250 h) h))
+         (state (make-hermes-state :session-id sid
+                                   :connection 'connected
+                                   :usage usage)))
+    (should (string-match-p "(350 tokens)"
+                            (hermes-comint--format-mode-line state sid)))))
+
+(ert-deftest hermes-comint-test/mode-line-queue ()
+  "Queue length appears in the formatted string."
+  (let* ((sid "s4")
+         (state (make-hermes-state :session-id sid
+                                   :connection 'connected
+                                   :queue '("a" "b" "c"))))
+    (should (string-match-p "queue: 3"
+                            (hermes-comint--format-mode-line state sid)))))
+
 (provide 'hermes-comint-test)
 ;;; hermes-comint-test.el ends here

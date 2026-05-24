@@ -10,7 +10,8 @@
 ;; hash table (session-id → `hermes-state').  Process-wide events
 ;; without a session-id (e.g. `gateway.ready', connection-state
 ;; broadcasts) update `hermes--global-state'.  Ephemeral UI state
-;; (`hermes--ui-state') remains buffer-local.  Mutations go through
+;; lives in `hermes--ui-states' (session-id → `hermes-ui-state'),
+;; parallel to `hermes--sessions'.  Mutations go through
 ;; `hermes-dispatch' / `hermes-ui-dispatch', which call a pure
 ;; reducer and swap the slot atomically, then run a change hook for
 ;; renderers to subscribe to.
@@ -272,8 +273,18 @@ an excerpt of the most recent user message, and a relative age."
    ((< secs 86400) (format "%dh ago" (truncate (/ secs 3600))))
    (t              (format "%dd ago" (truncate (/ secs 86400))))))
 
-(defvar-local hermes--ui-state nil
-  "Current ephemeral UI state (a `hermes-ui-state').")
+(defvar hermes--ui-states (make-hash-table :test 'equal)
+  "Per-session ephemeral UI state, keyed by session id.
+Parallel to `hermes--sessions'.  Session-scoped (not buffer-local) so
+the bench, viewer, and any other UI subscriber for the same session
+see identical streaming-status text.")
+
+(defun hermes-ui-state-get (session-id)
+  "Return the `hermes-ui-state' for SESSION-ID, creating it if absent."
+  (or (gethash session-id hermes--ui-states)
+      (let ((st (make-hermes-ui-state)))
+        (puthash session-id st hermes--ui-states)
+        st)))
 
 (defvar hermes--current-session-id nil
   "Session id of the dispatch currently in progress, or nil.
@@ -287,12 +298,10 @@ Both arguments are `hermes-state' structs; OLD may be nil at init.
 The active session id is available via `hermes--current-session-id'.")
 
 (defvar hermes-ui-state-change-hook nil
-  "Hook of (OLD NEW) called after `hermes--ui-state' is swapped.")
-
-(defun hermes-state-init ()
-  "Initialise the buffer-local UI state.  Safe to call on an existing buffer."
-  (unless hermes--ui-state
-    (setq hermes--ui-state (make-hermes-ui-state))))
+  "Hook of (OLD NEW) called after a session's ephemeral UI state is swapped.
+Both arguments are `hermes-ui-state' structs; OLD may be the initial
+empty struct.  `hermes--current-session-id' is bound to the affected
+session id for the duration of the hook run.")
 
 (defun hermes--state-slot-read (session-id)
   "Return state for SESSION-ID, or `hermes--global-state' when SESSION-ID is nil."
@@ -402,15 +411,14 @@ so hook handlers can see which session changed."
       (run-hook-with-args 'hermes-state-change-hook old new))))
 
 (defun hermes-ui-dispatch (msg &optional session-id)
-  "Reduce MSG into the ephemeral state and notify subscribers.
-SESSION-ID is accepted for symmetry with `hermes-dispatch' and bound
-into `hermes--current-session-id' for the hook run; the ephemeral
-state itself remains buffer-local."
+  "Reduce MSG into the session's ephemeral state and notify subscribers.
+SESSION-ID is bound into `hermes--current-session-id' for the hook run.
+The ephemeral state lives in `hermes--ui-states' (session-scoped)."
   (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
-         (old hermes--ui-state)
+         (old (hermes-ui-state-get hermes--current-session-id))
          (new (hermes--ui-reduce old msg)))
     (unless (eq old new)
-      (setq hermes--ui-state new)
+      (puthash hermes--current-session-id new hermes--ui-states)
       (run-hook-with-args 'hermes-ui-state-change-hook old new))))
 
 ;;;; Reducer helpers

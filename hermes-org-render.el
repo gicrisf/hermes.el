@@ -31,13 +31,6 @@
 
 ;;;; Buffer-local markers for the in-flight region
 
-(defvar-local hermes--ui-line ""
-  "Right-hand status text driven by the ephemeral state.")
-
-(defvar-local hermes--mode-line-status ""
-  "Dynamic Hermes status text displayed in the mode-line.
-Updated by `hermes--mode-line-update' whenever the ephemeral state changes.")
-
 (defvar-local hermes--stream-headline-marker nil
   "Marker at the start of the in-flight `** assistant' headline.")
 
@@ -277,18 +270,7 @@ such as tests, or in-buffer dispatch loops)."
                       (setq msg-append-start start
                             structural-change t
                             any-inserted t))
-                    (hermes--insert-committed-turn msg)))))))
-        ;; 3. Mode line — session-info / connection / usage / queue.
-        (unless (and old
-                      (eq (hermes-state-session-info old)
-                          (hermes-state-session-info new))
-                      (eq (hermes-state-connection old)
-                          (hermes-state-connection new))
-                      (eq (hermes-state-usage old)
-                          (hermes-state-usage new))
-                      (eq (hermes-state-queue old)
-                          (hermes-state-queue new)))
-          (hermes--mode-line-update new))))
+                    (hermes--insert-committed-turn msg)))))))))
     ;; Clear pending-turns once they've been written to the buffer.
     ;; TEA violation (view-dispatches-mutation): this re-entrant
     ;; dispatch fires the full hook chain synchronously *before* the
@@ -337,10 +319,6 @@ such as tests, or in-buffer dispatch loops)."
           (dolist (win tail-windows)
             (when (window-live-p win)
               (set-window-point win new-point-max))))))
-    ;; Refresh mode-line after every render tick so status is always in
-    ;; sync — covers edge cases where the reducer hands back an `eq' struct
-    ;; and `hermes-state-change-hook' doesn't fire.
-    (hermes--mode-line-update)
     ;; 4. Background tasks: any complete/error task without a buffer-name
     ;; gets its dedicated *hermes-bg:<sid>:<tid>* buffer created and
     ;; populated.  The render fn dispatches :bg-rendered back through
@@ -401,15 +379,6 @@ has a chance to repopulate cleanly."
       (let ((org-image-actual-width (list (window-width nil t))))
         (ignore-errors
           (org-display-inline-images nil t start end))))))
-
-(defun hermes--render-ui (_old new)
-  "Update the right-hand status snippet from the ephemeral UI state NEW.
-Drives `hermes--ui-line', which `hermes--mode-line-update' splices into
-the mode-line status."
-  (setq hermes--ui-line
-        (format " %s" (or (hermes-ui-state-status-text new) "")))
-  (hermes--mode-line-update)
-  (force-mode-line-update))
 
 ;;;; Committed messages
 
@@ -1488,57 +1457,6 @@ happens, re-arms the cooldown so further deltas continue to throttle."
       (hermes--render-stream-segments new-segs)))
   (when (vectorp (hermes-stream-subagents new-stream))
     (hermes--update-subagent-views (hermes-stream-subagents new-stream))))
-
-;;;; Mode line
-
-(defun hermes--mode-line-update (&optional _old _new)
-  "Recompute `hermes--mode-line-status' from the active state.
-Installed on `hermes-state-change-hook' (global) — finds its target
-buffer by resolving `hermes--current-session-id' through
-`hermes--org-buffers' and updates the mode-line there.  When called
-outside of dispatch (e.g. mode setup), falls back to current buffer."
-  (cl-flet ((paint
-             (st)
-             (setq hermes--mode-line-status
-                   (concat
-                    (pcase (and st (hermes-state-connection st))
-                      ('connected    "●")
-                      ('connecting   "◐")
-                      ('disconnected "○")
-                      (_             "○"))
-                    (let ((sid  (and st (hermes-state-session-id st)))
-                          (conn (and st (hermes-state-connection st))))
-                      (if sid
-                          (format " · session %s %s"
-                                  (if (> (length sid) 8) (substring sid 0 8) sid)
-                                  (pcase conn
-                                    ('connected    "ready")
-                                    ('connecting   "connecting")
-                                    ('disconnected "disconnected")
-                                    (_             "unknown")))
-                        " · session ?"))
-                    (let* ((info  (and st (hermes-state-session-info st)))
-                           (model (and (hash-table-p info) (gethash "model" info))))
-                      (if model (format " · %s" model) ""))
-                    (let ((ui (or hermes--ui-line "")))
-                      (if (string-empty-p (string-trim ui))
-                          ""
-                        (format " · %s" (string-trim ui))))
-                    (let* ((usage (and st (hermes-state-usage st)))
-                           (sent  (and usage (gethash "tokens_sent" usage)))
-                           (recv  (and usage (gethash "tokens_received" usage))))
-                      (if (or sent recv)
-                          (format " · (%s tokens)" (+ (or sent 0) (or recv 0)))
-                        ""))
-                    (let ((q (and st (hermes-state-queue st))))
-                      (if (and q (> (length q) 0))
-                          (format " · queue: %d" (length q))
-                        ""))))
-             (force-mode-line-update)))
-    (if hermes--current-session-id
-        (hermes--on-session-buffer hermes--org-buffers
-          (paint (hermes--state-slot-read hermes--current-session-id)))
-      (paint (hermes--current-state)))))
 
 (provide 'hermes-org-render)
 ;;; hermes-org-render.el ends here

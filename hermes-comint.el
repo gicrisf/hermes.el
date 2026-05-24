@@ -291,6 +291,11 @@ Cleared on stream commit.")
   "Transient status plist (:text :error-p) for bench mode.
 Set by `hermes-bench-show-status'; cleared on stream commit.")
 
+(defvar-local hermes-comint--mode-line-status ""
+  "Dynamic Hermes status text displayed in the bench/comint mode-line.
+Recomputed by `hermes-comint--refresh-mode-line' on every state and
+UI-state change.")
+
 (defvar-local hermes-comint--bg-cookie nil
   "`face-remap-add-relative' cookie for the bench background.
 Removed and recreated when the skin changes.")
@@ -393,6 +398,8 @@ copy commands are always allowed in the read-only history region."
     (setq hermes-comint--output-end (copy-marker (point-min) nil))
     (hermes-comint--insert-prompt))
   (add-hook 'hermes-state-change-hook #'hermes-comint--refresh t)
+  (add-hook 'hermes-state-change-hook #'hermes-comint--refresh-mode-line t)
+  (add-hook 'hermes-ui-state-change-hook #'hermes-comint--refresh-mode-line t)
   (add-hook 'kill-buffer-hook #'hermes-comint--detach nil t))
 
 ;;;; Helpers — body insertion
@@ -778,6 +785,103 @@ buffer."
 (defun hermes-comint--refresh-header-line (state)
   (setq header-line-format (hermes-comint--format-header-line state)))
 
+;;;; Mode-line
+
+(defun hermes-comint--format-mode-line (state sid)
+  "Return a mode-line status string for STATE and SID, or \"\"."
+  (if (not state)
+      ""
+    (let (parts)
+      ;; Connection indicator
+      (push (pcase (hermes-state-connection state)
+              ('connected    "●")
+              ('connecting   "◐")
+              ('disconnected "○")
+              (_             "○"))
+            parts)
+      ;; Session ID + status
+      (when sid
+        (let ((conn (hermes-state-connection state)))
+          (push (format " · session %s %s"
+                        (if (> (length sid) 8) (substring sid 0 8) sid)
+                        (pcase conn
+                          ('connected    "ready")
+                          ('connecting   "connecting")
+                          ('disconnected "disconnected")
+                          (_             "unknown")))
+                parts)))
+      ;; Model
+      (when-let* ((info (hermes-state-session-info state))
+                  (model (and (hash-table-p info) (gethash "model" info))))
+        (push (format " · %s" (truncate-string-to-width model 30 nil nil t))
+              parts))
+      ;; Streaming status (from session-scoped UI state)
+      (let ((ui (and sid (gethash sid hermes--ui-states))))
+        (when-let ((st (and ui (hermes-ui-state-status-text ui))))
+          (push (format " · %s" (truncate-string-to-width st 30 nil nil t))
+                parts)))
+      ;; Token usage
+      (when-let* ((usage (hermes-state-usage state))
+                  (sent  (gethash "tokens_sent" usage))
+                  (recv  (gethash "tokens_received" usage)))
+        (when (or sent recv)
+          (push (format " · (%s tokens)" (+ (or sent 0) (or recv 0))) parts)))
+      ;; Queue
+      (let ((q (hermes-state-queue state)))
+        (when (and q (> (length q) 0))
+          (push (format " · queue: %d" (length q)) parts)))
+      (string-join (nreverse parts) ""))))
+
+(defun hermes-comint--install-mode-line ()
+  "Install a Hermes-owned `mode-line-format' in the current buffer.
+
+Must be called AFTER `(hermes-comint-mode)' has returned — doom-modeline
+and similar packages re-set `mode-line-format' on
+`after-change-major-mode-hook', so installing from inside
+`hermes-comint--setup' (which runs during `define-derived-mode') would
+be clobbered.  Same timing as `hermes-org-minor-mode--on'.
+
+This deliberately *replaces* the format rather than splicing into it.
+Splicing alongside doom-modeline is unworkable: `doom-modeline-format--main'
+returns a string already padded to the window width, which pushes any
+appended `:eval' off-screen.  The bench is a narrow side-window where
+doom styling adds little value; trading it for guaranteed visibility of
+the Hermes status is the right call."
+  (setq-local mode-line-format
+              '("%e"
+                mode-line-front-space
+                mode-line-mule-info
+                mode-line-modified
+                " "
+                mode-line-buffer-identification
+                "  "
+                (:eval hermes-comint--mode-line-status)
+                mode-line-end-spaces))
+  ;; Initial paint — without this the status stays "" until the first
+  ;; state/UI-state hook fires.
+  (hermes-comint--refresh-mode-line))
+
+(defun hermes-comint--refresh-mode-line (&rest _)
+  "Refresh the bench/comint mode-line(s) for the current session.
+Accepts &rest args for compatibility with both `hermes-state-change-hook'
+and `hermes-ui-state-change-hook' (each fires (OLD NEW)).
+
+Iterates both bench and viewer registries — the dispatching buffer is
+usually NOT the bench/viewer, so we look up the target buffers by
+session id rather than trusting `(current-buffer)'.  Mirrors the
+convention used by `hermes-comint--refresh'."
+  (let ((sid hermes--current-session-id))
+    (when sid
+      (let ((state (hermes--state-slot-read sid)))
+        (dolist (registry (list hermes--bench-buffers
+                                hermes-comint--buffers))
+          (let ((buf (gethash sid registry)))
+            (when (buffer-live-p buf)
+              (with-current-buffer buf
+                (setq hermes-comint--mode-line-status
+                      (hermes-comint--format-mode-line state sid))
+                (force-mode-line-update)))))))))
+
 ;;;; Input
 
 (defun hermes-comint--prompt-text ()
@@ -891,7 +995,8 @@ mode — committed history lives in the paired org buffer."
           (hermes-comint--insert-turn (aref turns i) (1+ i)))
         (set-marker hermes-comint--output-end (point)))
       (setq hermes-comint--turns-snapshot turns)
-      (hermes-comint--refresh-header-line state))))
+      (hermes-comint--refresh-header-line state)
+      (hermes-comint--refresh-mode-line))))
 
 (defun hermes-comint-refresh ()
   "Rebuild the buffer from state."
@@ -1005,6 +1110,7 @@ Projects from the same `turns' state as the org viewer.
         (hermes-comint-mode)
         (setq-local hermes--current-session-id sid)
         (puthash sid buf hermes-comint--buffers)
+        (hermes-comint--install-mode-line)
         (let ((state (hermes--state-slot-read sid)))
           (when state
             (hermes-comint--load-from-state state)))))
@@ -1126,7 +1232,7 @@ set to t and displayed as a bottom side-window."
         (add-hook 'completion-at-point-functions
                   #'hermes-comint-bench--slash-complete nil t)
         (hermes-comint-bench--apply-bg)
-        (setq-local header-line-format nil)))
+        (hermes-comint--install-mode-line)))
     (display-buffer-in-side-window
      buf `((side . bottom)
            (slot . 0)

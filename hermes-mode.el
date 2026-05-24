@@ -73,15 +73,8 @@ explicit close.  Kills the paired bench when the last viewer goes."
     (setq hermes--last-gateway-ready payload))
   (cond
    ((and session-id (not (string-empty-p session-id)))
-    ;; Per-session dispatch — writes to the global slot keyed by sid.
-    ;; `with-current-buffer' is still required for the buffer-local
-    ;; UI state.
-    (let ((buf (hermes--lookup-buffer session-id)))
-      (if (buffer-live-p buf)
-          (with-current-buffer buf
-            (hermes-dispatch (cons type payload) session-id)
-            (hermes-ui-dispatch (cons type payload) session-id))
-        (hermes-dispatch (cons type payload) session-id))))
+    (hermes-dispatch (cons type payload) session-id)
+    (hermes-ui-dispatch (cons type payload) session-id))
    (t
     ;; Pre-session events (gateway.ready, skin.changed, etc.) update the
     ;; process-wide state slot and broadcast UI to every live buffer.
@@ -112,10 +105,7 @@ explicit close.  Kills the paired bench when the last viewer goes."
   ;; Per-session: write into each session's slot and update its UI.
   (maphash (lambda (sid _state)
              (hermes-dispatch (cons type payload) sid)
-             (let ((buf (hermes--lookup-buffer sid)))
-               (when (buffer-live-p buf)
-                 (with-current-buffer buf
-                   (hermes-ui-dispatch (cons type payload) sid)))))
+             (hermes-ui-dispatch (cons type payload) sid))
            hermes--sessions))
 
 (defun hermes--route-stderr (line)
@@ -215,7 +205,6 @@ to run when already armed."
               '(("RUNNING" . hermes-tool-running-face)
                 ("DONE"    . hermes-tool-done-face)
                 ("ERROR"   . hermes-tool-error-face)))
-  (hermes-state-init)
   ;; Ensure RPC event hooks are wired so events for sessions hosted in
   ;; this buffer route through `hermes--route-event'.  Idempotent.
   (hermes--install-hooks)
@@ -232,9 +221,6 @@ to run when already armed."
   (add-hook 'hermes-state-change-hook    #'hermes-prompts-watch  t)
   (add-hook 'hermes-state-change-hook    #'hermes-input--drain   t)
   (add-hook 'hermes-state-change-hook    #'hermes-skin-watch     t)
-  (add-hook 'hermes-state-change-hook    #'hermes--mode-line-update t)
-  ;; UI state remains buffer-local, so its hook stays LOCAL.
-  (add-hook 'hermes-ui-state-change-hook #'hermes--render-ui     t t)
   ;; Drop pending throttle timer on buffer kill so it can't fire into a
   ;; dead buffer.
   (add-hook 'kill-buffer-hook            #'hermes--stream-flush-cancel nil t)
@@ -242,38 +228,16 @@ to run when already armed."
   ;; session state itself stays in `hermes--sessions' — it carries data
   ;; (reasoning, tool args, subagents) the gateway DB doesn't preserve,
   ;; so explicit close is required to discard it.
-  (add-hook 'kill-buffer-hook            #'hermes--org-detach nil t)
-  ;; Move Hermes status from the top header-line to the bottom mode-line.
-  ;; The `:lighter " Hermes"' handles the right-side indicator.
-  (setq-local mode-line-format
-              '("%e"
-                mode-line-modified
-                " "
-                mode-line-buffer-identification
-                "  "
-                (:eval hermes--mode-line-status)))
-  (setq header-line-format nil)
-  ;; Initial paint of the mode-line for this buffer.
-  (let* ((sid (catch 'found
-                (maphash (lambda (k b)
-                           (when (eq b (current-buffer))
-                             (throw 'found k)))
-                         hermes--org-buffers)
-                nil))
-         (state (hermes--state-slot-read sid)))
-    (hermes--mode-line-update nil state)))
+  (add-hook 'kill-buffer-hook            #'hermes--org-detach nil t))
 
 (defun hermes-org-minor-mode--off ()
-  "Teardown for `hermes-org-minor-mode': remove buffer-local hooks, clear header.
+  "Teardown for `hermes-org-minor-mode': remove buffer-local hooks.
 The global state-change-hook subscribers are intentionally left in
 place — they are global and shared by every Hermes buffer; removing
 them here would tear down other live viewers."
   (remove-hook 'org-cycle-hook #'hermes--remember-cycle t)
-  (remove-hook 'hermes-ui-state-change-hook #'hermes--render-ui t)
   (remove-hook 'kill-buffer-hook #'hermes--stream-flush-cancel t)
-  (hermes--stream-flush-cancel)
-  (kill-local-variable 'mode-line-format)
-  (setq header-line-format nil))
+  (hermes--stream-flush-cancel))
 
 ;;;###autoload
 (define-minor-mode hermes-org-minor-mode

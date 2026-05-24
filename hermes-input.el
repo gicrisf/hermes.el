@@ -28,12 +28,14 @@
 (require 'hermes-state)
 (require 'hermes-org)
 
-(declare-function hermes-reconnect "hermes-mode" ())
-(declare-function hermes--parse-buffer-messages "hermes-mode" ())
-(declare-function hermes--buffer-message-count "hermes-mode" ())
-(declare-function hermes--message-text-for-display "hermes-render" (msg))
-(declare-function hermes-interrupt "hermes-mode" ())
-(declare-function hermes-bench-add-steer "hermes-bench" (parent text))
+(declare-function hermes-new-session "hermes-session" (&optional callback))
+(declare-function hermes-reconnect "hermes-org-minor-mode" ())
+(declare-function hermes--parse-buffer-messages "hermes-org-minor-mode" ())
+(declare-function hermes--buffer-message-count "hermes-org-minor-mode" ())
+(declare-function hermes--message-text-for-display "hermes-org-render" (msg))
+(declare-function hermes-interrupt-current-session "hermes-session" ())
+(declare-function hermes-resume-from-db "hermes-sessions" (sid))
+(declare-function hermes-branch-from-db "hermes-sessions" (sid))
 
 (defvar-local hermes-input--history nil
   "Buffer-local mirror of `hermes-state-history' for `read-string' HISTORY.")
@@ -51,12 +53,43 @@ and stripping; keeping them on a single source avoids drift.")
   "Return non-nil if TEXT begins with a background-task command prefix."
   (and text (string-match-p hermes-input--bg-re text)))
 
+;;;; Session-management slash interception
+;;
+;; `/resume', `/sessions', `/delete' need an Emacs minibuffer picker —
+;; the gateway implements server-side equivalents, but they open a
+;; TUI-flavored selector that doesn't apply here.  Intercept those three
+;; client-side before falling through to `slash.exec'.  Everything else
+;; (`/title', `/branch', `/compress', `/undo', `/usage', `/save', …)
+;; routes server-side as usual.
+
+(defconst hermes-input--session-slash-re
+  "\\`\\s-*/\\(resume\\|sessions\\|delete\\)\\(?:\\s-+\\(.*\\)\\)?\\s-*\\'"
+  "Regex matching the session-management slashes handled in Emacs.
+Group 1 is the bare command name; group 2 is the optional argument
+text (currently unused — the pickers ignore arguments).")
+
+(declare-function hermes-current-sessions "hermes-sessions" ())
+(declare-function hermes-stored-resume "hermes-sessions" (&optional cwd-filter))
+(declare-function hermes-stored-delete "hermes-sessions" (&optional cwd-filter))
+
+(defun hermes-input--try-session-slash (text)
+  "If TEXT is an intercepted session-management slash, dispatch it.
+Return non-nil when handled, nil otherwise.  Side effect: pops the
+appropriate `completing-read' picker.  Any user argument is ignored
+for v1 — the pickers carry the entire selection workflow."
+  (when (string-match hermes-input--session-slash-re text)
+    (pcase (match-string 1 text)
+      ("resume"   (call-interactively #'hermes-stored-resume))
+      ("sessions" (call-interactively #'hermes-current-sessions))
+      ("delete"   (call-interactively #'hermes-stored-delete)))
+    t))
+
 (defun hermes-input--dispatch-background (text sid)
   "Send TEXT as a `prompt.background' RPC for session SID.
 Strips the /bg prefix; on RPC response, dispatches `:background-start'
 into the local state so the bench can show `[bg: N running]'."
   (let ((clean (replace-regexp-in-string hermes-input--bg-re "" text)))
-    (hermes-rpc-request
+    (hermes--request
      "prompt.background"
      (list :session_id sid :text clean)
      (lambda (result error)
@@ -85,7 +118,7 @@ after a reconnect or after opening a saved conversation file."
 
 (defvar-local hermes--seeded-session-id nil
   "Session id that was last seeded with history from this buffer.
-Compared against `(hermes-state-session-id hermes--state)' before
+Compared against `(hermes-state-session-id (hermes--current-state))' before
 every outgoing `prompt.submit'.  When the current session id differs
 from this value (or this value is nil) and the buffer has committed
 turns, a history text block is prepended to the wire payload and this
@@ -96,12 +129,18 @@ gateway session — fresh start, reconnect, post-reconnect drain, or
 opening a saved file while the gateway is already up — is seeded
 exactly once, no matter which call path reached `prompt.submit'.
 Slash commands take a different RPC path (`slash.exec') and never
-participate in the comparison.")
+participate in the comparison.
+
+TEA: session-scoped state mutated via raw `setq' outside the reducer.
+Move into a `:seed-stamp' slot on `hermes-state' with a dedicated
+reducer action.")
 
 (defun hermes--build-history-text ()
   "Return a text block reconstructed from buffer history, or nil.
-Reads `:HERMES_RAW:' drawers, formats each turn as a \"Role: text\"
-pair, and truncates to the last `hermes-history-seed-max-turns' turns.
+Parses each turn from visible buffer structure (heading properties,
+body text, and child headings), formats each turn as a Role:text
+pair, and truncates to
+the last `hermes-history-seed-max-turns' turns.
 Returns nil when the buffer has no committed turns or every turn's
 text is empty."
   (let* ((messages (hermes--parse-buffer-messages))
@@ -139,7 +178,7 @@ Idempotent: stamps `hermes--seeded-session-id' with the current
 session id on every call, so subsequent prompts on the same session
 skip the seed.  Logs a user-visible message when seeding fires so
 the user knows extra tokens are being consumed."
-  (let ((sid (hermes-state-session-id hermes--state)))
+  (let ((sid (hermes-state-session-id (hermes--current-state))))
     (cond
      ;; No session yet — nothing to stamp against.  Leave TEXT alone;
      ;; the next call (once a session id lands) will seed.
@@ -170,7 +209,7 @@ is non-nil).
 \"First prompt\" is detected by inspecting `hermes--seeded-session-id'
 *before* calling `hermes-input--seed-prefix' (which stamps it as a side
 effect).  Safe to call from any session buffer."
-  (let* ((sid (hermes-state-session-id hermes--state))
+  (let* ((sid (hermes-state-session-id (hermes--current-state)))
          (first-prompt (and sid (not (equal sid hermes--seeded-session-id))))
          (seeded (hermes-input--seed-prefix text))
          (ctx (when (and (or first-prompt
@@ -184,13 +223,13 @@ effect).  Safe to call from any session buffer."
 (defun hermes-input--drain-after-reconnect ()
   "After a reconnect, send the head of the queue (if any) on the new session.
 Subsequent items keep draining via the normal `message.complete' hook."
-  (let ((q (hermes-state-queue hermes--state))
-        (sid (hermes-state-session-id hermes--state)))
+  (let ((q (hermes-state-queue (hermes--current-state)))
+        (sid (hermes-state-session-id (hermes--current-state))))
     (when (and q sid)
       (let* ((head (car q))
              (wire (hermes-input--wire-prefix head)))
         (hermes-dispatch '(:dequeue))
-        (hermes-rpc-request
+        (hermes--request
          "prompt.submit"
          (list :session_id sid :text wire)
          (lambda (_r e)
@@ -202,19 +241,19 @@ Subsequent items keep draining via the normal `message.complete' hook."
   "If a turn just finished and the queue is non-empty, dispatch its head.
 Display happens here — not at enqueue time — so the new `* user:'
 heading lands at point-max only after the previous turn has fully
-committed.  This is the pi-coding-agent pattern: invisible queue,
-deferred user-submit."
+committed.  Dispatches are scoped to the session in NEW so this
+remains correct under the global state-change-hook."
   (when (and old
              (hermes-state-stream old)
              (null (hermes-state-stream new))
              (hermes-state-queue new))
     (let ((sid (hermes-state-session-id new))
           (head (car (hermes-state-queue new))))
-      (hermes-dispatch '(:dequeue))
-      (hermes-dispatch (cons :user-submit (list :text head)))
+      (hermes-dispatch '(:dequeue) sid)
+      (hermes-dispatch (cons :user-submit (list :text head)) sid)
       (when sid
         (let ((wire (hermes-input--wire-prefix head)))
-          (hermes-rpc-request
+          (hermes--request
            "prompt.submit"
            (list :session_id sid :text wire)
            (lambda (_r e)
@@ -225,7 +264,7 @@ deferred user-submit."
 (defun hermes-input-fetch-catalog ()
   "Request `commands.catalog' and dispatch the result into this buffer."
   (let ((buf (current-buffer)))
-    (hermes-rpc-request
+    (hermes--request
      "commands.catalog" nil
      (lambda (result error)
        (cond
@@ -317,56 +356,96 @@ Minibuffer context only — reads catalog from
 
 ;;;; Public entry — replaces the M2 `hermes-send'.
 
-(defun hermes-input-send (text)
-  "Submit TEXT to the current Hermes session.
-Slash commands bypass the queue and transcript; idle text is committed
-immediately, while busy text is queued silently and sent when the turn
-ends."
+(defun hermes-send (text)
+  "Submit TEXT to a Hermes session.
+Resolves the target session from buffer context (section view, org
+minor-mode, bench).  When no session is reachable from the current
+buffer, offers a minibuffer picker over all live sessions; if none
+exist, creates a headless session and sends to it."
   (interactive
    (let* ((hermes-input--catalog-from-minibuffer
-           (and hermes--state (hermes-state-slash-catalog hermes--state)))
+           (and (hermes--current-state) (hermes-state-slash-catalog (hermes--current-state))))
           (sym (make-symbol "hermes-input-history-var")))
-     (set sym (and hermes--state (hermes-state-history hermes--state)))
+     (set sym (and (hermes--current-state) (hermes-state-history (hermes--current-state))))
      (minibuffer-with-setup-hook
          (lambda ()
            (use-local-map hermes-input-minibuffer-map)
            (add-hook 'completion-at-point-functions
                      #'hermes-input-completion-at-point nil t))
        (list (read-string "Hermes> " nil sym)))))
-  (unless (or (derived-mode-p 'hermes-mode)
-              (bound-and-true-p hermes-minor-mode))
-    (user-error "Not in a Hermes buffer (enable `hermes-minor-mode' in this Org buffer first)"))
-  ;; Resolve which session this send targets and, if it differs from
-  ;; the buffer-local `hermes--state', dynamically rebind so downstream
-  ;; reads/dispatches target the right slot.  In a `hermes-mode' buffer
-  ;; the resolved state IS the buffer-local one — we must NOT let-bind
-  ;; it there, otherwise dispatch's `setq hermes--state' would only
-  ;; mutate the dynamic binding and revert on exit, losing the queue.
-  (let* ((target (hermes--resolve-session-target))
-         (target-sid (car target))
-         (target-state (cdr target))
-         (hermes--current-session-id target-sid))
-    (cond
-     ;; No container at all → user must create one first.
-     ((null target)
-      (user-error "No Hermes session at point — use `M-x hermes' from an Org heading or move into a `:hermes:' subtree"))
-     ;; Stale: heading has a session id but the registry has no entry
-     ;; (file was reopened, gateway restarted, etc.).  Stash the text
-     ;; and trigger an async resume; the callback drains and submits.
-     ((null target-state)
-      (when (and text (not (string-empty-p text)))
-        (push (cons target-sid text) hermes--pre-send-queue)
-        (hermes--resume-heading-session target-sid)
-        (message "Hermes: resuming session %s…" target-sid)))
-     ;; Live state → send directly.  Only let-bind `hermes--state' when
-     ;; the resolved state differs from the buffer-local — otherwise the
-     ;; dynamic binding shadows the buffer-local and dispatch mutations
-     ;; revert on exit (lost queue, lost history).
-     ((eq target-state hermes--state)
-      (hermes-input--send-1 text))
-     (t
-      (let ((hermes--state target-state))
-        (hermes-input--send-1 text))))))
+  ;; Short-circuit empty/whitespace early — no-op, no target resolution.
+  (unless (or (null text) (string-empty-p (string-trim text)))
+    (let* ((target (hermes--resolve-session-target))
+           (target-sid (car target))
+           (target-state (cdr target)))
+      (cond
+       ;; Stale heading (has sid but no in-memory state) — prompt the user
+       ;; with the existing load-org / resume-from-DB / branch-from-DB flow.
+       ;; Kept inline because the four branches have heterogeneous side
+       ;; effects that don't fit a clean return contract.
+       ((and target-sid (null target-state))
+        (let ((hermes--current-session-id target-sid)
+              (choice (hermes--prompt-stale-heading target-sid))
+              (marker (hermes--container-marker-at-point)))
+          (pcase choice
+            ('load-org
+             (push (cons target-sid text) hermes--pre-send-queue)
+             (hermes--create-fresh-session target-sid marker)
+             (message "Hermes: loading fresh session from org…"))
+            ('resume-db
+             (require 'hermes-sessions)
+             (hermes-resume-from-db target-sid)
+             (message "Hermes: resumed into new buffer — resend prompt there"))
+            ('branch-db
+             (require 'hermes-sessions)
+             (hermes-branch-from-db target-sid)
+             (message "Hermes: branched into new buffer — resend prompt there"))
+            (_ (message "Cancelled")))))
+       ;; Live target from buffer context → send directly.
+       ((and target-sid target-state)
+        (let ((hermes--current-session-id target-sid))
+          (hermes-input--send-1 text)))
+       ;; No target — pick from live sessions or auto-create headless.
+       (t (hermes--select-or-create-session text))))))
+
+(defun hermes--select-or-create-session (text)
+  "Pick a live session or create a headless one; then send TEXT.
+If live sessions exist, prompt the user via minibuffer completion.
+Otherwise create a headless session (starting the gateway if
+needed) and send TEXT once `session.create' resolves."
+  (let ((sessions (hermes--list-active-sessions)))
+    (if (null sessions)
+        (hermes--create-and-send-headless text)
+      (hermes--select-session-and-send sessions text))))
+
+(defun hermes--select-session-and-send (sessions text)
+  "Prompt for a session over SESSIONS via completing-read, then send TEXT."
+  (let* ((choices (hermes--session-completion-table sessions))
+         (display->sid (mapcar (lambda (c) (cons (cdr c) (car c))) choices))
+         (def-sid (hermes--most-recent-session-id))
+         (def-display (and def-sid
+                           (car (rassoc def-sid display->sid))))
+         (name (completing-read "Session: "
+                                (mapcar #'cdr choices)
+                                nil t nil nil def-display)))
+    (unless (or (null name) (string-empty-p name))
+      (let ((sid (cdr (assoc name display->sid))))
+        (when sid
+          (let ((hermes--current-session-id sid))
+            (hermes-input--send-1 text)))))))
+
+(defun hermes--create-and-send-headless (text)
+  "Create a headless session and send TEXT once it's ready.
+Returns immediately; the send happens asynchronously when
+`session.create' resolves.  The org buffer is created but not
+popped — the user can later attach via `hermes' or `hermes-section'."
+  (hermes-new-session
+   (lambda (buf)
+     (when (buffer-live-p buf)
+       (with-current-buffer buf
+         (let ((hermes--current-session-id
+                (buffer-local-value 'hermes--current-session-id buf)))
+           (hermes-input--send-1 text)))))))
 
 ;;;; Shell interpolation — !cmd and $(cmd)
 
@@ -409,7 +488,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
      for m in matches do
      (let ((i idx)
            (cmd (nth 2 m)))
-       (hermes-rpc-request
+       (hermes--request
         "shell.exec" (list :command cmd)
         (lambda (r e)
           (let ((out (cond
@@ -431,7 +510,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
                 (funcall k expanded))))))))))
 
 (defun hermes-input--send-1 (text)
-  "Internal worker for `hermes-input-send'.  Assumes `hermes--state' and
+  "Internal worker for `hermes-send'.  Assumes `(hermes--current-state)' and
 `hermes--current-session-id' are bound to the target session."
   ;; If the gateway died, offer to reconnect.  The text is committed and
   ;; queued; `hermes-reconnect' creates a fresh session and drains the head
@@ -445,7 +524,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
           (hermes-reconnect)
           (setq text nil))               ; consumed
       (user-error "Hermes gateway is not running")))
-  (let ((sid (hermes-state-session-id hermes--state)))
+  (let ((sid (hermes-state-session-id (hermes--current-state))))
     (cond
      ;; Empty input or consumed by reconnect branch → no-op.
      ((or (null text) (string-empty-p text)) nil)
@@ -456,7 +535,7 @@ Substitutions are applied right-to-left to preserve byte offsets."
             (buf (current-buffer)))
         (if (string-empty-p cmd)
             (message "hermes: empty shell command")
-          (hermes-rpc-request
+          (hermes--request
            "shell.exec" (list :command cmd)
            (lambda (r e)
              (let* ((body (cond
@@ -485,10 +564,15 @@ Substitutions are applied right-to-left to preserve byte offsets."
      ;; `background.complete' fires.
      ((hermes-input--is-background-p text)
       (hermes-input--dispatch-background text sid))
+     ;; Session-management slashes (`/resume', `/sessions', `/delete')
+     ;; need an Emacs minibuffer picker — intercept before slash.exec.
+     ((and (eq (aref text 0) ?/)
+           (hermes-input--try-session-slash text))
+      nil)
      ;; Slash command — fire immediately, no transcript, no history.
      ((eq (aref text 0) ?/)
       (let ((buf (current-buffer)))
-        (hermes-rpc-request
+        (hermes--request
          "slash.exec"
          (list :session_id sid :command (substring text 1))
          (lambda (result error)
@@ -512,12 +596,10 @@ Substitutions are applied right-to-left to preserve byte offsets."
      ;; would place the `* user:' heading at `point-max', which sits
      ;; *after* the still-rendering assistant turn — corrupting structure.
      ;; See `hermes-input--drain' for the deferred user-submit + RPC.
-     ((hermes-state-stream hermes--state)
-      (pcase (hermes-state-busy-mode hermes--state)
+     ((hermes-state-stream (hermes--current-state))
+      (pcase (hermes-state-busy-mode (hermes--current-state))
         ("steer"
-         (when (fboundp 'hermes-bench-add-steer)
-           (hermes-bench-add-steer (current-buffer) text))
-         (hermes-rpc-request
+         (hermes--request
           "session.steer"
           (list :session_id sid :text text)
           (lambda (r e)
@@ -527,21 +609,21 @@ Substitutions are applied right-to-left to preserve byte offsets."
               (message "hermes: steer rejected"))
              (t (message "hermes: steer queued"))))))
         ("interrupt"
-         (hermes-interrupt)
+         (hermes-interrupt-current-session)
          ;; After interrupt the stream clears; the drain hook will
          ;; submit this text once the queue head becomes head-of-line.
          (hermes-dispatch (cons :enqueue (list :text text))))
         (_  ; "queue" (default) or unknown
          (hermes-dispatch (cons :enqueue (list :text text)))
          (message "Hermes: Message queued (%d ahead of you)"
-                  (length (hermes-state-queue hermes--state))))))
+                  (length (hermes-state-queue (hermes--current-state)))))))
      ;; Idle → optimistic commit + immediate prompt.submit.
      (t
       ;; Display the user's actual input — the seed prefix is for the
       ;; gateway only, not the transcript.
       (hermes-dispatch (cons :user-submit (list :text text)))
       (let ((wire-text (hermes-input--wire-prefix text)))
-        (hermes-rpc-request
+        (hermes--request
          "prompt.submit"
          (list :session_id sid :text wire-text)
          (lambda (_r e)

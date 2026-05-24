@@ -1,9 +1,9 @@
-;;; hermes-render-test.el --- ERT tests for the segmented renderer -*- lexical-binding: t; -*-
+;;; hermes-org-render-test.el --- ERT tests for the segmented renderer -*- lexical-binding: t; -*-
 
 (require 'ert)
 (require 'hermes-state)
-(require 'hermes-render)
-(require 'hermes-mode)
+(require 'hermes-org-render)
+(require 'hermes)
 
 (defun hermes-render-test--setup ()
   "Initialise an in-flight stream in the current buffer.
@@ -198,6 +198,44 @@ position right after the heading line."
   (should (equal "" (hermes--format-subagents-block [])))
   (should (equal "" (hermes--format-subagents-block nil))))
 
+(ert-deftest hermes-render-test/segment-block-ends-with-blank-line ()
+  "Segment-block ensures a trailing blank line between adjacent blocks."
+  (let* ((seg (make-hermes-segment :type 'reasoning :content "x" :id "s1"))
+         (out (hermes--segment-block seg)))
+    (should (string-suffix-p "\n\n" out))
+    (should-not (string-suffix-p "\n\n\n" out))))
+
+(ert-deftest hermes-render-test/cot-block-no-trailing-blank-line ()
+  "Reasoning block ends with exactly one newline (no trailing blank line)."
+  (let ((out (hermes--format-cot-block "Reasoning" "thinking..." "seg1")))
+    (should (string-suffix-p "\n" out))
+    (should-not (string-suffix-p "\n\n" out))))
+
+(ert-deftest hermes-render-test/cot-block-no-blank-before-properties ()
+  "Reasoning block has no blank line between heading and properties drawer."
+  (let ((out (hermes--format-cot-block "Reasoning" "x" "seg1")))
+    (should-not (string-match-p "Reasoning\n\n:PROPERTIES:" out))))
+
+(ert-deftest hermes-render-test/subagent-no-blank-lines-between-parts ()
+  "Subagent subtree has no blank lines between properties, thinking, tools."
+  (let* ((sa (make-hermes-subagent
+              :id "sa1" :goal "fix" :status 'complete
+              :thinking "looking"
+              :tools (vector (list :name "bash" :args "ls"))
+              :notes ["a"]
+              :summary "done" :duration 1.0))
+         (out (hermes--format-subagent sa)))
+    (should-not (string-match-p "\n\n" out))
+    (should (string-suffix-p "\n" out))))
+
+(ert-deftest hermes-render-test/subagents-block-no-blank-between-subagents ()
+  "Adjacent subagents separated by one newline, no blank line."
+  (let* ((sa1 (make-hermes-subagent :id "sa1" :goal "a" :status 'running))
+         (sa2 (make-hermes-subagent :id "sa2" :goal "b" :status 'running))
+         (out (hermes--format-subagents-block (vector sa1 sa2))))
+    (should-not (string-match-p "\n\n" out))
+    (should (string-suffix-p "\n" out))))
+
 (ert-deftest hermes-render-test/subagent-blocks-insert-after-tools ()
   "In stream, subagents appear after segment blocks."
   (with-temp-buffer
@@ -364,24 +402,32 @@ position right after the heading line."
                   (make-hermes-segment :type 'tool :content tool :id "s1"))))
     (should (string-match-p "\\[diff\\]" result))))
 
-(ert-deftest hermes-render-test/tool-diff-ansi-stripped ()
-  "ANSI escape sequences in `inline-diff' are stripped before rendering."
+(ert-deftest hermes-render-test/tool-diff-renders-clean ()
+  "Clean `inline-diff' renders verbatim inside a diff src block.
+ANSI stripping is the reducer/parser's job — the formatter is a pure
+pass-through and never adds escape sequences."
   (let* ((tool (make-hermes-tool :id "t1" :name "Write"
                                  :status 'complete
-                                 :inline-diff "\e[32m+ new\e[0m\n\e[31m- old\e[0m"))
+                                 :inline-diff "+ new\n- old"))
          (result (hermes--format-segment
                   (make-hermes-segment :type 'tool :content tool :id "s1"))))
     (should (string-match-p "#\\+begin_src diff" result))
     (should (string-match-p "^\\+ new$" result))
     (should (string-match-p "^- old$" result))
-    (should-not (string-match-p "\e\\[" result))
-    (should-not (string-match-p "\033\\[" result))))
+    (should-not (string-match-p "\e\\[" result))))
 
 (ert-deftest hermes-render-test/tool-heading-todo-indicator ()
   "Heading carries a `[N todo]' indicator counting the todos list."
-  (let* ((tool (make-hermes-tool :id "t1" :name "TodoWrite"
+  (let* ((mkht (lambda (s) (let ((h (make-hash-table :test 'equal)))
+                             (puthash "status" "pending" h)
+                             (puthash "id" s h)
+                             (puthash "content" s h)
+                             h)))
+         (tool (make-hermes-tool :id "t1" :name "TodoWrite"
                                  :status 'complete
-                                 :todos '((:text "a") (:text "b") (:text "c"))))
+                                 :todos (list (funcall mkht "a")
+                                              (funcall mkht "b")
+                                              (funcall mkht "c"))))
          (result (hermes--format-segment
                   (make-hermes-segment :type 'tool :content tool :id "s1"))))
     (should (string-match-p "\\[3 todo\\]" result))))
@@ -445,79 +491,101 @@ property drawer — just heading + drawer."
       ;; by an outline fold overlay.
       (should (hermes-render-test--invisible-at reasoning-pos)))))
 
-;;;; Raw drawer I/O
+;;;; Meta drawer I/O
 
-(ert-deftest hermes-render-test/raw-drawer-insert-and-extract ()
-  "Insert a :HERMES_RAW: drawer and read the plist back."
-  (with-temp-buffer
-    (org-mode)
-    (let ((msg (make-hermes-message
-                :kind 'user
-                :segments (vector (make-hermes-segment
-                                   :type 'text :content "Hello" :id "s1"))
-                :timestamp "2024-01-15T10:00:00+0000")))
-      (insert "* user: hi\n")
-      (hermes--insert-raw-drawer msg))
-    (goto-char (point-min))
-    (let ((plist (hermes--extract-raw-drawer)))
-      (should plist)
-      (should (eq 'user (plist-get plist :kind)))
-      (should (equal "Hello" (plist-get plist :text))))))
+(ert-deftest hermes-render-test/tool-properties-include-summary ()
+  "hermes--tool-properties emits :TOOL_SUMMARY: when summary is set."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.1
+                                 :summary "listed system uptime"))
+         (props (hermes--tool-properties tool)))
+    (should (equal "listed system uptime"
+                   (cdr (assoc "TOOL_SUMMARY" props))))))
 
-(ert-deftest hermes-render-test/raw-drawer-auto-folded ()
-  "After insertion, the drawer body is hidden by org folding/overlays."
+(ert-deftest hermes-render-test/tool-properties-omit-summary-when-nil ()
+  "hermes--tool-properties drops :TOOL_SUMMARY: when summary is nil."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.1))
+         (props (hermes--tool-properties tool)))
+    (should-not (assoc "TOOL_SUMMARY" props))))
+
+(ert-deftest hermes-render-test/tool-properties-include-name-status-duration ()
+  "hermes--tool-properties returns the four scalar fields plus HERMES_KIND.
+Duration is full-precision."
+  (let* ((tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                 :duration 0.08558511734008789))
+         (props (hermes--tool-properties tool)))
+    (should (equal "TOOL"     (cdr (assoc "HERMES_KIND"   props))))
+    (should (equal "t1"       (cdr (assoc "TOOL_ID"       props))))
+    (should (equal "ls"       (cdr (assoc "TOOL_NAME"     props))))
+    (should (equal "complete" (cdr (assoc "TOOL_STATUS"   props))))
+    (should (equal "0.08558511734008789"
+                   (cdr (assoc "TOOL_DURATION" props))))
+    (should-not (assoc "DURATION" props))))
+
+(ert-deftest hermes-render-test/stream-commit-uses-per-turn-usage-not-cumulative ()
+  "Regression: the assistant heading's HERMES_USAGE_* properties carry
+the just-completed turn's deltas, not the running session total."
   (with-temp-buffer
-    (org-mode)
-    (let ((msg (make-hermes-message
-                :kind 'user
-                :segments (vector (make-hermes-segment
-                                   :type 'text :content "x" :id "s1")))))
-      (insert "* user: hi\n")
-      (hermes--insert-raw-drawer msg))
-    ;; Either an org-fold invisibility region covers the drawer body, or
-    ;; the body line carries an invisible text/overlay property.  Look
-    ;; for any invisible coverage somewhere between :HERMES_RAW: and :END:.
-    (goto-char (point-min))
-    (should (re-search-forward "^:HERMES_RAW:" nil t))
-    (let* ((body-start (1+ (line-end-position)))
-           (body-end (save-excursion
-                       (re-search-forward "^:END:" nil t)
-                       (line-beginning-position)))
-           (any-invis nil))
-      (save-excursion
-        (goto-char body-start)
-        (while (< (point) body-end)
-          (when (or (get-text-property (point) 'invisible)
-                    (cl-some (lambda (o) (overlay-get o 'invisible))
-                             (overlays-at (point))))
-            (setq any-invis t))
-          (forward-char 1)))
-      (should any-invis))))
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
+    ;; Pre-seed session-cumulative usage as if a prior turn ran.
+    (setf (hermes-test--cur)
+          (hermes--with-copy (hermes-test--cur) hermes-state-copy s
+            (let ((acc (make-hash-table :test 'equal)))
+              (puthash "tokens_sent" 999 acc)
+              (puthash "tokens_received" 999 acc)
+              (setf (hermes-state-usage s) acc))))
+    ;; Stream begins.
+    (let* ((old (hermes-test--cur))
+           (stream (make-hermes-stream
+                    :segments (vector (make-hermes-segment
+                                       :type 'text :content "Hi" :id "s1"))))
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
+                  (setf (hermes-state-stream s) stream))))
+      (setf (hermes-test--cur) new)
+      (hermes--render old new))
+    ;; message.complete with per-turn deltas of 7/3.
+    (hermes-dispatch (cons "message.complete"
+                           (let ((h (make-hash-table :test 'equal)))
+                             (puthash "tokens_sent" 7 h)
+                             (puthash "tokens_received" 3 h)
+                             h)))
+    (let ((u (save-excursion
+               (goto-char (point-min))
+               (re-search-forward "^\\*\\* " nil t)
+               (hermes--read-usage-properties))))
+      (should u)
+      (should (= 7 (plist-get u :tokens_sent)))
+      (should (= 3 (plist-get u :tokens_received)))
+      ;; Session-cumulative is still tracked separately, not on the heading.
+      (should (= 1006 (gethash "tokens_sent" (hermes-state-usage (hermes-test--cur))))))))
 
 (ert-deftest hermes-render-test/pending-turns-drained-correctly ()
   "Render writes pending-turn messages into the buffer and dispatches a clear."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let* ((msg (make-hermes-message
                  :kind 'user
                  :segments (vector (make-hermes-segment
                                     :type 'text :content "ping" :id "s1"))
                  :timestamp "2024-01-15T10:00:00+0000"))
-           (old hermes--state)
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (old (hermes-test--cur))
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s)
                         (vector msg)))))
       ;; Mirror how the state-change hook is invoked: state is swapped
       ;; first, then the renderer runs.  The renderer's own dispatch
       ;; of :pending-turns-clear then operates on the swapped state.
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Buffer now contains a `** U: ping' heading with the body.
+    ;; Text-only user turn → no usage properties (intentional).
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       (should (string-match-p "^\\*\\* U: ping" body))
-      (should (string-match-p ":HERMES_RAW:" body)))
+      (should (string-match-p ":HERMES_KIND: USER" body))
+      (should-not (string-match-p ":HERMES_RAW:" body)))
     ;; And pending-turns was cleared by the dispatched :pending-turns-clear.
-    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+    (should (equal [] (hermes-state-pending-turns (hermes-test--cur))))))
 
 ;;;; Pending-turns drain vs stream-commit interaction
 
@@ -534,55 +602,57 @@ property drawer — just heading + drawer."
 The reducer pushes the assistant msg to pending-turns AND clears the
 stream in the same step.  The renderer must seal the streaming turn
 via stream-commit and skip the assistant in the drain, leaving exactly
-one assistant subtree with exactly one :HERMES_RAW: drawer."
+one assistant subtree."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     ;; Stage 1: stream begins and accumulates text.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
                                        :type 'text :content "Hello"
                                        :id "s1"))))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Stage 2: message.complete fires — assistant msg pushed to
     ;; pending-turns AND stream cleared, atomically.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (hermes-state-stream old))
            (msg (hermes--message-from-stream stream nil))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)
                         (hermes-state-stream s) nil))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     (should (= 1 (hermes-render-test--count "^\\*\\* ")))
     ;; Only the session container heading carries the `:hermes:' tag now;
     ;; the assistant turn uses an `A:' prefix instead.
     (should (= 1 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
-    (should (= 1 (hermes-render-test--count "^:HERMES_RAW:")))
-    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+    ;; Text-only assistant turn → no usage properties.
+    (should (= 0 (hermes-render-test--count "^:HERMES_META:")))
+    (should (= 0 (hermes-render-test--count "^:HERMES_RAW:")))
+    (should (equal [] (hermes-state-pending-turns (hermes-test--cur))))))
 
 (ert-deftest hermes-render-test/error-with-stream-no-duplicate ()
   "Error path pushes [assistant, system] and clears stream.
 After render: one assistant subtree, one system heading, system appears
-*after* the assistant turn, and each subtree owns exactly one raw drawer."
+  *after* the assistant turn, and each committed turn is properly sealed."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     ;; Stage 1: stream begins.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
                                        :type 'text :content "partial"
                                        :id "s1"))))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Stage 2: error — [assistant, system] pushed, stream cleared.
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (hermes-state-stream old))
            (amsg (hermes--message-from-stream stream nil))
            (sysmsg (make-hermes-message
@@ -591,10 +661,10 @@ After render: one assistant subtree, one system heading, system appears
                                        :type 'text :content "boom"
                                        :id "sys1"))
                     :timestamp (current-time)))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector amsg sysmsg)
                         (hermes-state-stream s) nil))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Two level-2 headings now: the assistant turn and the system turn
     ;; (both are siblings under the level-1 session container).
@@ -603,7 +673,9 @@ After render: one assistant subtree, one system heading, system appears
     (should (= 1 (hermes-render-test--count ":hermes:")))
     (should (= 1 (hermes-render-test--count "^\\*\\* A: ")))
     (should (= 1 (hermes-render-test--count "^\\*\\* S: ")))
-    (should (= 2 (hermes-render-test--count "^:HERMES_RAW:")))
+    ;; Text-only turns → no usage properties.
+    (should (= 0 (hermes-render-test--count "^:HERMES_META:")))
+    (should (= 0 (hermes-render-test--count "^:HERMES_RAW:")))
     (let ((body (buffer-substring-no-properties (point-min) (point-max))))
       (should (< (string-match "^\\*\\* A: " body)
                  (string-match "^\\*\\* S: " body))))))
@@ -612,19 +684,19 @@ After render: one assistant subtree, one system heading, system appears
   "Drain with only an assistant in pending-turns inserts nothing,
 but still clears the vector via :pending-turns-clear."
   (with-temp-buffer
-    (hermes-mode)
-    (let* ((old hermes--state)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
+    (let* ((old (hermes-test--cur))
            (msg (make-hermes-message
                  :kind 'assistant
                  :segments (vector (make-hermes-segment
                                     :type 'text :content "x" :id "s1"))
                  :timestamp (current-time)))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     (should (= 0 (hermes-render-test--count "^\\*\\* ")))
-    (should (equal [] (hermes-state-pending-turns hermes--state)))))
+    (should (equal [] (hermes-state-pending-turns (hermes-test--cur))))))
 
 ;;;; Queue drain ordering — see PLAN.md "Debug: Queue Drain Corrupts Buffer Structure"
 
@@ -632,19 +704,21 @@ but still clears the vector via :pending-turns-clear."
 
 (ert-deftest hermes-render-test/queue-drain-order-correct ()
   "Realistic reproduction: user enqueues while busy, then `message.complete'
-fires.  The assistant raw drawer must land *before* the dequeued user
-heading — i.e. inside the assistant subtree, not after it."
-  (cl-letf (((symbol-function 'hermes-rpc-request)
-             (lambda (&rest _) nil))
-            ((symbol-function 'hermes-rpc-live-p)
-             (lambda () t)))
+fires.  The dequeued user heading must land *after* the assistant
+subtree has been fully committed (heading + body), not interleaved."
+  (let ((hermes--backend-send-function (lambda (&rest _) nil)))
+    (cl-letf (((symbol-function 'hermes-rpc-live-p)
+               (lambda () t)))
+    (hermes-test--reset-global-state)
     (with-temp-buffer
-      (hermes-mode)
-      ;; Stage 1 — session id + initial user msg (idle path).
-      (setq hermes--state
-            (hermes--with-copy hermes--state hermes-state-copy s
-              (setf (hermes-state-session-id s) "sess-1")))
-      (hermes-input-send "hi")
+      (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
+      ;; Stage 1 — register session id (idle path).
+      (hermes--register-session
+       "sess-1"
+       (make-hermes-state :session-id "sess-1" :connection 'connected)
+       (copy-marker (point-min) nil))
+      (let ((hermes--current-session-id "sess-1"))
+      (hermes-send "hi")
       ;; Stage 2 — stream begins, accumulates one chunk.
       (hermes-dispatch (cons "message.start" nil))
       (hermes-dispatch (cons "message.delta"
@@ -652,32 +726,24 @@ heading — i.e. inside the assistant subtree, not after it."
                                (puthash "text" "Hello" h)
                                h)))
       ;; Stage 3 — user types "next" while busy → silently queued.
-      (hermes-input-send "next")
-      (should (equal '("next") (hermes-state-queue hermes--state)))
+      (hermes-send "next")
+      (should (equal '("next") (hermes-state-queue (hermes-test--cur))))
       ;; Stage 4 — message.complete: stream-commit, then drain hook fires
       ;; and dequeues + sends "next" (which renders as a `* user:' heading).
       (hermes-dispatch (cons "message.complete" nil))
-      ;; Inspect buffer.  Expected order: assistant heading → assistant
-      ;; raw drawer → user heading for "next" → user raw drawer for "next".
+      ;; Inspect buffer.  Expected order: assistant heading appears
+      ;; before the dequeued user heading; assistant's response body
+      ;; (the streamed "Hello") sits between them.
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
-             ;; All turns are level-2 siblings under the level-1 session
-             ;; container.  The assistant heading is the only `**' line
-             ;; carrying an `A:' prefix; the user turns carry `U:'.
              (assist-head (string-match "^\\*\\* A: " body))
              (user-next (string-match "^\\*\\* U: next" body))
-             ;; Find the *assistant's* raw drawer: the first :HERMES_RAW:
-             ;; that appears after the assistant heading.
-             (raw-after-assistant
-              (and assist-head
-                   (string-match ":HERMES_RAW:" body assist-head))))
+             (resp-body (and assist-head
+                             (string-match "Hello" body assist-head))))
         (should assist-head)
         (should user-next)
-        (should raw-after-assistant)
-        ;; The assistant's raw drawer must sit *between* its heading and
-        ;; the dequeued user heading.  If the drawer slid past `user-next',
-        ;; we have the corruption described in PLAN.md.
-        (should (< assist-head raw-after-assistant))
-        (should (< raw-after-assistant user-next))))))
+        (should resp-body)
+        (should (< assist-head resp-body))
+        (should (< resp-body user-next))))))))
 
 ;;;; Relative turn levels
 
@@ -688,7 +754,7 @@ assistant stream heading are level 2.  Bump the container to level 3
 and they shift to level 4."
   (dolist (clevel '(1 3))
     (with-temp-buffer
-      (hermes-mode)
+      (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
       ;; Override the container level the major mode just set.  In real
       ;; life this happens once at mode entry; here we simulate a deeper
       ;; container.  We do NOT rewrite the buffer's existing container
@@ -699,10 +765,10 @@ and they shift to level 4."
                    :segments (vector (make-hermes-segment
                                       :type 'text :content "hello" :id "s1"))
                    :timestamp "2024-01-15T10:00:00+0000"))
-             (old hermes--state)
-             (new (hermes--with-copy hermes--state hermes-state-copy s
+             (old (hermes-test--cur))
+             (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                     (setf (hermes-state-pending-turns s) (vector msg)))))
-        (setq hermes--state new)
+        (setf (hermes-test--cur) new)
         (hermes--render old new))
       (let* ((body (buffer-substring-no-properties (point-min) (point-max)))
              (expected-stars (make-string (1+ clevel) ?*)))
@@ -713,11 +779,11 @@ and they shift to level 4."
 ;;;; Stream paint throttling (Phase 1)
 
 (defun hermes-render-test--apply-stream (stream)
-  "Push STREAM into `hermes--state' and run the renderer with old/new diff."
-  (let* ((old hermes--state)
-         (new (hermes--with-copy hermes--state hermes-state-copy s
+  "Push STREAM into `(hermes-test--cur)' and run the renderer with old/new diff."
+  (let* ((old (hermes-test--cur))
+         (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                 (setf (hermes-state-stream s) stream))))
-    (setq hermes--state new)
+    (setf (hermes-test--cur) new)
     (hermes--render old new)))
 
 (ert-deftest hermes-render-test/throttle-defers-subsequent-deltas ()
@@ -725,7 +791,8 @@ and they shift to level 4."
 during cooldown stash a pending snapshot instead of painting.
 (`stream-begin' is always immediate and does not arm the timer.)"
   (with-temp-buffer
-    (hermes-mode)
+    (set-window-buffer (selected-window) (current-buffer))
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))      ; effectively never fires
       ;; stream-begin path — immediate, no timer.
       (hermes-render-test--apply-stream
@@ -750,14 +817,15 @@ during cooldown stash a pending snapshot instead of painting.
         (should (= tick (buffer-modified-tick)))
         (should hermes--stream-render-pending)
         (should (eq hermes--stream-render-pending
-                    (hermes-state-stream hermes--state)))))
+                    (hermes-state-stream (hermes-test--cur))))))
     ;; Cancel the far-future timer so it can't fire into the dead buffer.
     (hermes--stream-flush-cancel)))
 
 (ert-deftest hermes-render-test/throttle-disabled-paints-every-delta ()
   "Throttle = 0 reproduces the legacy behaviour: every delta paints, no timer."
   (with-temp-buffer
-    (hermes-mode)
+    (set-window-buffer (selected-window) (current-buffer))
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 0))
       ;; stream-begin
       (hermes-render-test--apply-stream
@@ -785,7 +853,7 @@ during cooldown stash a pending snapshot instead of painting.
   "stream-commit must paint pending segments synchronously before tearing
 down the bench, so the final tokens never get dropped."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))
       ;; First delta paints "Hi" inline and arms the cooldown.
       (hermes-render-test--apply-stream
@@ -798,13 +866,13 @@ down the bench, so the final tokens never get dropped."
         :segments (vector (make-hermes-segment
                            :type 'text :content "Hi world" :id "s1"))))
       ;; Commit: stream → nil with a pending assistant in pending-turns.
-      (let* ((old hermes--state)
+      (let* ((old (hermes-test--cur))
              (stream (hermes-state-stream old))
              (msg (hermes--message-from-stream stream nil))
-             (new (hermes--with-copy hermes--state hermes-state-copy s
+             (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                     (setf (hermes-state-pending-turns s) (vector msg)
                           (hermes-state-stream s) nil))))
-        (setq hermes--state new)
+        (setf (hermes-test--cur) new)
         (hermes--render old new))
       ;; Buffer must contain the latest text, timer must be gone.
       (should (null hermes--stream-render-timer))
@@ -816,7 +884,8 @@ down the bench, so the final tokens never get dropped."
 (ert-deftest hermes-render-test/throttle-cancelled-on-minor-mode-off ()
   "Disabling the minor mode cancels any in-flight throttle timer."
   (with-temp-buffer
-    (hermes-mode)
+    (set-window-buffer (selected-window) (current-buffer))
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 60))
       ;; stream-begin then a real delta to arm the timer.
       (hermes-render-test--apply-stream
@@ -828,7 +897,7 @@ down the bench, so the final tokens never get dropped."
         :segments (vector (make-hermes-segment
                            :type 'text :content "xy" :id "s1"))))
       (should (timerp hermes--stream-render-timer))
-      (hermes-minor-mode -1)
+      (hermes-org-minor-mode -1)
       (should (null hermes--stream-render-timer))
       (should (null hermes--stream-render-pending)))))
 
@@ -938,7 +1007,7 @@ content must end up in the buffer and the snapshot."
 (ert-deftest hermes-render-test/adaptive-interval-steps-up ()
   "Interval grows with rendered text size."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 0))
       ;; No snapshot → 0 chars → smallest step (25 Hz).
       (should (= 0.04 (hermes--adaptive-throttle-interval)))
@@ -958,7 +1027,7 @@ content must end up in the buffer and the snapshot."
 (ert-deftest hermes-render-test/adaptive-floor-respects-custom-variable ()
   "`hermes-render-stream-throttle' acts as a minimum interval."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (let ((hermes-render-stream-throttle 1.0))
       (setq hermes--stream-segments-snapshot
             (vector (list :length 100)))
@@ -975,43 +1044,37 @@ content must end up in the buffer and the snapshot."
 
 (ert-deftest hermes-render-test/commit-refreshes-committed-region ()
   "After stream-commit, the committed assistant region must receive
-indent + drawer-hide + fold passes.  Regression: previously
-`hermes--finalize-assistant-heading' and the raw-drawer insert ran
-inside `with-silent-modifications', stripping `line-prefix' from the
-rewritten heading and leaving the drawer body visible."
+indent + fold passes.  Regression: previously
+`hermes--finalize-assistant-heading' ran inside
+`with-silent-modifications', stripping `line-prefix' from the
+rewritten heading."
   (with-temp-buffer
-    (hermes-mode)
+    (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
     (org-indent-mode 1)
-    ;; Stage 1: stream begins, accumulates text.
-    (let* ((old hermes--state)
+    ;; Stage 1: stream begins.
+    (let* ((old (hermes-test--cur))
+            (tool (make-hermes-tool :id "t1" :name "ls" :status 'complete
+                                    :output "out" :summary "Listed files"
+                                    :duration 0.1 :context "-la"))
            (stream (make-hermes-stream
                     :segments (vector (make-hermes-segment
-                                       :type 'text :content "Hello"
-                                       :id "s1"))))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+                                       :type 'text :content "Hello" :id "s1")
+                                      (make-hermes-segment
+                                       :type 'tool :content tool :id "s2"))))
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-stream s) stream))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
     ;; Stage 2: commit (message.complete).
-    (let* ((old hermes--state)
+    (let* ((old (hermes-test--cur))
            (stream (hermes-state-stream old))
-           (msg (hermes--message-from-stream stream nil))
-           (new (hermes--with-copy hermes--state hermes-state-copy s
+           (msg (hermes--message-from-stream
+                 stream '(:tokens_sent 10 :tokens_received 20)))
+           (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                   (setf (hermes-state-pending-turns s) (vector msg)
                         (hermes-state-stream s) nil))))
-      (setq hermes--state new)
+      (setf (hermes-test--cur) new)
       (hermes--render old new))
-    ;; The :HERMES_RAW: drawer body should be hidden (invisible overlay).
-    (goto-char (point-min))
-    (should (re-search-forward "^:HERMES_RAW:" nil t))
-    (let ((drawer-invis nil))
-      (save-excursion
-        (forward-line 1)
-        (setq drawer-invis
-              (or (get-text-property (point) 'invisible)
-                  (cl-some (lambda (o) (overlay-get o 'invisible))
-                           (overlays-at (point))))))
-      (should drawer-invis))
     ;; The assistant heading line should have a `line-prefix' property,
     ;; proving `org-indent-add-properties' ran on the rewritten heading.
     (goto-char (point-min))
@@ -1027,16 +1090,16 @@ rewritten heading and leaving the drawer body visible."
         (save-window-excursion
           (set-window-buffer (selected-window) buf)
           (with-current-buffer buf
-            (hermes-mode)
+            (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
             ;; Stage 1 — stream begins.
-            (let* ((old hermes--state)
+            (let* ((old (hermes-test--cur))
                    (stream (make-hermes-stream
                             :segments (vector (make-hermes-segment
                                                :type 'text :content "Hello"
                                                :id "s1"))))
-                   (new (hermes--with-copy hermes--state hermes-state-copy s
+                   (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                           (setf (hermes-state-stream s) stream))))
-              (setq hermes--state new)
+              (setf (hermes-test--cur) new)
               (hermes--render old new))
             ;; Pin the window to point-max and remember it.
             (let ((win (selected-window))
@@ -1046,10 +1109,10 @@ rewritten heading and leaving the drawer body visible."
               ;; Stage 2 — message.complete: stream cleared, no pending-turn
               ;; (assistant commit goes through `hermes--stream-commit',
               ;; which sets `committed-region').
-              (let* ((old hermes--state)
-                     (new (hermes--with-copy hermes--state hermes-state-copy s
+              (let* ((old (hermes-test--cur))
+                     (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                             (setf (hermes-state-stream s) nil))))
-                (setq hermes--state new)
+                (setf (hermes-test--cur) new)
                 (hermes--render old new))
               (should (> (point-max) pre-pmax))
               (should (= (window-point win) (point-max))))))
@@ -1062,23 +1125,23 @@ rewritten heading and leaving the drawer body visible."
         (save-window-excursion
           (set-window-buffer (selected-window) buf)
           (with-current-buffer buf
-            (hermes-mode)
-            (let* ((old hermes--state)
+            (org-mode) (hermes--ensure-container) (hermes-org-minor-mode 1)
+            (let* ((old (hermes-test--cur))
                    (stream (make-hermes-stream
                             :segments (vector (make-hermes-segment
                                                :type 'text :content "Hello"
                                                :id "s1"))))
-                   (new (hermes--with-copy hermes--state hermes-state-copy s
+                   (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                           (setf (hermes-state-stream s) stream))))
-              (setq hermes--state new)
+              (setf (hermes-test--cur) new)
               (hermes--render old new))
             (let* ((win (selected-window))
                    (parked (point-min)))
               (set-window-point win parked)
-              (let* ((old hermes--state)
-                     (new (hermes--with-copy hermes--state hermes-state-copy s
+              (let* ((old (hermes-test--cur))
+                     (new (hermes--with-copy (hermes-test--cur) hermes-state-copy s
                             (setf (hermes-state-stream s) nil))))
-                (setq hermes--state new)
+                (setf (hermes-test--cur) new)
                 (hermes--render old new))
               (should (= (window-point win) parked)))))
       (kill-buffer buf))))
@@ -1095,6 +1158,65 @@ rewritten heading and leaving the drawer body visible."
     (unwind-protect
         (let ((out (hermes--format-segment seg)))
           (should (string-match-p (regexp-quote (format "[[file:%s]]" tmp)) out)))
+      (delete-file tmp))))
+
+(ert-deftest hermes-render-test/format-image-segment-emits-attr-lines ()
+  "Small image (under the display cap): attr_org mirrors natural dims;
+attr_hermes carries canonical metadata including real width/height."
+  (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
+         (seg (make-hermes-segment
+               :type 'image
+               :content (list :path tmp :name "x.png"
+                              :width 100 :height 50
+                              :token-estimate 150)
+               :id "s1")))
+    (unwind-protect
+        (let ((out (hermes--format-segment seg)))
+          (should (string-match-p "^#\\+attr_org: :width 100 :height 50$"
+                                  out))
+          (should (string-match-p
+                   (concat "^#\\+attr_hermes: :name \"x.png\""
+                           " :width 100 :height 50 :token-estimate 150$")
+                   out))
+          (should (string-match-p (regexp-quote (format "[[file:%s]]" tmp))
+                                  out)))
+      (delete-file tmp))))
+
+(ert-deftest hermes-render-test/format-image-segment-scales-large-image ()
+  "Large image: attr_org carries scaled display dims (longest side at
+cap); attr_hermes preserves the real pixel dimensions."
+  (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
+         (seg (make-hermes-segment
+               :type 'image
+               :content (list :path tmp :name "big.png"
+                              :width 1200 :height 800
+                              :token-estimate 999)
+               :id "s1"))
+         (hermes-image-display-max-dim 600))
+    (unwind-protect
+        (let ((out (hermes--format-segment seg)))
+          ;; 1200x800 scaled so longest=600 → 600x400.
+          (should (string-match-p "^#\\+attr_org: :width 600 :height 400$"
+                                  out))
+          (should (string-match-p
+                   (concat "^#\\+attr_hermes: :name \"big.png\""
+                           " :width 1200 :height 800 :token-estimate 999$")
+                   out)))
+      (delete-file tmp))))
+
+(ert-deftest hermes-render-test/format-image-segment-omits-attr-org-when-dims-unknown ()
+  "Unknown dimensions: attr_org omitted, attr_hermes still emitted with name."
+  (let* ((tmp (make-temp-file "hermes-img" nil ".png"))
+         (seg (make-hermes-segment
+               :type 'image
+               :content (list :path tmp :name "y.png" :token-estimate 50)
+               :id "s1")))
+    (unwind-protect
+        (let ((out (hermes--format-segment seg)))
+          (should-not (string-match-p "^#\\+attr_org:" out))
+          (should (string-match-p
+                   "^#\\+attr_hermes: :name \"y.png\" :token-estimate 50$"
+                   out)))
       (delete-file tmp))))
 
 (ert-deftest hermes-render-test/format-image-segment-missing-file ()
@@ -1119,7 +1241,7 @@ rewritten heading and leaving the drawer body visible."
 
 (ert-deftest hermes-render-test/bg-task-buffer-created-on-complete ()
   "`hermes--render-bg-task' creates a `*hermes-bg:sid:tid*' buffer with
-the expected heading, properties, body, and `:HERMES_RAW:' drawer."
+  the expected heading, properties, and body."
   (let* ((task (make-hermes-bg-task
                 :task-id "t42" :prompt "analyze logs"
                 :status 'complete :result "found 3 errors"
@@ -1136,9 +1258,7 @@ the expected heading, properties, body, and `:HERMES_RAW:' drawer."
           (should (string-match-p "^\\* Background: analyze logs" text))
           (should (string-match-p ":HERMES_TASK_ID: t42" text))
           (should (string-match-p ":HERMES_STATUS: complete" text))
-          (should (string-match-p "found 3 errors" text))
-          (should (string-match-p ":HERMES_RAW:" text))
-          (should (string-match-p ":task-id \"t42\"" text))))
+          (should (string-match-p "found 3 errors" text))))
       (kill-buffer buf))))
 
 (ert-deftest hermes-render-test/bg-task-buffer-error-uses-example-block ()
@@ -1156,5 +1276,257 @@ the expected heading, properties, body, and `:HERMES_RAW:' drawer."
         (should (string-match-p "exploded" text))))
     (kill-buffer buf-name)))
 
-(provide 'hermes-render-test)
-;;; hermes-render-test.el ends here
+;;;; Body-canonical :inline-diff / :output / :error via #+name'd blocks
+
+(defun hermes-render-test--name-marker-tight-p (text)
+  "Return non-nil iff every #+name line in TEXT is immediately followed by
+#+begin_ with no blank line between."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (let ((ok t))
+      (while (and ok (re-search-forward "^#\\+name:" nil t))
+        (forward-line 1)
+        (unless (looking-at "^#\\+begin_")
+          (setq ok nil)))
+      ok)))
+
+(ert-deftest hermes-render-test/tool-format-emits-name-marker ()
+  "Edit-formatter prefixes diff with `#+name: hermes-tool-<id>-inline-diff'."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "wf1" :name "write_file" :status 'complete
+                :context "{\"file_path\":\"/tmp/x.c\"}"
+                :inline-diff "+hello\n-world"))
+         (out (plist-get (hermes-tool-format-edit tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-wf1-inline-diff$" out))
+    (should (string-match-p "#\\+begin_src diff" out))))
+
+(ert-deftest hermes-render-test/tool-format-slugs-unsafe-tool-id ()
+  "Unsafe characters in tool-id are slugged before becoming an Org #+name."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "a b:c" :name "Edit" :status 'complete
+                :inline-diff "x"))
+         (out (plist-get (hermes-tool-format-edit tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-a-b-c-inline-diff$" out))))
+
+(ert-deftest hermes-render-test/tool-format-includes-name-marker-output ()
+  "Bash output at terminal status carries `#+name: …-output' before block."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "bash-1" :name "bash" :status 'complete
+                :context "{\"command\":\"echo hi\"}"
+                :output "hi"))
+         (out (plist-get (hermes-tool-format-bash tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-bash-1-output$" out))
+    (should (string-match-p "#\\+begin_example" out))))
+
+(ert-deftest hermes-render-test/tool-format-includes-name-marker-error ()
+  "An error block at terminal status carries `#+name: …-error'."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "bash-1" :name "bash" :status 'error
+                :error "boom"))
+         (out (plist-get (hermes-tool-format-bash tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-bash-1-error$" out))
+    (should (string-match-p "#\\+begin_example" out))))
+
+(ert-deftest hermes-render-test/tool-format-no-name-on-preview ()
+  "Running tools render the preview block with NO `#+name' marker for
+preview/output/error/inline-diff fields.  The `-context' marker is
+allowed (and required) — context is static, set at `tool.start', and
+the parser reads it unconditionally."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "bash-1" :name "bash" :status 'running
+                :context "{\"command\":\"echo hi\"}"
+                :preview "hi"))
+         (out (plist-get (hermes-tool-format-bash tool) :body)))
+    (should-not (string-match-p "^#\\+name: hermes-tool-bash-1-output$" out))
+    (should-not (string-match-p "^#\\+name: hermes-tool-bash-1-error$" out))
+    (should-not (string-match-p "^#\\+name: hermes-tool-bash-1-inline-diff$" out))))
+
+(ert-deftest hermes-render-test/name-marker-tight-to-block ()
+  "Every #+name line is immediately followed by #+begin_ (no blank line)
+across all formatters that emit body-canonical fields."
+  (require 'hermes-tool-formatters)
+  (dolist (case
+           `((,(make-hermes-tool :id "t" :name "Edit" :status 'complete
+                                 :inline-diff "x")
+              ,#'hermes-tool-format-edit)
+             (,(make-hermes-tool :id "t" :name "bash" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-bash)
+             (,(make-hermes-tool :id "t" :name "bash" :status 'error
+                                 :error "boom")
+              ,#'hermes-tool-format-bash)
+             (,(make-hermes-tool :id "t" :name "Read" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-read)
+             (,(make-hermes-tool :id "t" :name "Grep" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-grep)
+             (,(make-hermes-tool :id "t" :name "tool" :status 'complete
+                                 :output "hi")
+              ,#'hermes-tool-format-generic)))
+    (let* ((tool (car case))
+           (fmt (cadr case))
+           (body (plist-get (funcall fmt tool) :body)))
+      (should (hermes-render-test--name-marker-tight-p body)))))
+
+;;;; Body-canonical :todos via named Org table
+
+(defun hermes-render-test--mkht (status id content)
+  (let ((h (make-hash-table :test 'equal)))
+    (puthash "status" status h)
+    (puthash "id" id h)
+    (puthash "content" content h)
+    h))
+
+(ert-deftest hermes-render-test/tool-format-todos-includes-name-marker ()
+  "TodoWrite formatter emits `#+name: hermes-tool-<id>-todos' followed
+immediately by a pipe-prefixed table row."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "completed" "a" "Alpha"))))
+         (out (plist-get (hermes-tool-format-todos tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-tw1-todos$" out))
+    (should (string-match-p "^#\\+name: hermes-tool-tw1-todos\n| " out))))
+
+(ert-deftest hermes-render-test/tool-format-todos-4-column-table ()
+  "Table rows have 4 columns: checkbox, status, id, content."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "completed" "a" "Alpha"))))
+         (out (plist-get (hermes-tool-format-todos tool) :body)))
+    (should (string-match-p "^| \\[X\\] | completed | a | Alpha |$" out))))
+
+(ert-deftest hermes-render-test/tool-format-todos-preserves-pending-status ()
+  "Status `pending' is written verbatim in column 2 — NOT collapsed to
+the same checkbox state as `in_progress'."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "pending" "p" "later"))))
+         (out (plist-get (hermes-tool-format-todos tool) :body)))
+    (should (string-match-p "| pending | p | later |" out))
+    ;; pending uses the `[ ]' checkbox to distinguish from in_progress `[-]'.
+    (should (string-match-p "^| \\[ \\] | pending " out))))
+
+(ert-deftest hermes-render-test/name-marker-tight-to-table ()
+  "`#+name:' line is immediately followed by `|' row, no blank line."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "tw1" :name "TodoWrite" :status 'complete
+                :todos (list (hermes-render-test--mkht "completed" "a" "x"))))
+         (body (plist-get (hermes-tool-format-todos tool) :body)))
+    (with-temp-buffer
+      (insert body)
+      (goto-char (point-min))
+      (should (re-search-forward "^#\\+name:" nil t))
+      (forward-line 1)
+      (should (looking-at "^[ \t]*|")))))
+
+(ert-deftest hermes-render-test/refresh-region-aligns-todo-tables ()
+  "`hermes--refresh-region' aligns named Hermes todo tables in place
+because `with-silent-modifications' suppresses Org's auto-align hooks."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* h\n#+name: hermes-tool-t1-todos\n"
+            "| [X] | completed | a | Alpha |\n"
+            "| [ ] | pending | bb | Beta |\n")
+    (hermes--refresh-region (point-min) (point-max))
+    ;; Column 2's widest cell is `completed' (9 chars), so the `pending'
+    ;; row gains trailing spaces inside its cell.
+    (goto-char (point-min))
+    (should (re-search-forward "| pending +|" nil t))))
+
+(ert-deftest hermes-render-test/refresh-region-skips-foreign-tables ()
+  "`hermes--refresh-region' must not touch tables outside the
+`hermes-tool-' namespace — user tables are left as-is."
+  (with-temp-buffer
+    (org-mode)
+    (insert "* h\n#+name: user-table\n| a | b |\n| longer | x |\n")
+    (let ((before (buffer-string)))
+      (hermes--refresh-region (point-min) (point-max))
+      (should (equal before (buffer-string))))))
+
+(ert-deftest hermes-render-test/tool-format-includes-context-name-marker ()
+  "Tools with :context emit `#+name: hermes-tool-<id>-context' before
+the example block, so the parser can re-read context body-canonically."
+  (require 'hermes-tool-formatters)
+  (let* ((tool (make-hermes-tool
+                :id "bash-1" :name "bash" :status 'complete
+                :context "ls -la /tmp"
+                :output "ok"))
+         (out (plist-get (hermes-tool-format-bash tool) :body)))
+    (should (string-match-p "^#\\+name: hermes-tool-bash-1-context$" out))
+    (should (string-match-p "#\\+name: hermes-tool-bash-1-context\n#\\+begin_example"
+                            out))))
+
+(ert-deftest hermes-render-test/tool-format-context-always-named ()
+  "Context block is `#+name'd unconditionally — including when the tool
+is still running.  Context is set once at `tool.start' and never
+mutates, so there is no preview-vs-final ambiguity to gate on."
+  (require 'hermes-tool-formatters)
+  (dolist (status '(running generating complete error))
+    (let* ((tool (make-hermes-tool
+                  :id "t" :name "Edit" :status status
+                  :context "/tmp/x.c"))
+           (out (plist-get (hermes-tool-format-edit tool) :body)))
+      (should (string-match-p "^#\\+name: hermes-tool-t-context$" out)))))
+
+(ert-deftest hermes-render-test/recursive-dispatch-targets-session-slot ()
+  "Nested `:pending-turns-clear' inside `hermes--render' must write to the
+session's state slot, not the global one.
+
+Regression for the bench bug: bench / section buffers make
+`hermes--current-session-id' buffer-local.  When the outer dispatch
+runs in such a buffer, the dynamic let-bind only covers that buffer;
+once `hermes--render' switches into the org buffer with
+`with-current-buffer', the dynamic value would drop back to the global
+binding (nil) unless `hermes--render' rebinds it.  Without the rebind,
+the recursive `:pending-turns-clear' silently writes to
+`hermes--global-state' and the session's `pending-turns' grows
+unbounded — surfacing as duplicate `** U:' headings in the org buffer
+on every subsequent dispatch."
+  (require 'hermes-test-helpers)
+  (hermes-test--reset-global-state)
+  (let* ((sid "render-test-sid")
+         (org-buf (generate-new-buffer " *hermes-render-test-org*"))
+         (origin  (generate-new-buffer " *hermes-render-test-origin*")))
+    (unwind-protect
+        (progn
+          ;; Org viewer: registered, hermes-org-minor-mode active so the
+          ;; render hook installs.
+          (with-current-buffer org-buf
+            (org-mode)
+            (hermes--ensure-container)
+            (hermes-org-minor-mode 1)
+            (hermes--register-session
+             sid
+             (make-hermes-state :session-id sid :connection 'connected)
+             (copy-marker (point-min) nil)))
+          ;; Origin buffer mimics a bench: `hermes--current-session-id'
+          ;; lives buffer-local here.  Dispatch from this buffer.
+          (with-current-buffer origin
+            (setq-local hermes--current-session-id sid)
+            (let ((hermes--current-session-id sid))
+              (hermes-dispatch (cons :user-submit (list :text "hi")))))
+          ;; Session slot must be clean; global must not have absorbed the
+          ;; pending entry.
+          (let ((session-state (gethash sid hermes--sessions)))
+            (should (zerop (length (hermes-state-pending-turns session-state)))))
+          (should (zerop (length (hermes-state-pending-turns hermes--global-state))))
+          ;; Org buffer must contain exactly one user heading.
+          (with-current-buffer org-buf
+            (goto-char (point-min))
+            (should (= 1 (count-matches "^\\*\\* U: " (point-min) (point-max))))))
+      (when (buffer-live-p org-buf) (kill-buffer org-buf))
+      (when (buffer-live-p origin) (kill-buffer origin)))))
+
+(provide 'hermes-org-render-test)
+;;; hermes-org-render-test.el ends here

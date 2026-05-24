@@ -29,20 +29,32 @@ hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes-mode.el: route-
                                                       │
                                                       │  pure reducer
                                                       ▼
-                                              hermes--state (swap)
-                                                      │
-                                                      │  run-hook
-                                                      ▼
-                                               hermes--render (hermes-render.el)
+                                               hermes--state (swap)
                                                        │
-                                                       ├─► diff & edit ──► Org buffer (*hermes:SID*)
+                                                       │  run-hook
+                                                       ▼
+                                                hermes--render (hermes-render.el)
+                                                        │
+                                                        ├─► diff & edit ──► Org buffer (*hermes:SID*)
+                                                        │
+                                                         └─► bench active? ──► hermes-comint--paint-stream
+                                                                     │
+                                                                     │  atomic ephemeral rebuild
+                                                                     ▼
+                                                     Comint bench buffer (*hermes-bench:SID*)
+
+                   hermes-comint.el: hermes-comint--refresh
                                                        │
-                                                       └─► bench active? ──► hermes-bench--stream-update
-                                                                   │
-                                                                   │  rebuild ephemeral zones
-                                                                   ▼
-                                                           Bench buffer (*hermes-bench:SID*)
+                                                       │  appends new turns / repaints streaming region
+                                                       ▼
+                                              Comint buffer (*hermes-comint:SID*)
 ```
+
+**Comint view path:** The comint view (`hermes-comint.el`) attaches a separate renderer to `hermes-state-change-hook`. When a dispatch modifies `turns`, `hermes-comint--refresh` fires independently from the org renderer. It appends only new turns to the read-only output region above its inline `> ` prompt; the active stream is painted into a pending region between `output-end` and `prompt-start` and sealed on `message.complete`. It has no awareness of org buffers, `pending-turns`, or `hermes-org-minor-mode` — it is a pure projection of the state atom.
+
+**Org view path:** The org renderer (`hermes-org-render.el`) drains `pending-turns` into the org buffer and renders the live stream segment-by-segment. The bench (`hermes-comint-mode` with `hermes-comint--bench-p = t`) renders the current ephemeral turn (user prompt, steer, status, stream) above a writable prompt.
+
+Both viewers coexist: opening a comint view for an existing session does not affect the org buffer, and vice versa. The `turns` vector is the shared, sole authority.
 
 **Output path:**
 
@@ -61,11 +73,12 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-state.el` | 399 | Buffer-local state atoms + pure reducer |
 | `hermes-render.el` | 409 | Diff-based Org buffer renderer |
 | `hermes-mode.el` | 225 | org-mode derived major mode + event routing + entrypoint |
-| `hermes-bench.el` | ~350 | Persistent bottom bench (major mode only): last-turn display + input |
+| `hermes-comint.el` (bench mode) | — | Bench lives in comint via `hermes-comint--bench-p = t`; see line above for comint line count |
 | `hermes-input.el` | 209 | Input queue, slash commands, history |
 | `hermes-prompts.el` | 116 | Minibuffer prompt handlers (approval, clarify, secret, sudo) |
 | `hermes-compose.el` | 81 | Multi-line org-mode composer |
-| `hermes-sessions.el` | 174 | tabulated-list-mode sessions sidebar |
+| `hermes-comint.el` | 1,209 | Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer; zero external deps); also hosts the bench via `hermes-comint--bench-p = t` |
+| `hermes-sessions.el` | ~420 | Minibuffer selectors (`hermes-current-sessions`, `hermes-stored-{resume,branch,delete,save}`); also hosts the DB→Org renderer and the resume/branch install path |
 | `hermes-skin.el` | 83 | Gateway skin → face-remap |
 | `hermes-md.el` | 164 | Markdown → Org syntax converter |
 | `hermes-dashboard.el` | 393 | Vanilla Emacs dashboard (`*Hermes*`) |
@@ -74,7 +87,7 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-doom.el` | 66 | Doom `SPC h` leader prefix; pulls in Evil, Transient, Notifications |
 | `hermes-evil.el` | 28 | Normal-state Evil C-c bindings (works in any Evil-equipped Emacs) |
 | `hermes-doom-theme.el` | 161 | Hermes-branded dark theme |
-| **Total** | **~3,342** | |
+| **Total** | **~3,853** | |
 
 ---
 
@@ -117,12 +130,12 @@ hermes-tool
 ├── id          :: string (tool_id from gateway, or falls back to name)
 ├── name        :: string
 ├── status      :: 'generating | 'running | 'complete | 'error
-├── context     :: tool args preview from tool.start
+├── context     :: tool args preview from tool.start — body-canonical
 ├── preview     :: live preview from tool.progress
-├── inline-diff :: diff output from tool.complete
-├── todos       :: list of plists (:text :done)
-├── output      :: string or nil
-├── error       :: string or nil
+├── inline-diff :: diff output from tool.complete — body-canonical
+├── todos       :: list of hash-tables ("content" "status" "id") — body-canonical
+├── output      :: string or nil — body-canonical
+├── error       :: string or nil — body-canonical
 └── duration    :: number or nil
 
 hermes-subagent
@@ -246,16 +259,17 @@ sub-renderers:
   (when (derived-mode-p 'org-mode)
     (org-element-cache-reset)
     (hermes--refresh-region msg-append-start (point-max))        ; committed tail
-    (hermes--refresh-region bench-start bench-end)))             ; live bench
+    (hermes--refresh-region stream-start stream-end)))           ; live stream region
 ```
 
-### Bench architecture
+### Stream region architecture
 
-The **bench** is the live (in-flight) assistant turn region. Renderers mutate
-inside the bench every stream tick; everything outside is frozen — never touched
-after the previous turn committed. This means:
+The **stream region** is the live (in-flight) assistant turn area in the org
+buffer.  Renderers mutate inside the stream region every stream tick;
+everything outside is frozen — never touched after the previous turn committed.
+This means:
 
-- The user's manual fold state above the bench survives forever.
+- The user's manual fold state above the stream region survives forever.
 - Post-passes scope their work to only the changed tail, not the whole buffer.
 
 ### `hermes--refresh-region` — post-pass repairs
@@ -270,20 +284,19 @@ not suppressed by `with-silent-modifications`:
    properties so new sub-headlines get correct virtual indentation.
 3. `hermes--hide-drawers` — collapses `:PROPERTIES:` drawers with plain overlays.
 
-### Raw drawer I/O
+### Body-canonical structured data
 
-Every committed turn gets a `:HERMES_RAW:` drawer at the end of its subtree:
+All structured data is body-canonical in the visible Org buffer — no hidden drawers:
 
-```elisp
-(defun hermes--insert-raw-drawer (msg)
-  "Serialize MSG to a plist, insert :HERMES_RAW:...:END:, auto-fold.")
+- **Usage counters** → `HERMES_USAGE_*` properties on turn headings
+- **Image metadata** → `#+attr_org:` / `#+attr_hermes:` lines above `[[file:…]]` links
+- **Tool fields** → `#+name: hermes-tool-<id>-{output,context,inline-diff,error}` blocks;
+  `TOOL_STATUS`, `TOOL_NAME`, `TOOL_DURATION`, `TOOL_SUMMARY` heading properties
+- **Subagents** → child `HERMES_KIND: SUBAGENT` headings
+- **Timestamps** → `:HERMES_TIMESTAMP:` heading properties
 
-(defun hermes--extract-raw-drawer (&optional pos)
-  "Find :HERMES_RAW: drawer at POS and return its plist.")
-```
-
-The drawer is auto-folded after insertion so it stays out of the user's way.
-It is only visible when the user explicitly expands it.
+Text-only turns have no extra structure. Everything is parsed back from the
+visible buffer on resume, so user edits are preserved.
 
 ---
 
@@ -333,7 +346,7 @@ M-x hermes → hermes → hermes-new-session
 ### `hermes-send`
 
 ```
-C-c C-i → hermes-send → hermes-input-send (hermes-input.el)
+C-c C-i → hermes-send → hermes-send (hermes-input.el)
   │
   │  Read input via read-string (with history and slash-completion)
   │
@@ -367,7 +380,7 @@ Events handled: `approval.request`, `clarify.request`, `sudo.request`,
 
 `C-c C-l` opens a `*hermes-compose*` buffer in `org-mode`.
 Keybindings:
-- `C-c C-c` → send content through `hermes-input-send`, kill buffer
+- `C-c C-c` → send content through `hermes-send`, kill buffer
 - `C-c C-k` → kill buffer (cancel)
 
 The composer is a clean org-mode buffer (not hermes-mode derived) to avoid
@@ -375,21 +388,26 @@ polluting the conversation buffer's state.
 
 ---
 
-## Sessions Sidebar (`hermes-sessions.el`)
+## Session selectors (`hermes-sessions.el`)
 
-`*Hermes Sessions*` is a `tabulated-list-mode` buffer listing all sessions
-in `hermes--session-buffers`:
+All session management is minibuffer-driven — no dedicated buffers, no
+tabulated-list modes.  Each command runs a `completing-read` with
+`:annotation-function` metadata, so vertico/marginalia/consult users get
+rich annotations for free and vanilla `completing-read` users still see
+inline metadata.
 
-| Column | Content |
-|--------|---------|
-| Session ID | short (8 chars) |
-| Model | from session-info |
-| Status | from connection state |
+| Command | Picks from | Action |
+|---------|------------|--------|
+| `hermes-current-sessions` | `hermes--session-buffers` (live) | switch to selected buffer |
+| `hermes-stored-resume` | `session.list` (gateway DB) | `hermes-resume-from-db` |
+| `hermes-stored-branch` | `session.list` | `hermes-branch-from-db` |
+| `hermes-stored-delete` | `session.list` | `session.delete` (confirm) |
+| `hermes-stored-export-as-json` | `session.list` | `session.save` (JSON export) |
 
-Keybindings: `RET` to switch, `k` to close session, `+` to create new, `g` refresh.
-
-Auto-refreshes on every incoming event (cheap because short-circuits when
-the sidebar isn't open).
+The `hermes-stored-*` commands accept a prefix argument to restrict the
+candidate list to the current project's CWD (`hermes-project-detect-cwd`).
+Annotations show: model / status / msg count / project for live rows,
+title / source / msg count / started-time for stored rows.
 
 ---
 
@@ -444,145 +462,164 @@ inheriting from font-lock faces.
 
 ## Org Buffer Structure
 
-### Final hierarchy after each turn
+### Final hierarchy after each turn (v2 format)
 
 \```
 #+TITLE: hermes
 
-* user: what is 2+2?                                    :hermes:
+** U: what is 2+2?
 :PROPERTIES:
-:HERMES_SESSION: a1b2c3d4
-:HERMES_MODEL: nvidia/nemotron-3
+:HERMES_KIND:     USER
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    nvidia/nemotron-3
 :HERMES_TIMESTAMP: 2026-05-14T03:56:12+0200
-:ID: abc123
+:ID:              abc123
 :END:
 what is 2+2?
 
-:HERMES_RAW:
-(:kind user
- :text "what is 2+2?"
- :segments [(:type text :content "what is 2+2?" :id "seg-1")]
- :subagents []
- :usage nil
- :timestamp "2026-05-14T03:56:12+0200")
-:END:
-
-** assistant                                            :hermes:
+** A: Sure, 2+2 is 4.
 :PROPERTIES:
+:HERMES_KIND:     ASSISTANT
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    nvidia/nemotron-3
 :HERMES_TIMESTAMP: 2026-05-14T03:56:12+0200
-:ID: def456
+:HERMES_USAGE_TOKENS_SENT: 1450
+:HERMES_USAGE_TOKENS_RECEIVED: 892
+:ID:              def456
+:END:
+*** Response
+:PROPERTIES:
+:HERMES_KIND: RESPONSE
 :END:
 Sure, 2+2 is 4.
-*** calculator (0.3s)                                 :hermes-tool:
+
+*** DONE calculator (0.3s)
 :PROPERTIES:
-:tool_id:  calc-01
-:status:   complete
-:duration: 0.3
+:HERMES_KIND: TOOL
+:TOOL_ID:     calc-01
+:TOOL_NAME:   calculator
+:TOOL_STATUS: complete
+:TOOL_DURATION: 0.3
 :END:
+#+name: hermes-tool-calc-01-output
 #+begin_example
 4
 #+end_example
 
-:HERMES_RAW:
-(:kind assistant
- :text "Sure, 2+2 is 4."
- :segments
- [(:type text :content "Sure, 2+2 is 4." :id "seg-1")
-  (:type tool
-   :content
-   (:id "calc-01" :name "calculator" :status complete
-    :output "4" :error nil :duration 0.3)
-   :id "seg-2")]
- :subagents []
- :usage (:tokens_sent 1450 :tokens_received 892)
- :timestamp "2026-05-14T03:56:12+0200")
-:END:
-
-* user: now 3+3?                                        :hermes:
+** U: now 3+3?
 :PROPERTIES:
-:HERMES_SESSION: a1b2c3d4
-:HERMES_MODEL: openai/gpt-4o       ← model changed
+:HERMES_KIND:     USER
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    openai/gpt-4o       ← model changed
 :HERMES_TIMESTAMP: 2026-05-14T03:57:00+0200
-:ID: ghi789
+:ID:              ghi789
 :END:
 now 3+3?
 
-:HERMES_RAW:
-(:kind user ...)
-:END:
-
-** assistant                                            :hermes:
+** A: It's 6.
 :PROPERTIES:
+:HERMES_KIND:     ASSISTANT
+:HERMES_SESSION:  a1b2c3d4
+:HERMES_MODEL:    openai/gpt-4o
 :HERMES_TIMESTAMP: 2026-05-14T03:57:00+0200
-:ID: jkl012
+:ID:              jkl012
+:END:
+*** Response
+:PROPERTIES:
+:HERMES_KIND: RESPONSE
 :END:
 It's 6.
-
-:HERMES_RAW:
-(:kind assistant ...)
-:END:
 \```
 
 ### Property rules
 
-| Heading | `HERMES_SESSION` | `HERMES_MODEL` | `HERMES_TIMESTAMP` | `:ID:` |
-|---------|:---:|:---:|:---:|:---:|
-| `* user` | yes | yes | yes | `org-id-get-create` |
-| `** assistant` | no | no | yes | `org-id-get-create` |
-| `*** tool` | no | no | no | `org-id-get-create` |
-| `* system` | yes | yes | yes | `org-id-get-create` |
+| Heading | `HERMES_KIND` | `HERMES_SESSION` | `HERMES_MODEL` | `HERMES_TIMESTAMP` | `:ID:` |
+|---------|:---:|:---:|:---:|:---:|:---:|
+| `** user` | `USER` | yes | yes | yes | `org-id-get-create` |
+| `** assistant` | `ASSISTANT` | yes | yes | yes | `org-id-get-create` |
+| `*** Response` | `RESPONSE` | no | no | no | no |
+| `*** Reasoning` | `REASONING` | no | no | no | no |
+| `*** Tool` | `TOOL` | no | no | no | no |
+| `**** Subagent` | `SUBAGENT` | no | no | no | no |
+| `** system` | `SYSTEM` | yes | yes | yes | `org-id-get-create` |
 
 `HERMES_MODEL` can be empty on the first turn if `session.info` hasn't arrived yet.
 
-### Tag rules
-
-| Heading | Tag |
-|---------|-----|
-| `* user` | `:hermes:` |
-| `** assistant` | `:hermes:` |
-| `*** tool` | `:hermes-tool:` |
-| `* system` | `:hermes:` |
-
 ### Heading truncation
 
-- User/system heading shows the first line of message text (no trailing newline)
-- Assistant heading always shows bare `** assistant` (no truncation)
+- User/system heading shows the first line of message text prefixed with `U:` / `S:`
+- Assistant heading shows the first line of response text prefixed with `A:`
 
 ---
 
 ## Save, Load, and Resume
 
-Because the Org buffer is the canonical source of truth, saving a conversation
-is just `(write-region (point-min) (point-max) "chat.org")`.
+The Org buffer is the *snapshot* source of truth; the gateway's SQLite DB
+(`~/.hermes/state.db`) is the *live* shared cache used by all clients on
+the same machine.  Saving a snapshot is just
+`(write-region (point-min) (point-max) "chat.org")`.  Reopening that file
+gives a "stale heading" — a `:HERMES_SESSION:` property that no longer has
+a matching in-memory state.
 
-### `hermes-resume-buffer`
+### Stale-heading prompt
 
-`M-x hermes-resume-buffer` (in a `hermes-mode` buffer) parses all level-1
-headings, extracts their `:HERMES_RAW:` drawers, reconstructs `hermes-message`
-structs via `hermes--plist-to-message`, and sends them as a `:history` field
-in `session.create`:
+`M-x hermes` (or `hermes-send`) on a stale heading dispatches through
+`hermes--handle-stale-heading`, which prompts the user:
 
-```elisp
-(let* ((history (hermes--parse-buffer-messages))
-       (history-plists (mapcar #'hermes--message-to-plist (append history nil))))
-  (hermes-rpc-request
-   "session.create"
-   (list :cols 100 :history (vconcat history-plists))
-   ...))
-```
+1. **Load from org** — fresh gateway session, history seeded from the
+   visible buffer on the first prompt (`hermes--build-history-text`).
+   Current buffer keeps its identity.  Discards any DB turns that occurred
+   after the snapshot.
+2. **Resume from DB** — `session.resume` returns a NEW session id plus the
+   stored message list; a fresh `*hermes:<new-sid>*` buffer is rendered
+   from the response.  The history seed is stamped immediately so the next
+   prompt skips re-seeding.
+3. **Branch from DB** — `session.branch` forks the DB session, then
+   `session.resume` is called on the new id; same effect as resume but the
+   original DB session is preserved.
 
-**Caveat:** The gateway may not currently accept `:history` in `session.create`.
-If ignored, the session starts cold (no seeded context) but the buffer still
-contains the full conversation for local reference. Verify with the gateway spec
-before relying on resume.
+When the gateway returns code `4007 "session not found"` (DB wiped, old
+SID format, etc.), the error message hints to pick "Load from org"
+instead.
+
+### `hermes-reload-from-org`
+
+`M-x hermes-reload-from-org` (in a `hermes-mode` buffer) is the direct entry point
+for option (1): creates a fresh gateway session bound to the current buffer.
+The gateway does not accept a `:history` parameter in `session.create`, so
+context is restored on the first outgoing prompt via the history seed
+(`hermes--build-history-text`).
+
+### `hermes-resume-from-db` / `hermes-branch-from-db`
+
+Programmatic entry points for options (2) and (3).  Also reachable from
+the minibuffer commands (`M-x hermes-stored-resume`, `M-x hermes-stored-branch`).  Both call
+`session.resume` and install the response via `hermes--db-install-into-buffer`,
+which activates `hermes-mode`, writes `HERMES_SESSION` / `HERMES_CWD`
+properties, appends the rendered body, and stamps `hermes--seeded-session-id`
+to suppress re-seeding.
+
+### DB-resumed buffers are lossy
+
+The gateway pre-flattens history via `_history_to_messages` for client
+display: assistant text → `{role:assistant, text}`; each tool call →
+its own `{role:tool, name, context}` row where `context` is a summarised
+argument string.  `tool_call_id`, reasoning fields, subagents, images,
+usage, and timestamps are NOT surfaced.  The Phase-3 renderer
+(`hermes--db-messages-to-org-body`) emits a flat structure reflecting
+exactly this — no `:HERMES_META:` drawers, no `*** Reasoning` headings,
+no `#+name:'d` tool blocks.  Users wanting full fidelity round-trips
+must save and reopen the `.org` snapshot rather than relying on the DB.
 
 ### Manual editing safety
 
-`:HERMES_RAW:` drawers are human-readable Elisp plists. A user can manually edit
-the rendered body (e.g. fix a typo in the assistant's response) and the drawer
-will still contain the original raw data. If the drawer is corrupted (unreadable
-plist), `hermes--extract-raw-drawer` returns `nil` and that turn is simply skipped
-during parse — the buffer remains valid.
+All data is body-canonical in heading properties, Org blocks, and child
+headings.  A user can manually edit the rendered body (e.g. fix a typo in
+the assistant's response) and the edit is preserved on resume because text
+and properties are parsed back from the visible buffer, not from a hidden
+drawer.  Corrupting a property value or Org block may cause that data to
+be absent on resume, but the buffer remains valid and the text still
+round-trips.
 
 ## Doom Integration
 
@@ -637,7 +674,7 @@ identify tools. (See [13-operational-notes.md](13-operational-notes.md) for deta
 `with-silent-modifications` suppresses Org change hooks. The cache is reset
 after the render exits the silent block, but only when `structural-change` or
 `bench-touched-p` is true. Streaming ticks (`stream-update`) do **not** reset
-the cache — they only reshape the live bench, so the cache stays valid for
+the cache — they only reshape the live stream region, so the cache stays valid for
 the frozen portion of the buffer. This is a major performance win in long
 conversations.
 
@@ -646,18 +683,22 @@ conversations.
 All `org-id-get-create` calls are guarded with `(when (derived-mode-p 'org-mode) ...)`
 to prevent Org warnings on fundamental-mode temp buffers in tests.
 
-### Buffer as canonical source of truth
+### The Org file as a portable snapshot
 
-The state atom no longer stores committed messages. Instead, every turn writes
-a `:HERMES_RAW:` drawer to the Org buffer. Benefits:
+The state atom stores only ephemeral data.  Every committed turn carries
+`:HERMES_KIND:` and `:HERMES_TIMESTAMP:` properties; text content, tool
+blocks, subagent trees, image references, and usage counters are all
+body-canonical — parsed back from the visible buffer on resume.  Benefits:
+- No split-brain — user edits to visible text are preserved on resume.
 - No duplication — conversation text exists only once (in the buffer).
-- Natural persistence — save the `.org` file, close Emacs, reopen it.
-- Resume — `hermes-resume-buffer` parses drawers and seeds history into the gateway.
+- Natural snapshot — save the `.org` file, close Emacs, reopen it.
+- Load org — `hermes-reload-from-org` parses visible headings and seeds
+  history into a fresh gateway session via the first-prompt seed.
 
-Trade-off: `hermes-md-to-org` is one-way (markdown→Org). A reverse converter
-would be needed to send raw markdown back to the gateway from a loaded buffer.
-For now, the gateway receives the Elisp plist history, which it may or may
-not understand.
+Trade-off: `hermes-md-to-org` is one-way (markdown→Org). The gateway receives
+Org-formatted text in the history payload. This drift is acceptable for v1
+(gptel precedent); a reverse `hermes-org-to-md` converter can be added later
+if needed.
 
 ### `with-silent-modifications` in render
 

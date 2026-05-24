@@ -1,12 +1,14 @@
 ;; -*- mode: emacs-lisp; lexical-binding: t -*-
 
 (eldev-use-package-archive 'gnu)
+(eldev-use-package-archive 'nongnu)
+(eldev-use-package-archive 'melpa)
 
 (setf eldev-main-fileset
       '("hermes-events.el"
         "hermes-rpc.el"
         "hermes-state.el"
-        "hermes-render.el"
+        "hermes-org-render.el"
         "hermes-prompts.el"
         "hermes-input.el"
         "hermes-sessions.el"
@@ -16,17 +18,20 @@
         "hermes-dashboard.el"
         "hermes-org.el"
         "hermes-config.el"
-        "hermes-bench.el"
         "hermes-image.el"
         "hermes-project.el"
         "hermes-bg.el"
+        "hermes-migrate.el"
+        "hermes-comint.el"
         "hermes-mode.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"
-                           "test/hermes-render-test.el"
+                           "test/hermes-org-render-test.el"
                            "test/hermes-md-test.el"
                            "test/hermes-input-test.el"
                            "test/hermes-org-test.el"
                            "test/hermes-bench-test.el"
                            "test/hermes-bg-test.el"
-                           "test/hermes-project-test.el"))
+                           "test/hermes-project-test.el"
+                           "test/hermes-sessions-test.el"
+                           "test/hermes-comint-test.el"))

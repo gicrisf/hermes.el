@@ -23,12 +23,11 @@
 (require 'hermes-state)
 
 (declare-function projectile-project-root "projectile" (&optional dir))
-(declare-function hermes--container-marker-at-point "hermes-mode" ())
-(declare-function hermes--primary-session-buffer "hermes-mode" ())
-(declare-function hermes--buffer-message-count "hermes-mode" ())
-(declare-function hermes-bench-live-p "hermes-bench" (&optional buffer))
+(declare-function hermes--container-marker-at-point "hermes-org" ())
+(declare-function hermes--primary-session-buffer "hermes-session" ())
+(declare-function hermes--buffer-message-count "hermes-org-minor-mode" ())
+(declare-function hermes-bench-live-p "hermes-comint" (&optional buffer))
 
-(defvar hermes--state)
 (defvar hermes--container-level)
 
 ;;;; Customization
@@ -128,9 +127,9 @@ Order: git-modified first, then recentf, then open file-buffers."
 ;;;; Context string builder
 
 (defun hermes-project--build-context (&optional state)
-  "Build a project-context prefix string for STATE (default `hermes--state').
+  "Build a project-context prefix string for STATE (default current).
 Returns nil if no cwd is set or no files can be collected."
-  (let* ((st (or state (and (boundp 'hermes--state) hermes--state)))
+  (let* ((st (or state (hermes--current-state)))
          (root (and st (hermes-state-cwd st)))
          (files (and root (hermes-project--recent-files root))))
     (when (and root files)
@@ -181,11 +180,9 @@ Silently no-ops if not in a hermes/org buffer or no container heading exists."
   "Apply CWD to the current session: state + org property.
 The gateway is intentionally not notified; runtime cwd changes are not
 supported by the gateway.  CWD may be nil (clears the local cwd)."
-  (when (boundp 'hermes--state)
+  (when (hermes--current-state)
     (hermes-dispatch (cons :set-cwd (list :cwd cwd))))
-  (hermes-project--write-org-property cwd)
-  (when (fboundp 'hermes-sessions--refresh-if-open)
-    (hermes-sessions--refresh-if-open)))
+  (hermes-project--write-org-property cwd))
 
 ;;;; Interactive commands
 
@@ -224,14 +221,14 @@ The file is chosen from those under the session's `cwd' via
 — it does not send a sidecar attachment.  Distinct from
 `hermes-image-attach-file', which uses the `image.attach' RPC."
   (interactive
-   (let* ((root (or (and (boundp 'hermes--state)
-                         (hermes-state-cwd hermes--state))
+   (let* ((root (or (let ((st (hermes--current-state)))
+                      (and st (hermes-state-cwd st)))
                     (hermes-project-detect-cwd)
                     default-directory))
           (default-directory root))
      (list (read-file-name "Attach project file: " root nil t))))
-  (let* ((root (or (and (boundp 'hermes--state)
-                        (hermes-state-cwd hermes--state))
+  (let* ((root (or (let ((st (hermes--current-state)))
+                       (and st (hermes-state-cwd st)))
                    (hermes-project-detect-cwd)))
          (rel (if root (file-relative-name file root) file))
          (target (and (fboundp 'hermes-bench-live-p)
@@ -262,7 +259,7 @@ a half-finished conversation from its files."
         (with-current-buffer buf
           (when (and (fboundp 'hermes--buffer-message-count)
                      (zerop (hermes--buffer-message-count))
-                     (not (equal root (hermes-state-cwd hermes--state))))
+                     (not (equal root (hermes-state-cwd (hermes--current-state)))))
             (hermes-project--apply-cwd root)))))))
 
 (with-eval-after-load 'projectile

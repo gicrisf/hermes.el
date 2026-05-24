@@ -18,7 +18,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'ansi-color)
 (require 'hermes-state)
 
 ;;;; Registry
@@ -122,15 +121,19 @@ failure.  Keys are downcased symbols, values are strings."
       (format "#+begin_example\n%s\n#+end_example\n" content)
     ""))
 
-(defun hermes-tool--strip-ansi (string)
-  "Remove ANSI escape sequences from STRING.
-Returns nil for nil input so callers can use `when' / `and' guards
-without spuriously matching on an empty result."
-  (when (and string (not (string-empty-p string)))
-    (with-temp-buffer
-      (insert string)
-      (ansi-color-filter-region (point-min) (point-max))
-      (buffer-string))))
+(defun hermes-tool--context-block (tool)
+  "Return a `#+name'd example block carrying TOOL's raw context string,
+or the empty string when no context is set.  Body-canonical: the
+parser re-reads this via `hermes--extract-named-block'.  Unlike
+preview/output blocks, the `#+name' marker is emitted unconditionally
+(no terminal-status gate) because context is static, set once at
+`tool.start' and never updated."
+  (let ((ctx (hermes-tool-context tool)))
+    (if (and ctx (stringp ctx) (not (string-empty-p ctx)))
+        (concat (format "#+name: hermes-tool-%s-context\n"
+                        (hermes--slug-for-name (hermes-tool-id tool)))
+                (hermes-tool--example ctx))
+      "")))
 
 (defun hermes-tool--running-or-complete (tool body-complete body-running)
   "Choose body fragment by TOOL status."
@@ -138,6 +141,51 @@ without spuriously matching on an empty result."
     ('complete body-complete)
     ('error    body-complete)
     (_         body-running)))
+
+(defun hermes-tool--format-todos-table (tool todos)
+  "Render TODOS as a `#+name'd Org table for TOOL.  Returns nil when
+TODOS is empty.
+
+The table has four columns: `[X|-|space]` (visual sugar), the
+verbatim gateway `status` string, `id`, and `content`.  Column 2
+preserves all gateway statuses (including `pending` and any others
+the gateway might introduce); the parser reads it verbatim and
+ignores column 1.
+
+Body-canonical: the parser re-reads this via
+`hermes--extract-named-table' + `hermes--parse-todos-table'."
+  (when todos
+    (let ((slug (hermes--slug-for-name (hermes-tool-id tool)))
+          (rows (mapconcat
+                 (lambda (todo)
+                   (let* ((content (or (hermes--get todo "content") ""))
+                          (status  (or (hermes--get todo "status") ""))
+                          (id      (or (hermes--get todo "id") ""))
+                          (check   (pcase status
+                                     ("completed"   "X")
+                                     ("in_progress" "-")
+                                     (_             " "))))
+                     (format "| [%s] | %s | %s | %s |"
+                             check status id content)))
+                 todos "\n")))
+      (concat (format "#+name: hermes-tool-%s-todos\n" slug)
+              rows "\n"))))
+
+(defun hermes-tool--maybe-name (tool field-suffix block)
+  "Prefix BLOCK with `#+name: hermes-tool-<slug>-FIELD-SUFFIX' when TOOL's
+status is terminal (`complete' or `error'); otherwise return BLOCK
+unchanged.  BLOCK is the rendered Org block string (already wrapped
+with `#+begin_…' / `#+end_…').  Returns BLOCK verbatim when it is
+empty or nil.  The `#+name' line is placed immediately before the
+`#+begin_' line with no intervening whitespace — the parser's
+`hermes--extract-named-block' relies on this adjacency."
+  (if (and block (not (string-empty-p block))
+           (memq (hermes-tool-status tool) '(complete error)))
+      (concat (format "#+name: hermes-tool-%s-%s\n"
+                      (hermes--slug-for-name (hermes-tool-id tool))
+                      field-suffix)
+              block)
+    block))
 
 (defun hermes-tool--output-or-preview (tool)
   "Return OUTPUT if present, else PREVIEW, else nil."
@@ -153,30 +201,22 @@ without spuriously matching on an empty result."
 (defun hermes-tool-format-generic (tool)
   "Default formatter.  Mirrors the legacy layout but without status-in-heading."
   (let* ((name    (or (hermes-tool-name tool) "tool"))
-         (context (hermes-tool-context tool))
          (err     (hermes-tool-error tool))
          (out     (hermes-tool--output-or-preview tool))
-         (diff    (hermes-tool--strip-ansi (hermes-tool-inline-diff tool)))
+         (diff    (hermes-tool-inline-diff tool))
          (todos   (hermes-tool-todos tool))
          (body
           (concat
-           (when (and (memq (hermes-tool-status tool) '(running generating))
-                      context)
-             (format ":CONTEXT:\n%s\n:END:\n" context))
+           (hermes-tool--context-block tool)
            (cond
-            (err (hermes-tool--example err))
-            (out (hermes-tool--example out))
+            (err (hermes-tool--maybe-name tool "error" (hermes-tool--example err)))
+            (out (hermes-tool--maybe-name tool "output" (hermes-tool--example out)))
             (t ""))
-           (when diff (format "#+begin_src diff\n%s\n#+end_src\n" diff))
-           (when todos
-             (concat ":TODOS:\n"
-                     (mapconcat
-                      (lambda (todo)
-                        (let ((text (or (hermes--get todo "text") ""))
-                              (done (hermes--get todo "done")))
-                          (format "- [%s] %s" (if done "X" " ") text)))
-                      todos "\n")
-                     "\n:END:\n")))))
+           (when diff
+             (hermes-tool--maybe-name
+              tool "inline-diff"
+              (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
+           (hermes-tool--format-todos-table tool todos))))
     (list :summary name :body body :fold nil)))
 
 ;;;; Bash
@@ -197,11 +237,14 @@ without spuriously matching on an empty result."
                         72))))
     (list :summary summary
           :body (concat
+                 (hermes-tool--context-block tool)
                  (unless (string-empty-p cmd)
                    (hermes-tool--src-block lang cmd))
                  (cond
-                  (err (hermes-tool--example err))
-                  (out (hermes-tool--example out))
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
                   (t "")))
           :fold nil)))
 
@@ -229,11 +272,15 @@ without spuriously matching on an empty result."
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool)))
     (list :summary summary
-          :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--src-block
-                       (hermes-tool--lang-from-path path) out))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--src-block
+                          (hermes-tool--lang-from-path path) out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; Edit / Write
@@ -242,7 +289,7 @@ without spuriously matching on an empty result."
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
          (path (or (hermes-tool--ctx-get ctx 'file_path 'path 'file) ""))
          (name (or (hermes-tool-name tool) "Edit"))
-         (diff (hermes-tool--strip-ansi (hermes-tool-inline-diff tool)))
+         (diff (hermes-tool-inline-diff tool))
          (out  (hermes-tool--output-or-preview tool))
          (err  (hermes-tool-error tool))
          (summary (format "%s %s" name
@@ -252,13 +299,20 @@ without spuriously matching on an empty result."
                            70))))
     (list :summary summary
           :body (concat
+                 (hermes-tool--context-block tool)
                  (cond
-                  (err (hermes-tool--example err))
-                  (diff (format "#+begin_src diff\n%s\n#+end_src\n" diff))
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (diff (hermes-tool--maybe-name
+                         tool "inline-diff"
+                         (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
                   ((and (string-equal-ignore-case name "write") out)
-                   (hermes-tool--src-block
-                    (hermes-tool--lang-from-path path) out))
-                  (out (hermes-tool--example out))
+                   (hermes-tool--maybe-name
+                    tool "output"
+                    (hermes-tool--src-block
+                     (hermes-tool--lang-from-path path) out)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
                   (t "")))
           :fold nil)))
 
@@ -289,10 +343,14 @@ without spuriously matching on an empty result."
                       (hermes-tool--truncate
                        (or (hermes-tool-context tool) "") 60))))))
     (list :summary summary
-          :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; LS
@@ -307,10 +365,14 @@ without spuriously matching on an empty result."
                             (if (string-empty-p path)
                                 (or (hermes-tool-context tool) "") path)
                             72))
-          :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; TodoWrite
@@ -321,18 +383,12 @@ without spuriously matching on an empty result."
          (done  (cl-count-if (lambda (td) (hermes--get td "done")) todos))
          (summary (if (> total 0)
                       (format "Todos (%d/%d done)" done total)
-                    "Todos"))
-         (list-body
-          (when todos
-            (concat
-             (mapconcat
-              (lambda (todo)
-                (let ((text (or (hermes--get todo "text") ""))
-                      (d (hermes--get todo "done")))
-                  (format "- [%s] %s" (if d "X" " ") text)))
-              todos "\n")
-             "\n"))))
-    (list :summary summary :body (or list-body "") :fold nil)))
+                    "Todos")))
+    (list :summary summary
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (or (hermes-tool--format-todos-table tool todos) ""))
+          :fold nil)))
 
 ;;;; WebFetch / WebSearch
 
@@ -351,10 +407,14 @@ without spuriously matching on an empty result."
                         (hermes-tool--truncate
                          (or (hermes-tool-context tool) "") 60))))))
     (list :summary summary
-          :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; Task / Agent
@@ -370,10 +430,14 @@ without spuriously matching on an empty result."
                             (if (string-empty-p desc)
                                 (or (hermes-tool-context tool) "") desc)
                             70))
-          :body (cond
-                 (err (hermes-tool--example err))
-                 (out (hermes-tool--example out))
-                 (t ""))
+          :body (concat
+                 (hermes-tool--context-block tool)
+                 (cond
+                  (err (hermes-tool--maybe-name tool "error"
+                         (hermes-tool--example err)))
+                  (out (hermes-tool--maybe-name tool "output"
+                         (hermes-tool--example out)))
+                  (t "")))
           :fold (eq (hermes-tool-status tool) 'complete))))
 
 ;;;; Registration

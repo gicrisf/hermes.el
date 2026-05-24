@@ -105,7 +105,7 @@ The TUI splits state across **three nanostore atoms** plus local React state.
   subagents)  ; vector of hermes-subagent — delegation tree
 ```
 
-The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. The full struct is serialized to a `:HERMES_RAW:` Elisp plist drawer at the end of each turn's Org subtree.
+The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed in the buffer-as-truth refactor. Text is derived on demand by concatenating `text`-type segments. All structured data is body-canonical: usage counters live in `HERMES_USAGE_*` heading properties; tool segments in `#+name:'d blocks and heading properties; subagents in child `HERMES_KIND: SUBAGENT` headings; image metadata in `#+attr_org:`/`#+attr_hermes:` lines above `[[file:…]]` links.  Text-only turns carry no extra structure.
 
 #### Stream State (`hermes-stream`)
 ```elisp
@@ -128,11 +128,13 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
 (cl-defstruct hermes-tool
   id name
   status      ; 'generating | 'running | 'complete | 'error
-  context     ; tool args preview from tool.start
-  preview     ; live preview from tool.progress
-  inline-diff ; diff output from tool.complete
-  todos       ; list of plists (:text :done) from tool.complete
-  output error duration)
+   context     ; tool args preview from tool.start — body-canonical
+   preview     ; live preview from tool.progress
+   inline-diff ; diff output from tool.complete — body-canonical
+   todos       ; list of hash-tables ("content" "status" "id") — body-canonical
+   output      ; string or nil — body-canonical
+   error       ; string or nil — body-canonical
+   duration)
 ```
 
 #### Pending State (`hermes-pending`)
@@ -147,7 +149,7 @@ The `text`, `thinking`, `reasoning`, and `tools` deprecated slots were removed i
 
 | Aspect | TUI | Emacs |
 |--------|-----|-------|
-| **Canonical history** | `messages` array in TUI state | **Org buffer** — each turn stores a `:HERMES_RAW:` drawer with full Elisp plist |
+| **Canonical history** | `messages` array in TUI state | **`turns` vector** (event-canonical): accumulated by `hermes--push-committed` across three reducer paths, never cleared except by `:turns-load`. Equivalent body-canonical representation: the Org buffer (lossless interconversion via `hermes--parse-buffer-messages`). |
 | **Busy flag** | `uiState.busy` — explicit boolean | Implicit: `(hermes-state-stream state)` |
 | **Activity feed** | `turnState.activity` — array of items, capped at 8 | Not present |
 | **Tool active list** | `turnState.tools` — active tools with context, tokens | `segments` — all tools in stream as typed tool segments |

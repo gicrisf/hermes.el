@@ -79,10 +79,24 @@ Subagent blocks are rendered as `****` Org subtrees after the segment region:
 - **Summary**: `#+begin_example` block with duration (only for terminal status)
 - The subagent region is tracked by `hermes--stream-subagents-marker` and rewrites in place on each stream update
 
+#### Parser
+
+On resume, `hermes--parse-turn-at-point` reconstructs `hermes-subagent` structs from `HERMES_KIND: SUBAGENT` child headings under each assistant turn:
+
+- **Goal & status** parsed from the heading text (`goal (status)` pattern).
+- **ID** read from the `:ID:` heading property.
+- **Thinking** extracted from the `#+begin_example Thinking` block.
+- **Tools** parsed from bullet lines matching `- name(args)`.
+- **Notes** parsed from remaining bullet lines.
+- **Summary & duration** extracted from the plain `#+begin_example` block.
+
+Subagents are **not** read from `:HERMES_META:` — they are fully body-canonical.
+
 #### Tests
 
 - 10+ ERT tests for reducer: spawn, start, thinking accumulation, tool append, notes append, complete finalization, error status, commit with message, deduplication, no-stream dropping
 - 9+ ERT tests for renderer: formatting with all fields, stream integration (after segments), in-place rewrite
+- 4+ ERT tests for parser: full subagent round-trip, minimal heading fallback, child-kind dispatch, formatter→parser end-to-end
 - 2 UI reducer tests: status text set on start, cleared on complete
 
 ---

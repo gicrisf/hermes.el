@@ -16,7 +16,7 @@ Emacs uses an **invisible queue** (pi-coding-agent pattern):
 
 The queue is FIFO and invisible — the user only sees a minibuffer message like "Hermes: Message queued (N ahead of you)". Messages appear in the buffer only when it's their turn to be sent.
 
-**Hook ordering is critical:** `hermes--render` MUST run before `hermes-input--drain` on `hermes-state-change-hook`. If drain runs first, it dispatches `:user-submit` before `stream-commit` has sealed the assistant turn, causing the assistant's `:HERMES_RAW:` drawer to land after the dequeued user heading. `add-hook` with `nil` APPEND prepends, so all hooks are added with `t` to preserve insertion order.
+**Hook ordering is critical:** `hermes--render` MUST run before `hermes-input--drain` on `hermes-state-change-hook`. If drain runs first, it dispatches `:user-submit` before `stream-commit` has sealed the assistant turn, causing the assistant's `:HERMES_META:` drawer to land after the dequeued user heading. `add-hook` with `nil` APPEND prepends, so all hooks are added with `t` to preserve insertion order.
 
 **Gap:** No interrupt-via-input, no steering.
 
@@ -24,7 +24,7 @@ The queue is FIFO and invisible — the user only sees a minibuffer message like
 
 When the gateway restarts (or the user explicitly calls `hermes-reconnect`),
 the new gateway session starts with empty history.  The Emacs buffer, however,
-still contains every committed turn in `:HERMES_RAW:` drawers.  To prevent the
+still contains every committed turn in `:HERMES_META:` drawers (or has no drawer for text-only turns).  To prevent the
 model from starting "cold," every `prompt.submit` checks whether the current
 gateway session has already been seeded.
 
@@ -40,7 +40,7 @@ which guarantees idempotent behavior regardless of how the session was
 created (reconnect, manual `session.create`, or opening a saved file).
 
 **Construction** (`hermes--build-history-text`):
-- Reads `:HERMES_RAW:` drawers via `hermes--parse-buffer-messages`.
+- Derives messages from visible buffer structure via `hermes--parse-buffer-messages`; reads `:HERMES_META:` drawers for irreplaceable structured data.
 - Formats each non-empty turn as `Role: text`, where `Role` is `User`,
   `Assistant`, or `System` (derived from the message kind).
 - Only **text-segment content** is included.  Reasoning, tool, thinking, and

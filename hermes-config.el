@@ -14,9 +14,8 @@
 ;; `hermes-toolsets-toggle').
 ;;
 ;; All commands operate on the session targeted by
-;; `hermes--resolve-session-target' — i.e. the current `hermes-mode'
-;; buffer or the `:hermes:' container around point in an Org buffer
-;; with `hermes-minor-mode' enabled.
+;; `hermes--resolve-session-target' — i.e. the `:hermes:' container
+;; around point in an Org buffer with `hermes-org-minor-mode' enabled.
 
 ;;; Code:
 
@@ -26,7 +25,7 @@
 (require 'hermes-state)
 (require 'hermes-org)
 
-(declare-function hermes--model-short-name "hermes-render" (slug))
+(declare-function hermes--model-short-name "hermes-org-render" (slug))
 
 ;;;; Target resolution
 
@@ -47,7 +46,7 @@
 CALLBACK, if non-nil, is called as (RESULT ERROR) when the response
 arrives."
   (let ((sid (hermes--config-resolve-target)))
-    (hermes-rpc-request
+    (hermes--request
      "config.get"
      (list :key key :session_id sid)
      (or callback (lambda (_r _e) nil)))))
@@ -57,7 +56,7 @@ arrives."
 CALLBACK, if non-nil, is called as (RESULT ERROR) when the response
 arrives."
   (let ((sid (hermes--config-resolve-target)))
-    (hermes-rpc-request
+    (hermes--request
      "config.set"
      (list :key key :value value :session_id sid)
      (or callback (lambda (_r _e) nil)))))
@@ -96,7 +95,7 @@ Aborts with `user-error' if a stream is in flight."
          (_ (unless target (user-error "No Hermes session at point")))
          (state (cdr target)))
     (when (and state (hermes-state-stream state))
-      (user-error "Cannot switch models mid-turn — run M-x hermes-interrupt first"))
+      (user-error "Cannot switch models mid-turn — run M-x hermes-interrupt-current-session first"))
     (when (or refresh (null hermes-config--last-providers))
       (setq hermes-config--last-providers nil))
     (let ((buf (current-buffer)))
@@ -186,25 +185,20 @@ Bound around the `completing-read' call in `hermes--set-model-prompt'.")
 
 ;;;; Steer (mid-turn injection)
 
-(declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
-(declare-function hermes-bench-resolve-parent "hermes-bench" (&optional buffer))
-(declare-function hermes-bench-live-p "hermes-bench" (&optional buffer))
-(declare-function hermes-bench-add-steer "hermes-bench" (parent text))
+(declare-function hermes-bench-active-p "hermes-comint" (&optional buffer-or-sid))
+(declare-function hermes-bench-live-p "hermes-comint" (&optional buffer-or-sid))
+(declare-function hermes-bench-show-status "hermes-comint" (sid text &optional error-p))
 
 (defun hermes-steer (text)
   "Send TEXT as a steer message to the current session's in-flight turn.
 Safe mid-turn: the gateway threads the message into the running turn
-without interrupting it.  If a bench is paired with the target buffer,
-the message is also shown above its reasoning zone."
+without interrupting it.  Confirmation appears in the echo area."
   (interactive (list (read-string "Steer: ")))
   (let ((sid    (hermes--config-resolve-target))
-        (parent (current-buffer))
         (trimmed (string-trim (or text ""))))
     (when (string-empty-p trimmed)
       (user-error "Empty steer message"))
-    (when (fboundp 'hermes-bench-add-steer)
-      (hermes-bench-add-steer parent trimmed))
-    (hermes-rpc-request
+    (hermes--request
      "session.steer"
      (list :session_id sid :text trimmed)
      (lambda (r e)
@@ -298,7 +292,7 @@ with `completing-read-multiple', then prompts for an action and issues
 `tools.configure'."
   (interactive)
   (let ((sid (hermes--config-resolve-target)))
-    (hermes-rpc-request
+    (hermes--request
      "toolsets.list" (list :session_id sid)
      (lambda (result error)
        (cond
@@ -331,7 +325,7 @@ with `completing-read-multiple', then prompts for an action and issues
                                (completing-read
                                 "Action: " '("enable" "disable") nil t))))
              (when (and names action)
-               (hermes-rpc-request
+               (hermes--request
                 "tools.configure"
                 (list :session_id sid
                       :action     action
@@ -350,7 +344,7 @@ with `completing-read-multiple', then prompts for an action and issues
 (defun hermes-skills-reload ()
   "Rescan the skills directory and report added/removed skills."
   (interactive)
-  (hermes-rpc-request
+  (hermes--request
    "skills.reload" '()
    (lambda (r e)
      (cond
@@ -384,7 +378,7 @@ with `completing-read-multiple', then prompts for an action and issues
 (defun hermes-skills-list ()
   "List installed skills grouped by category in `*Hermes Skills*'."
   (interactive)
-  (hermes-rpc-request
+  (hermes--request
    "skills.manage" (list :action "list")
    (lambda (r e)
      (cond
@@ -410,7 +404,7 @@ with `completing-read-multiple', then prompts for an action and issues
 (defun hermes--skills-search (query callback)
   "Run `skills.manage search' for QUERY, then invoke CALLBACK with the
 selected skill name (or nil if the user aborted or no results)."
-  (hermes-rpc-request
+  (hermes--request
    "skills.manage" (list :action "search" :query query)
    (lambda (r e)
      (cond
@@ -445,7 +439,7 @@ With prefix arg PROMPT-NAME, prompts for a skill name verbatim."
   (let ((install
          (lambda (name)
            (when (and name (not (string-empty-p name)))
-             (hermes-rpc-request
+             (hermes--request
               "skills.manage" (list :action "install" :name name)
               (lambda (r e)
                 (cond
@@ -480,14 +474,14 @@ a hash table whose values are vectors/lists of names."
 If the bench is unavailable and output is single-line, fall back to the
 minibuffer.  ERROR-P applies `error' face."
   (let* ((clean (or (ansi-color-apply (or output "")) ""))
-         (buf (hermes-bench-resolve-parent)))
+         (sid (hermes--buffer-sid)))
     (cond
      ((string-empty-p clean)
       (message "hermes: (no output)"))
      ((and (fboundp 'hermes-bench-show-status)
-           buf
-           (hermes-bench-active-p buf))
-      (hermes-bench-show-status buf clean error-p))
+           sid
+           (hermes-bench-active-p sid))
+      (hermes-bench-show-status sid clean error-p))
      ((string-match-p "\n" (string-trim-right clean))
       (let ((disp (get-buffer-create "*Hermes Skills*")))
         (with-current-buffer disp
@@ -508,7 +502,7 @@ invalidation).  Requires an active session."
   (interactive "P")
   (let ((sid (hermes--config-resolve-target))
         (parent-buf (current-buffer)))
-    (hermes-rpc-request
+    (hermes--request
      "skills.manage" (list :action "list")
      (lambda (r e)
        (cond
@@ -520,7 +514,7 @@ invalidation).  Requires an active session."
                (let* ((choice (completing-read "Uninstall skill: " names nil t))
                       (cmd (format "skills uninstall %s%s"
                                    choice (if now " --now" ""))))
-                  (hermes-rpc-request
+                  (hermes--request
                    "slash.exec" (list :session_id sid :command cmd)
                    (lambda (r2 e2)
                      (cond

@@ -22,23 +22,27 @@
 Guards against re-entrant prompts when the renderer hook fires again.")
 
 (defun hermes-prompts-watch (old new)
-  "State-change hook: when pending becomes non-nil, schedule a prompt."
-  (let ((op (and old (hermes-state-pending old)))
-        (np (hermes-state-pending new)))
-    (when (and np (not (eq op np)) (not hermes--pending-active))
-      (setq hermes--pending-active t)
-      (let ((buf (current-buffer))
-            (sid (hermes-state-session-id new))
-            (pending np))
-        (run-at-time
-         0 nil
-         (lambda ()
-           (when (buffer-live-p buf)
-             (with-current-buffer buf
-               (unwind-protect
-                   (hermes--prompts-handle sid pending)
-                 (setq hermes--pending-active nil)
-                 (hermes-dispatch '(:pending-clear)))))))))))
+  "State-change hook: when pending becomes non-nil, schedule a prompt.
+Globally installed; resolves the target buffer via
+`hermes--org-buffers' so the buffer-local re-entry guard
+`hermes--pending-active' lives with its parent buffer."
+  (hermes--on-session-buffer hermes--org-buffers
+    (let ((op (and old (hermes-state-pending old)))
+          (np (hermes-state-pending new)))
+      (when (and np (not (eq op np)) (not hermes--pending-active))
+        (setq hermes--pending-active t)
+        (let ((buf (current-buffer))
+              (sid (hermes-state-session-id new))
+              (pending np))
+          (run-at-time
+           0 nil
+           (lambda ()
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (unwind-protect
+                     (hermes--prompts-handle sid pending)
+                   (setq hermes--pending-active nil)
+                   (hermes-dispatch '(:pending-clear) sid)))))))))))
 
 (defun hermes--prompts-handle (sid pending)
   "Run the right minibuffer prompt for PENDING and dispatch the response."
@@ -80,7 +84,7 @@ Canonical choices match the TUI: once, session, always, deny."
                  (?s "session")
                  (?a "always")
                  (_  "deny"))))
-    (hermes-rpc-request
+    (hermes--request
      "approval.respond"
      (list :session_id sid :request_id rid :choice resp))))
 
@@ -96,7 +100,7 @@ Canonical choices match the TUI: once, session, always, deny."
          (answer (if choices
                      (completing-read (concat question " ") choices nil nil)
                    (read-string (concat question " ")))))
-    (hermes-rpc-request "clarify.respond"
+    (hermes--request "clarify.respond"
                         (list :request_id rid :answer answer))))
 
 ;;;; Sudo / secret
@@ -104,7 +108,7 @@ Canonical choices match the TUI: once, session, always, deny."
 (defun hermes--prompt-sudo (rid)
   "Read a sudo password and dispatch `sudo.respond'."
   (let ((pw (read-passwd "sudo password: ")))
-    (hermes-rpc-request "sudo.respond"
+    (hermes--request "sudo.respond"
                         (list :request_id rid :password pw))))
 
 (defun hermes--prompt-secret (rid payload)
@@ -114,7 +118,7 @@ Canonical choices match the TUI: once, session, always, deny."
                    (and var (format "Value for %s: " var))
                    "Secret: "))
          (val (read-passwd hint)))
-    (hermes-rpc-request "secret.respond"
+    (hermes--request "secret.respond"
                         (list :request_id rid :value val))))
 
 (provide 'hermes-prompts)

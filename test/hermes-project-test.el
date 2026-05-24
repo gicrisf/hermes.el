@@ -5,6 +5,9 @@
 (require 'hermes-state)
 (require 'hermes-project)
 (require 'hermes-input)
+(load (expand-file-name "hermes-test-helpers.el"
+                        (file-name-directory
+                         (or load-file-name buffer-file-name))))
 
 ;;;; Helpers
 
@@ -21,6 +24,14 @@
            (with-temp-file (expand-file-name "b.el" ,var) (insert "(provide 'b)"))
            ,@body)
        (delete-directory ,var t))))
+
+(defmacro hermes-project-test--with-state (state &rest body)
+  "Install STATE into the global slot under sid \"sess-1\" and bind hermes--current-session-id."
+  (declare (indent 1))
+  `(let ((hermes--current-session-id "sess-1"))
+     (hermes-test--reset-global-state)
+     (hermes--state-slot-write "sess-1" ,state)
+     ,@body))
 
 ;;;; detect-cwd
 
@@ -40,22 +51,18 @@
 ;;;; build-context
 
 (ert-deftest hermes-project-test/build-context-nil-without-cwd ()
-  (let ((hermes--state (make-hermes-state)))
-    (should (null (hermes-project--build-context hermes--state)))))
+  (should (null (hermes-project--build-context (make-hermes-state)))))
 
 (ert-deftest hermes-project-test/build-context-respects-max-files ()
   (hermes-project-test--with-tmp-project root
-    ;; Add several files so the cap matters.
     (dotimes (i 25)
       (with-temp-file (expand-file-name (format "f%02d.el" i) root)
         (insert ";; stub")))
     (let* ((default-directory root)
            (st (make-hermes-state :cwd root))
-           (hermes--state st)
            (hermes-project-context-max-files 3)
            (ctx (hermes-project--build-context st)))
       (should (stringp ctx))
-      ;; Body has at most 3 lines starting with " ".
       (let ((file-lines
              (cl-count-if (lambda (l) (string-prefix-p " " l))
                           (split-string ctx "\n"))))
@@ -65,7 +72,6 @@
   (hermes-project-test--with-tmp-project root
     (let* ((default-directory root)
            (st (make-hermes-state :cwd root))
-           (hermes--state st)
            (hermes-project-context-max-chars 50)
            (ctx (hermes-project--build-context st)))
       (when ctx
@@ -79,35 +85,46 @@
 (ert-deftest hermes-project-test/wire-prefix-adds-context-on-first-prompt ()
   (hermes-project-test--with-tmp-project root
     (let* ((default-directory root)
-           (sid "session-1")
-           (hermes--state (hermes-project-test--make-state-with-sid sid root))
-           (hermes--seeded-session-id nil)
-           (hermes-project-auto-context nil)
-           (out (hermes-input--wire-prefix "hello")))
-      (should (string-match-p "Project context" out))
-      ;; The seed-prefix stamps the session id as a side effect.
-      (should (equal sid hermes--seeded-session-id)))))
+           (sid "session-1"))
+      (hermes-project-test--with-state
+          (hermes-project-test--make-state-with-sid sid root)
+        (let ((hermes--seeded-session-id nil)
+              (hermes-project-auto-context nil)
+              (hermes--current-session-id sid))
+          (hermes--state-slot-write sid
+                                    (hermes-project-test--make-state-with-sid sid root))
+          (let ((out (hermes-input--wire-prefix "hello")))
+            (should (string-match-p "Project context" out))
+            (should (equal sid hermes--seeded-session-id))))))))
 
 (ert-deftest hermes-project-test/wire-prefix-skips-context-on-second-prompt ()
   (hermes-project-test--with-tmp-project root
     (let* ((default-directory root)
-           (sid "session-1")
-           (hermes--state (hermes-project-test--make-state-with-sid sid root))
-           (hermes--seeded-session-id sid) ; already seeded
-           (hermes-project-auto-context nil)
-           (out (hermes-input--wire-prefix "hello")))
-      (should-not (string-match-p "Project context" out))
-      (should (equal "hello" out)))))
+           (sid "session-1"))
+      (hermes-project-test--with-state
+          (hermes-project-test--make-state-with-sid sid root)
+        (let ((hermes--seeded-session-id sid)
+              (hermes-project-auto-context nil)
+              (hermes--current-session-id sid))
+          (hermes--state-slot-write sid
+                                    (hermes-project-test--make-state-with-sid sid root))
+          (let ((out (hermes-input--wire-prefix "hello")))
+            (should-not (string-match-p "Project context" out))
+            (should (equal "hello" out))))))))
 
 (ert-deftest hermes-project-test/wire-prefix-adds-context-when-auto-context-on ()
   (hermes-project-test--with-tmp-project root
     (let* ((default-directory root)
-           (sid "session-1")
-           (hermes--state (hermes-project-test--make-state-with-sid sid root))
-           (hermes--seeded-session-id sid) ; already seeded → not first prompt
-           (hermes-project-auto-context t)
-           (out (hermes-input--wire-prefix "hello")))
-      (should (string-match-p "Project context" out)))))
+           (sid "session-1"))
+      (hermes-project-test--with-state
+          (hermes-project-test--make-state-with-sid sid root)
+        (let ((hermes--seeded-session-id sid)
+              (hermes-project-auto-context t)
+              (hermes--current-session-id sid))
+          (hermes--state-slot-write sid
+                                    (hermes-project-test--make-state-with-sid sid root))
+          (let ((out (hermes-input--wire-prefix "hello")))
+            (should (string-match-p "Project context" out))))))))
 
 (provide 'hermes-project-test)
 ;;; hermes-project-test.el ends here

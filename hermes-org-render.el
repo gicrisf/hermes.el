@@ -1,4 +1,4 @@
-;;; hermes-render.el --- Segmented renderer for the Hermes Org buffer -*- lexical-binding: t; -*-
+;;; hermes-org-render.el --- Segmented renderer for the Hermes Org buffer -*- lexical-binding: t; -*-
 
 ;; Author: Giovanni Crisalfi
 ;; Keywords: tools, ai
@@ -27,19 +27,9 @@
 (require 'hermes-md)
 (require 'hermes-tool-formatters)
 
-(declare-function hermes-bench-active-p "hermes-bench" (&optional parent))
-(declare-function hermes-bench--stream-begin "hermes-bench" (bench))
-(declare-function hermes-bench--stream-update "hermes-bench" (bench old new))
-(declare-function hermes-bench--stream-commit "hermes-bench" (bench old-stream))
+(declare-function hermes-bench-active-p "hermes-comint" (&optional parent))
 
 ;;;; Buffer-local markers for the in-flight region
-
-(defvar-local hermes--ui-line ""
-  "Right-hand status text driven by the ephemeral state.")
-
-(defvar-local hermes--mode-line-status ""
-  "Dynamic Hermes status text displayed in the mode-line.
-Updated by `hermes--mode-line-update' whenever the ephemeral state changes.")
 
 (defvar-local hermes--stream-headline-marker nil
   "Marker at the start of the in-flight `** assistant' headline.")
@@ -71,13 +61,23 @@ Updated by `hermes--mode-line-update' whenever the ephemeral state changes.")
 ;;;; Stream paint throttling
 ;;
 ;; The reducer applies every `message.delta' / `reasoning.delta' to
-;; `hermes--state' synchronously, but the buffer paint is rate-limited so
+;; `(hermes--current-state)' synchronously, but the buffer paint is rate-limited so
 ;; high-frequency token streams (>25 Hz) don't saturate the UI thread.
 ;; The first delta after a cooldown gap paints immediately and starts a
 ;; cooldown timer; deltas arriving while the timer is active stash their
 ;; snapshot in `hermes--stream-render-pending' and the timer flushes the
 ;; latest snapshot when it fires.  Lifecycle transitions (stream-begin,
 ;; stream-commit, error) always paint synchronously — see `hermes--render'.
+
+(defcustom hermes-image-display-max-dim 600
+  "Maximum pixel size for the longest side of a displayed image.
+Inline images larger than this are scaled down for display via
+`#+attr_org:' while their real dimensions remain canonical in
+`#+attr_hermes:'.  Set to nil to disable display scaling (images
+will then either honor `#+attr_org:' from the buffer or fall back
+to the window width)."
+  :type '(choice (integer :tag "Pixels") (const :tag "Disable" nil))
+  :group 'hermes)
 
 (defcustom hermes-render-stream-throttle 0.04
   "Floor (minimum seconds) between consecutive stream re-renders.
@@ -157,7 +157,30 @@ buffer) where the container's subtree spans the whole buffer."
 ;;;; Top-level dispatch
 
 (defun hermes--render (old new)
-  "Diff OLD vs NEW (both `hermes-state') and update the buffer."
+  "Dispatch wrapper: route to the org buffer for the active session.
+The state-change-hook is global; this resolves
+`hermes--current-session-id' through `hermes--org-buffers' and runs
+`hermes--render-1' inside the target buffer.  Falls back to the
+current buffer when it is itself a Hermes buffer (direct-call paths
+such as tests, or in-buffer dispatch loops)."
+  (let* ((sid hermes--current-session-id)
+         (buf (and sid (gethash sid hermes--org-buffers))))
+    (cond
+     ((buffer-live-p buf)
+      ;; Rebind the dynamic sid *inside* the target buffer.  `let' creates
+      ;; a buffer-local binding; if `hermes--current-session-id' is
+      ;; buffer-local in the caller (bench / section), the outer let
+      ;; doesn't reach this buffer.  Without this rebind, recursive
+      ;; dispatches from render-1 (e.g. `:pending-turns-clear') would
+      ;; resolve to nil and write to the global state slot.
+      (with-current-buffer buf
+        (let ((hermes--current-session-id sid))
+          (hermes--render-1 old new))))
+     ((bound-and-true-p hermes-org-minor-mode)
+      (hermes--render-1 old new)))))
+
+(defun hermes--render-1 (old new)
+  "Diff OLD vs NEW (both `hermes-state') and update the current buffer."
   ;; Two scopes for post-passes:
   ;;   * msg-append-start  → start of just-inserted user/system message(s).
   ;;   * bench-touched-p   → bench markers/content changed this tick.
@@ -190,47 +213,44 @@ buffer) where the container's subtree spans the whole buffer."
         ;; pending-turns AND clears the stream in the same step.  If the
         ;; drain ran first, inserting a user/system message at point-max
         ;; would rear-advance `hermes--bench-end' past the new text, and
-        ;; `stream-commit' would then write the assistant's raw drawer
-        ;; into the wrong subtree.  Sealing the stream first keeps the
-        ;; bench-anchored writes contained.
+         ;; `stream-commit' would then write the assistant's usage
+         ;; properties into the wrong subtree.  Sealing the stream first
+         ;; keeps the bench-anchored writes contained.
         (let* ((os old-stream-snapshot)
                (ns (hermes-state-stream new))
-               (bench-buf (and (fboundp 'hermes-bench-active-p)
-                               (hermes-bench-active-p (current-buffer)))))
+               ;; Paint only if this org buffer is visible (plan 17).
+               (target-visible (hermes--buffer-visible-p (current-buffer))))
           (cond ((and (null os) ns)
+                 ;; Stream-begin: always run (structural setup must happen
+                 ;; even when the target is hidden — see plan 17 §5).
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
-                 (if bench-buf
-                     (hermes-bench--stream-begin bench-buf)
-                   (hermes--stream-begin)))
+                 (hermes--stream-begin))
                 ((and os (null ns))
-                 ;; Pending delayed paint? Flush `os' synchronously.
-                 (when (timerp hermes--stream-render-timer)
-                   (if bench-buf
-                       (hermes-bench--stream-update bench-buf nil os)
-                     (hermes--stream-update nil os)))
+                 ;; Stream-commit: the in-flight region is frozen in
+                 ;; place rather than rebuilt from state, so any deltas
+                 ;; skipped due to throttle stash OR visibility must be
+                 ;; painted synchronously first.
+                 (hermes--stream-update nil os)
                  (hermes--stream-flush-cancel)
                  (setq structural-change t bench-touched-p t)
-                 (if bench-buf
-                     (let ((start (point-max)))
-                       (hermes-bench--stream-commit bench-buf os)
-                       (setq msg-append-start start))
-                   (setq committed-region (hermes--stream-commit os))))
+                 (setq committed-region (hermes--stream-commit os)))
                 ((not (eq os ns))
                  (cond
-                  ;; Throttling disabled — always paint.
+                  ;; Throttling disabled — always paint if visible.
                   ((zerop hermes-render-stream-throttle)
-                   (setq bench-touched-p t)
-                   (if bench-buf
-                       (hermes-bench--stream-update bench-buf os ns)
+                   (when target-visible
+                     (setq bench-touched-p t)
                      (hermes--stream-update os ns)))
-                  ;; Cooldown idle — paint now and start cooldown.
+                  ;; Cooldown idle — paint now (if visible) and arm cooldown.
+                  ;; Skip the cooldown arm when invisible: the next delta
+                  ;; will re-enter this same branch.  Catchup at commit
+                  ;; ensures the final state lands in the buffer.
                   ((null hermes--stream-render-timer)
-                   (setq bench-touched-p t)
-                   (if bench-buf
-                       (hermes-bench--stream-update bench-buf os ns)
-                     (hermes--stream-update os ns))
-                   (hermes--stream-flush-reschedule))
+                   (when target-visible
+                     (setq bench-touched-p t)
+                     (hermes--stream-update os ns)
+                     (hermes--stream-flush-reschedule)))
                   ;; Within cooldown — stash for the timer to flush.
                   (t
                    (setq hermes--stream-render-pending ns))))))
@@ -250,19 +270,13 @@ buffer) where the container's subtree spans the whole buffer."
                       (setq msg-append-start start
                             structural-change t
                             any-inserted t))
-                    (hermes--insert-committed-turn msg)))))))
-        ;; 3. Mode line — session-info / connection / usage / queue.
-        (unless (and old
-                      (eq (hermes-state-session-info old)
-                          (hermes-state-session-info new))
-                      (eq (hermes-state-connection old)
-                          (hermes-state-connection new))
-                      (eq (hermes-state-usage old)
-                          (hermes-state-usage new))
-                      (eq (hermes-state-queue old)
-                          (hermes-state-queue new)))
-          (hermes--mode-line-update new))))
+                    (hermes--insert-committed-turn msg)))))))))
     ;; Clear pending-turns once they've been written to the buffer.
+    ;; TEA violation (view-dispatches-mutation): this re-entrant
+    ;; dispatch fires the full hook chain synchronously *before* the
+    ;; outer dispatch's hook iteration completes.  Comint guards against
+    ;; this by reading live state in `hermes-comint--refresh' (F2);
+    ;; defense-in-depth fix at source would be `run-at-time 0 …'.
     (when drain-pending
       (hermes-dispatch '(:pending-turns-clear)))
     (when (derived-mode-p 'org-mode)
@@ -289,7 +303,7 @@ buffer) where the container's subtree spans the whole buffer."
         (hermes--refresh-region (marker-position hermes--bench-start)
                                 (marker-position hermes--bench-end)))
       ;; Refresh the assistant region just sealed by `stream-commit'.
-      ;; The heading was rewritten and the raw drawer inserted inside
+      ;; The heading was rewritten and usage properties written inside
       ;; `with-silent-modifications', which strips/skips the org-indent
       ;; `line-prefix' properties and `hermes--hide-drawers' pass.
       (when committed-region
@@ -305,10 +319,6 @@ buffer) where the container's subtree spans the whole buffer."
           (dolist (win tail-windows)
             (when (window-live-p win)
               (set-window-point win new-point-max))))))
-    ;; Refresh mode-line after every render tick so status is always in
-    ;; sync — covers edge cases where the reducer hands back an `eq' struct
-    ;; and `hermes-state-change-hook' doesn't fire.
-    (hermes--mode-line-update)
     ;; 4. Background tasks: any complete/error task without a buffer-name
     ;; gets its dedicated *hermes-bg:<sid>:<tid>* buffer created and
     ;; populated.  The render fn dispatches :bg-rendered back through
@@ -340,24 +350,35 @@ has a chance to repopulate cleanly."
       (ignore-errors
         (org-indent-add-properties start end)))
     (hermes--hide-drawers start end)
+    ;; Align named Hermes todo tables in the region.  `with-silent-
+    ;; modifications' suppresses Org's auto-align hooks, so we run an
+    ;; explicit pass here.  Scope is targeted to our `hermes-tool-…'
+    ;; namespace via the `#+name' line so we never touch user tables.
+    ;; END is captured as a marker because `org-table-align' inserts
+    ;; whitespace and would otherwise leave the bound stale across
+    ;; multiple tables in the same region.
+    (when (derived-mode-p 'org-mode)
+      (let ((end-marker (copy-marker end)))
+        (unwind-protect
+            (save-excursion
+              (goto-char start)
+              (while (re-search-forward
+                      "^#\\+name: hermes-tool-[^ \t\r\n]+[ \t]*$"
+                      end-marker t)
+                (forward-line 1)
+                (when (looking-at "^[ \t]*|")
+                  (ignore-errors (org-table-align)))))
+          (set-marker end-marker nil))))
     ;; Render inline images for any `[[file:...]]' links in the region.
-    ;; Bound `org-image-actual-width' to the window width so oversized
-    ;; images scale down rather than blowing the buffer geometry.
+    ;; `(NUMBER)' tells Org: honor `#+attr_org: :width …' when present,
+    ;; else cap at the window width so oversized images don't blow the
+    ;; buffer geometry.  A bare number would override the attr line.
     (when (and (derived-mode-p 'org-mode)
                (fboundp 'org-display-inline-images)
                (display-graphic-p))
-      (let ((org-image-actual-width (window-width nil t)))
+      (let ((org-image-actual-width (list (window-width nil t))))
         (ignore-errors
           (org-display-inline-images nil t start end))))))
-
-(defun hermes--render-ui (_old new)
-  "Update the right-hand status snippet from the ephemeral UI state NEW.
-Drives `hermes--ui-line', which `hermes--mode-line-update' splices into
-the mode-line status."
-  (setq hermes--ui-line
-        (format " %s" (or (hermes-ui-state-status-text new) "")))
-  (hermes--mode-line-update)
-  (force-mode-line-update))
 
 ;;;; Committed messages
 
@@ -372,23 +393,68 @@ the mode-line status."
             (push (or (hermes-segment-content s) "") parts)))))
     (apply #'concat (nreverse parts))))
 
+(defun hermes--usage-key-to-property (key)
+  "Return heading property name for usage KEY.
+KEY is a string or keyword.  Normalizes known counter aliases to a
+canonical property; unknown keys passthrough with `HERMES_USAGE_'
+prefix.  If two aliases of the same counter arrive in one payload,
+the second `org-entry-put' overwrites — last write wins."
+  (let ((s (cond ((keywordp key) (substring (symbol-name key) 1))
+                 ((stringp key) key)
+                 (t (format "%s" key)))))
+    (pcase s
+      ((or "tokens_sent" "prompt_tokens")
+       "HERMES_USAGE_TOKENS_SENT")
+      ((or "tokens_received" "completion_tokens")
+       "HERMES_USAGE_TOKENS_RECEIVED")
+      ("cost" "HERMES_USAGE_COST")
+      ("cache_hit_tokens" "HERMES_USAGE_CACHE_HIT_TOKENS")
+      (_ (format "HERMES_USAGE_%s" (upcase s))))))
+
+(defun hermes--write-usage-properties (usage)
+  "Write usage counters as heading properties at point.
+USAGE is a plist, hash-table, or nil.  Normalizes known keys,
+passthroughs unknown keys with `HERMES_USAGE_' prefix.  Skips nil
+and zero numerics; framing keys (`:model', `:cost_status',
+`:context_max') are dropped (model lives in `HERMES_MODEL').
+Returns t if any property was written."
+  (when usage
+    (let ((plist (cond ((hash-table-p usage)
+                        (hermes--hash-to-plist usage))
+                       ((listp usage) usage)
+                       (t nil)))
+          (written nil))
+      (while plist
+        (let* ((k (car plist))
+               (v (cadr plist))
+               (s (cond ((keywordp k) (substring (symbol-name k) 1))
+                        ((stringp k) k)
+                        (t (format "%s" k))))
+               (drop (member s '("model" "cost_status" "context_max")))
+               (prop-name (and (not drop)
+                               (hermes--usage-key-to-property k)))
+               (prop-val (cond ((null v) nil)
+                               ((and (numberp v) (zerop v)) nil)
+                               ((numberp v) (number-to-string v))
+                               (t (format "%s" v)))))
+          (when (and prop-name prop-val)
+            (org-entry-put (point) prop-name prop-val)
+            (setq written t)))
+        (setq plist (cddr plist)))
+      written)))
+
 (defun hermes--insert-committed-turn (msg)
   "Insert a committed MSG into the buffer at point-max.
-For user/system: calls `hermes--insert-turn-headline' then appends raw drawer.
+For user/system: calls `hermes--insert-turn-headline'.
 For assistant: empty-response edge case — creates a minimal `** assistant'
-subtree with raw drawer."
+subtree and writes usage as heading properties."
   (pcase (hermes-message-kind msg)
     ('user      (hermes--insert-turn-headline msg 'hermes-user-face))
     ('system    (hermes--insert-turn-headline msg 'hermes-system-face))
     ('assistant
-     ;; Full-fidelity assistant turn for the commit-late path (bench
-     ;; active, or empty-response edge case): heading + face,
-     ;; SESSION/MODEL properties, Org ID, formatted segment subtrees
-     ;; (reasoning / response / tool), subagents block, raw drawer.
-     ;; Reasoning subtrees are folded after insertion.
-     (let* ((info    (hermes-state-session-info hermes--state))
+     (let* ((info    (hermes-state-session-info (hermes--current-state)))
             (model   (and (hash-table-p info) (gethash "model" info)))
-            (sid     (or (hermes-state-session-id hermes--state) ""))
+            (sid     (or (hermes-state-session-id (hermes--current-state)) ""))
             (text    (hermes--message-text-for-display msg))
             (excerpt (concat "A: " (hermes--heading-excerpt text)))
             (tags    (hermes--turn-tags 'assistant model))
@@ -403,7 +469,8 @@ subtree with raw drawer."
                            heading (hermes--tag-spacer heading tags) tags)))
          (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face)
          (hermes--insert-properties
-          `(("HERMES_SESSION"   . ,sid)
+          `(("HERMES_KIND"      . "ASSISTANT")
+            ("HERMES_SESSION"   . ,sid)
             ("HERMES_MODEL"     . ,model)
             ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
          (when (derived-mode-p 'org-mode)
@@ -411,6 +478,9 @@ subtree with raw drawer."
            (save-excursion
              (goto-char hb)
              (ignore-errors (org-id-get-create))))
+         (save-excursion
+           (goto-char hb)
+           (hermes--write-usage-properties (hermes-message-usage msg)))
          (goto-char (hermes--session-insert-point))
          (let ((segs (hermes-message-segments msg)))
            (when (vectorp segs)
@@ -423,7 +493,6 @@ subtree with raw drawer."
              (let ((sa-str (hermes--format-subagents-block sas)))
                (unless (string-empty-p sa-str)
                  (insert sa-str)))))
-         (hermes--insert-raw-drawer msg)
          (hermes--fold-reasoning-in-region turn-start (point)))))))
 
 (defun hermes--insert-turn-headline (msg face)
@@ -440,8 +509,8 @@ and assistant turns are all siblings."
          (excerpt  (concat prefix (hermes--heading-excerpt text)))
          (heading  (format "%s %s" (hermes--stars 1) excerpt))
          (tags     (hermes--turn-tags kind))
-         (sid      (or (hermes-state-session-id hermes--state) ""))
-         (info     (hermes-state-session-info hermes--state))
+         (sid      (or (hermes-state-session-id (hermes--current-state)) ""))
+         (info     (hermes-state-session-info (hermes--current-state)))
          (model    (and (hash-table-p info) (gethash "model" info))))
     (goto-char (hermes--session-insert-point))
     (unless (bolp) (insert "\n"))
@@ -451,8 +520,9 @@ and assistant turns are all siblings."
         (insert (format "%s %s %s\n" heading (hermes--tag-spacer heading tags) tags)))
       (hermes--face-overlay hb (1- (point)) face)
       (hermes--insert-properties
-       `(("HERMES_SESSION" . ,sid)
-         ("HERMES_MODEL" . ,model)
+       `(("HERMES_KIND"      . ,(upcase (symbol-name kind)))
+         ("HERMES_SESSION"   . ,sid)
+         ("HERMES_MODEL"     . ,model)
          ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
       (when (derived-mode-p 'org-mode)
         ;; Local cache reset before `org-id-get-create' parses: the cache
@@ -461,138 +531,27 @@ and assistant turns are all siblings."
         (org-element-cache-reset)
         (goto-char hb)
         (ignore-errors (org-id-get-create))
+        (save-excursion
+          (goto-char hb)
+          (hermes--write-usage-properties (hermes-message-usage msg)))
         (goto-char (hermes--session-insert-point)))
+      ;; Insert image segments first (matching the reducer's
+      ;; [image…, text] ordering for user turns), then the joined text.
+      (let ((segs (hermes-message-segments msg)))
+        (when (vectorp segs)
+          (dotimes (i (length segs))
+            (let ((seg (aref segs i)))
+              (when (eq 'image (hermes-segment-type seg))
+                (let ((block (hermes--segment-block seg)))
+                  (unless (string-empty-p block)
+                    (insert block))))))))
       (when (and text (not (string-empty-p text)))
         (insert text)
-        (unless (eq (char-before) ?\n) (insert "\n")))
-      (hermes--insert-raw-drawer msg))))
+        (unless (eq (char-before) ?\n) (insert "\n"))))))
 
-;;;; Raw drawer I/O
-
-(defun hermes--insert-raw-drawer (msg)
-  "Insert a :HERMES_RAW: drawer containing the serialized MSG at point.
-After insertion, the drawer is automatically collapsed via
-`org-fold-hide-drawer-toggle' (or `outline-hide-subtree' fallback)."
-  (let ((plist (hermes--message-to-plist msg))
-        (start (point)))
-    (unless (bolp) (insert "\n"))
-    (insert ":HERMES_RAW:\n")
-    (let ((print-length nil)
-          (print-level nil)
-          (print-quoted t)
-          (print-escape-newlines t))
-      (insert (prin1-to-string plist)))
-    (insert "\n:END:\n")
-    (when (derived-mode-p 'org-mode)
-      (save-excursion
-        (goto-char start)
-        (when (re-search-forward "^:HERMES_RAW:" nil t)
-          (cond
-           ((fboundp 'org-fold-hide-drawer-toggle)
-            (ignore-errors (org-fold-hide-drawer-toggle t)))
-           ((fboundp 'outline-hide-subtree)
-            (ignore-errors (outline-hide-subtree)))))))))
-
-(defun hermes--extract-raw-drawer (&optional pos)
-  "Find the :HERMES_RAW: drawer at POS (or point) and return its plist.
-Returns nil if no drawer is found or the contents are unreadable.
-Does not move point."
-  (save-excursion
-    (when pos (goto-char pos))
-    ;; Bound by the end of the current Org subtree (or point-max when
-    ;; we're not on a heading).  Using a regex like `^\\* ' alone fails
-    ;; once turns live at level 2 under a container heading — the next
-    ;; level-1 heading never appears, so the search would happily walk
-    ;; into the following turn's drawer.
-    (let ((bound (save-excursion
-                   (cond
-                    ((not (derived-mode-p 'org-mode)) (point-max))
-                    ((ignore-errors (org-back-to-heading t))
-                     (org-end-of-subtree t t)
-                     (point))
-                    (t (point-max))))))
-      (when (re-search-forward "^:HERMES_RAW:[ \t]*$" bound t)
-        (let ((body-start (line-end-position)))
-          (when (re-search-forward "^:END:[ \t]*$" bound t)
-            (let* ((body-end (line-beginning-position))
-                   (raw (buffer-substring-no-properties body-start body-end))
-                   (trimmed (string-trim raw)))
-              (when (and trimmed (> (length trimmed) 0))
-                (condition-case nil
-                    (car (read-from-string trimmed))
-                  (error nil))))))))))
 ;; NB: outline-fold repair for the just-inserted region now lives in
 ;; `hermes--refresh-region', invoked from `hermes--render' after
 ;; `with-silent-modifications' has exited.
-
-;;;; Drawer-size diagnostic
-
-(defun hermes--plist-tool-bytes (plist)
-  "Sum the `prin1' length of tool-segment payloads in PLIST.
-PLIST is a serialized `hermes-message' (output of
-`hermes--message-to-plist').  Returns 0 when there are no tool segments."
-  (let ((segs (plist-get plist :segments))
-        (sum 0))
-    (when (listp segs)
-      (dolist (seg segs)
-        (when (and (listp seg) (eq 'tool (plist-get seg :type)))
-          (let ((content (plist-get seg :content)))
-            (when content
-              (setq sum (+ sum (length (prin1-to-string content)))))))))
-    sum))
-
-;;;###autoload
-(defun hermes-measure-drawer-size ()
-  "Report `:HERMES_RAW:' drawer sizes in the current buffer.
-Walks every turn-level subtree, sums the serialized drawer text, and
-splits the total into tool-payload bytes vs. everything else (text,
-reasoning, system, usage, framing).  The split tells you whether
-Scenario A (tool-heavy) or Scenario B (text-heavy) from PLAN.md
-applies to the buffer you're looking at.
-
-Interactive: prints a one-line summary via `message'.  Returns an alist
-suitable for programmatic use:
-  ((:turns . N) (:total . BYTES) (:avg . BYTES) (:max . BYTES)
-   (:max-kind . SYMBOL) (:tool-bytes . BYTES) (:other-bytes . BYTES))."
-  (interactive)
-  (unless (derived-mode-p 'org-mode)
-    (user-error "Not in an Org-mode buffer"))
-  (let ((turn-level (1+ hermes--container-level))
-        (total 0) (n 0) (max 0) (max-kind nil)
-        (tool-bytes 0) (other-bytes 0))
-    (org-map-entries
-     (lambda ()
-       (when (= turn-level (org-current-level))
-         (let* ((plist (save-excursion (hermes--extract-raw-drawer)))
-                (text  (and plist (prin1-to-string plist)))
-                (len   (if text (length text) 0))
-                (kind  (and plist (plist-get plist :kind)))
-                (tbytes (if plist (hermes--plist-tool-bytes plist) 0)))
-           (when plist
-             (setq total (+ total len)
-                   n (1+ n)
-                   tool-bytes (+ tool-bytes tbytes)
-                   other-bytes (+ other-bytes (- len tbytes)))
-             (when (> len max)
-               (setq max len max-kind kind))))))
-     nil nil 'file)
-    (if (zerop n)
-        (progn (message "No :HERMES_RAW: drawers found") nil)
-      (let ((avg (/ total n)))
-        (message
-         (concat
-          "Drawers: %d turns, total %.1f KB (avg %.0f B, max %d B in %s); "
-          "tool payload %.1f KB (%d%%), other %.1f KB (%d%%)")
-         n
-         (/ total 1024.0) avg max (or max-kind "?")
-         (/ tool-bytes 1024.0)
-         (if (zerop total) 0 (round (* 100.0 (/ (float tool-bytes) total))))
-         (/ other-bytes 1024.0)
-         (if (zerop total) 0 (round (* 100.0 (/ (float other-bytes) total)))))
-        (list (cons :turns n) (cons :total total) (cons :avg avg)
-              (cons :max max) (cons :max-kind max-kind)
-              (cons :tool-bytes tool-bytes)
-              (cons :other-bytes other-bytes))))))
 
 (defun hermes--tag-spacer (heading tags)
   "Return spaces so HEADING + space + spacer + space + TAGS aligns near col 75.
@@ -696,17 +655,6 @@ gone by the time the timer fires."
             (insert (format "#+begin_example Error\n%s\n#+end_example\n" err))
           (insert (hermes-md-to-org (or result "")))
           (unless (eq (char-before) ?\n) (insert "\n")))
-        (insert ":HERMES_RAW:\n")
-        (let ((print-length nil)
-              (print-level nil)
-              (print-quoted t))
-          (insert (prin1-to-string
-                   (list :task-id tid
-                         :prompt prompt
-                         :status (if err 'error 'complete)
-                         :result result
-                         :error err))))
-        (insert "\n:END:\n")
         (goto-char (point-min))))
     (let ((sid-capture sid)
           (tid-capture tid)
@@ -734,35 +682,57 @@ gone by the time the timer fires."
   "Return an Org level-3 heading wrapping the assistant CONTENT.
 The heading is *not* tagged with `hermes-fold' so it stays expanded —
 this prevents the response prose from being captured by a preceding
-folded `*** Thinking' / `*** Reasoning' subtree."
+folded `*** Reasoning' subtree."
   (if (or (null content) (string-empty-p content))
       ""
     (let ((body (hermes-md-to-org content)))
-      (concat (hermes--stars 2) " Response\n"
-              body
-              (if (string-suffix-p "\n" body) "" "\n")))))
+      (if (string-empty-p body)
+          ""
+        (concat (hermes--stars 2) " Response\n"
+                ":PROPERTIES:\n:HERMES_KIND: RESPONSE\n:END:\n"
+                body
+                (if (string-suffix-p "\n" body) "" "\n"))))))
 
 (defun hermes--format-cot-block (label content fold-id)
-  "Return an Org level-3 heading for a chain-of-thought CONTENT.
-LABEL is e.g. \"Thinking\" or \"Reasoning\".  FOLD-ID is the segment id
-used to remember user expansion across re-renders.  Headings are tagged
-with the `hermes-fold' text property so `hermes--apply-tool-folds' will
-collapse them on insertion."
+  "Return an Org level-3 heading for chain-of-thought CONTENT.
+LABEL is the visible heading text (\"Reasoning\").  FOLD-ID is the segment
+id used to remember user expansion across re-renders.  Headings are tagged
+with the `hermes-reasoning-fold' text property so the renderer can collapse
+them on insertion."
   (if (or (null content) (string-empty-p content))
       ""
-    (let* ((kind (downcase label))
-           (heading (format "%s %s" (hermes--stars 2) label))
+    (let* ((heading (format "%s %s" (hermes--stars 2) label))
            (heading-line
             (concat (propertize heading
                                 'hermes-reasoning-fold t
                                 'hermes-fold-id fold-id)
                     "\n"))
-           (props (concat ":PROPERTIES:\n"
-                          (format ":HERMES_KIND: %s\n" kind)
-                          ":END:\n"))
-           (body (if (string-suffix-p "\n" content) content
-                   (concat content "\n"))))
-      (concat heading-line props body "\n"))))
+           (props ":PROPERTIES:\n:HERMES_KIND: REASONING\n:END:\n")
+           (body content))
+      (if (or (null body) (string-empty-p body))
+          ""
+        (concat heading-line props body
+                (if (string-suffix-p "\n" body) "" "\n"))))))
+
+(defun hermes--strip-trailing-newlines (s)
+  "Return S with all trailing newlines removed."
+  (if (string-match "\n+\\'" s)
+      (substring s 0 (match-beginning 0))
+    s))
+
+(defun hermes--join-blocks (parts)
+  "Join PARTS with exactly one newline between each, terminated by one newline.
+Empty parts are skipped.  Trailing newlines on each part are normalized
+so callers can mix part strings that do and do not already end in \\n
+without producing blank-line gaps."
+  (let ((trimmed (delq nil
+                       (mapcar (lambda (p)
+                                 (let ((s (hermes--strip-trailing-newlines (or p ""))))
+                                   (and (> (length s) 0) s)))
+                               parts))))
+    (if (null trimmed)
+        ""
+      (concat (mapconcat #'identity trimmed "\n") "\n"))))
 
 (defun hermes--format-subagent (sa)
   "Return an Org subtree string for subagent SA."
@@ -781,7 +751,7 @@ collapse them on insertion."
          (duration (hermes-subagent-duration sa))
          (id (hermes-subagent-id sa))
          parts)
-    (push (format "%s %s (%s)\n:PROPERTIES:\n:ID:       %s\n:END:\n"
+    (push (format "%s %s (%s)\n:PROPERTIES:\n:HERMES_KIND: SUBAGENT\n:ID:       %s\n:END:\n"
                   (hermes--stars 3) goal status-label id) parts)
     (when (and thinking (not (string-empty-p thinking)))
       (push (concat "#+begin_example Thinking\n"
@@ -803,7 +773,7 @@ collapse them on insertion."
                     (or summary "")
                     (if duration (format "%.1f" duration) "?"))
             parts))
-    (mapconcat #'identity (nreverse parts) "\n")))
+    (hermes--join-blocks (nreverse parts))))
 
 (defun hermes--format-subagents-block (subagents)
   "Return an Org block string for all SUBAGENTS, or empty string if none."
@@ -814,10 +784,7 @@ collapse them on insertion."
         (let ((formatted (hermes--format-subagent (aref subagents i))))
           (when (> (length formatted) 0)
             (push formatted parts))))
-      (let ((result (mapconcat #'identity (nreverse parts) "\n")))
-        (if (> (length result) 0)
-            (concat result "\n")
-          "")))))
+      (hermes--join-blocks (nreverse parts)))))
 
 (defun hermes--update-subagent-views (subagents)
   "Replace the subagent block region in the stream buffer."
@@ -869,12 +836,23 @@ collapse them on insertion."
     (_           "DONE")))
 
 (defun hermes--tool-properties (tool)
-  "Return an alist of org PROPERTY entries for TOOL."
-  (let ((dur (hermes-tool-duration tool))
-        (tid (hermes-tool-id tool))
+  "Return an alist of org PROPERTY entries for TOOL.
+Includes HERMES_KIND, TOOL_ID, TOOL_NAME, TOOL_STATUS, TOOL_DURATION,
+and TOOL_SUMMARY (gateway-provided human summary).
+Duration is stored at full float precision; the human-readable (0.1s)
+in the heading text is rounded for display only."
+  (let ((dur     (hermes-tool-duration tool))
+        (tid     (hermes-tool-id tool))
+        (name    (hermes-tool-name tool))
+        (status  (hermes-tool-status tool))
+        (summary (hermes-tool-summary tool))
         (acc nil))
-    (when tid  (push (cons "TOOL_ID" (format "%s" tid)) acc))
-    (when dur  (push (cons "DURATION" (format "%.1fs" dur)) acc))
+    (push (cons "HERMES_KIND" "TOOL") acc)
+    (when tid     (push (cons "TOOL_ID"       (format "%s" tid))    acc))
+    (when name    (push (cons "TOOL_NAME"     (format "%s" name))   acc))
+    (when status  (push (cons "TOOL_STATUS"   (format "%s" status)) acc))
+    (when dur     (push (cons "TOOL_DURATION" (format "%s" dur))    acc))
+    (when summary (push (cons "TOOL_SUMMARY"  summary)              acc))
     (nreverse acc)))
 
 (defun hermes--format-property-drawer (props)
@@ -951,37 +929,89 @@ from `hermes-tool-formatters' and only inserted when non-empty."
         (sid (aref seg 3)))
     (pcase type
       ('text (hermes--format-response content))
-      ('thinking "")
       ('reasoning (hermes--format-cot-block "Reasoning" content sid))
       ('tool (hermes--format-tool content))
       ('system (format "#+begin_comment\n%s\n#+end_comment\n" content))
       ('image (hermes--format-image-segment content))
       (_ ""))))
 
+(defun hermes--image-display-dims (width height)
+  "Return (W . H) display dimensions for an image of natural size WIDTH x HEIGHT.
+Longest side is capped at `hermes-image-display-max-dim' (aspect
+ratio preserved).  Returns natural dims when already within the
+cap.  Returns nil when WIDTH or HEIGHT is missing/invalid."
+  (when (and (integerp width) (integerp height) (> width 0) (> height 0))
+    (let ((max-dim hermes-image-display-max-dim))
+      (cond
+       ((null max-dim) (cons width height))
+       (t (let ((longest (max width height)))
+            (if (<= longest max-dim)
+                (cons width height)
+              (let ((scale (/ (float max-dim) longest)))
+                (cons (round (* width scale))
+                      (round (* height scale)))))))))))
+
+(defun hermes--format-attr-line (keyword plist)
+  "Return `#+attr_KEYWORD: :k1 v1 :k2 v2\\n' for the non-nil entries of PLIST.
+Strings are printed with `prin1' (so they keep their quotes); numbers
+and symbols are formatted with %S.  Returns the empty string when
+PLIST has no non-nil values."
+  (let (parts)
+    (while plist
+      (let ((k (car plist)) (v (cadr plist)))
+        (when v
+          (push (format "%s %s" k
+                        (cond ((stringp v) (prin1-to-string v))
+                              (t (format "%S" v))))
+                parts)))
+      (setq plist (cddr plist)))
+    (if (null parts) ""
+      (format "#+attr_%s: %s\n" keyword
+              (mapconcat #'identity (nreverse parts) " ")))))
+
 (defun hermes--format-image-segment (content)
   "Return an Org `file:' link (or placeholder) for image segment CONTENT.
-CONTENT is a plist with at least :path; :name is used in the missing-file
-placeholder.  The path is used verbatim — no expansion or canonicalization."
-  (let* ((path (and (listp content) (plist-get content :path)))
-         (name (or (and (listp content) (plist-get content :name))
-                   (and path (file-name-nondirectory path))
-                   "image")))
+Precedes the link with two attr lines:
+- #+attr_org:    :width / :height  — *display* dimensions (scaled down
+  so longest side ≤ `hermes-image-display-max-dim'; Org honors these).
+- #+attr_hermes: :name / :width / :height / :token-estimate — canonical
+  metadata (real pixel dimensions; Hermes-private namespace).
+
+When real dimensions are unknown, attr_org is omitted (the window-width
+fallback in `org-image-actual-width' applies).  attr_hermes is emitted
+whenever any of its fields are non-nil.  The path is used verbatim — no
+expansion or canonicalization."
+  (let* ((path    (and (listp content) (plist-get content :path)))
+         (name    (and (listp content) (plist-get content :name)))
+         (width   (and (listp content) (plist-get content :width)))
+         (height  (and (listp content) (plist-get content :height)))
+         (tokens  (and (listp content) (plist-get content :token-estimate)))
+         (display (hermes--image-display-dims width height))
+         (label   (or (and path (file-name-nondirectory path)) name "image")))
     (cond
      ((and path (file-readable-p path))
-      ;; Inline image link.  `org-display-inline-images' (triggered by
-      ;; the post-commit refresh) renders these into actual images.
-      (format "[[file:%s]]\n" path))
-     (t
-      (format "[image: %s (not found)]\n" name)))))
+      (concat (if display
+                  (hermes--format-attr-line
+                   "org" (list :width (car display) :height (cdr display)))
+                "")
+              (hermes--format-attr-line "hermes"
+                                        (list :name name
+                                              :width width :height height
+                                              :token-estimate tokens))
+              (format "[[file:%s]]\n" path)))
+     (t (format "[image: %s (not found)]\n" label)))))
 
 (defun hermes--segment-block (seg)
-  "Return the buffer bytes for SEG: formatted text + trailing newline.
-Empty-format segments (e.g. `thinking') return the empty string and
-contribute zero bytes to the bench."
+  "Return the buffer bytes for SEG: formatted text + trailing blank line.
+Each block ends with exactly two newlines so adjacent blocks are
+separated by one blank line in the rendered Org buffer.  Empty-format
+segments (e.g. `thinking') return the empty string and contribute
+zero bytes."
   (let ((s (hermes--format-segment seg)))
     (cond ((string-empty-p s) "")
-          ((string-suffix-p "\n" s) s)
-          (t (concat s "\n")))))
+          ((string-suffix-p "\n\n" s) s)
+          ((string-suffix-p "\n" s) (concat s "\n"))
+          (t (concat s "\n\n")))))
 
 (defun hermes--snapshot-total-length (snapshot)
   "Sum the :length fields of SNAPSHOT (a vector of plists)."
@@ -1032,6 +1062,9 @@ O(total bench text) to O(delta size)."
             (setq diverged t)
           (let* ((new-text (hermes--segment-block seg))
                  (new-len (length new-text)))
+            ;; TEA: view reads its own output.  Storing `:text' in the
+            ;; snapshot entries would let us compare without touching
+            ;; the buffer.
             (unless (and (= old-len new-len)
                          (string= new-text
                                   (buffer-substring-no-properties
@@ -1184,9 +1217,8 @@ Also opens a bench overlay tinting the live region."
         hermes--bench-end   (copy-marker (point) t))
   (setq hermes--stream-headline-marker (point-marker))
   (set-marker-insertion-type hermes--stream-headline-marker nil)
-  (let* ((info    (and (boundp 'hermes--state)
-                       hermes--state
-                       (hermes-state-session-info hermes--state)))
+  (let* ((info    (let ((st (hermes--current-state)))
+                    (and st (hermes-state-session-info st))))
          (model   (and (hash-table-p info) (gethash "model" info)))
          (short   (or (hermes--model-short-name model) ""))
          (prefix  (if (string-empty-p short) "A:" (concat "A: " short)))
@@ -1195,7 +1227,8 @@ Also opens a bench overlay tinting the live region."
     (insert heading "\n")
     (hermes--face-overlay hb (1- (point)) 'hermes-assistant-face))
   (hermes--insert-properties
-   `(("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
+   `(("HERMES_KIND"      . "ASSISTANT")
+     ("HERMES_TIMESTAMP" . ,(hermes--now-iso))))
   (when (derived-mode-p 'org-mode)
     (save-excursion
       (goto-char hermes--stream-headline-marker)
@@ -1244,9 +1277,8 @@ MSG is the committed `hermes-message'.  Replaces the line at
              (marker-position hermes--stream-headline-marker))
     (let* ((text     (hermes--message-text-for-display msg))
            (excerpt  (concat "A: " (hermes--heading-excerpt text)))
-           (info     (and (boundp 'hermes--state)
-                          hermes--state
-                          (hermes-state-session-info hermes--state)))
+           (info     (let ((st (hermes--current-state)))
+                       (and st (hermes-state-session-info st))))
            (model    (and (hash-table-p info) (gethash "model" info)))
            (tags     (hermes--turn-tags 'assistant model))
            (heading  (format "%s %s" (hermes--stars 1) excerpt))
@@ -1269,8 +1301,8 @@ MSG is the committed `hermes-message'.  Replaces the line at
 
 (defun hermes--stream-commit (&optional old-stream)
   "Stream finished: stamp Org :ID:s on the trail, drop markers and bench.
-If OLD-STREAM is non-nil, write a :HERMES_RAW: drawer at the end of the
-`** assistant' subtree describing the just-completed message.
+If OLD-STREAM is non-nil, write `HERMES_USAGE_*' properties on the
+`** assistant' heading describing the just-completed message.
 Returns a cons (START . END) of the committed region for post-commit
 refresh by the caller, or nil if no bench was active."
   ;; Defensive: ensure no throttled paint can fire after the bench is gone.
@@ -1281,26 +1313,27 @@ refresh by the caller, or nil if no bench was active."
     (save-excursion
       (goto-char hermes--stream-headline-marker)
       (ignore-errors (org-id-get-create))))
-  ;; Write the raw drawer at the end of the assistant subtree before
-  ;; tearing down the markers — we still need bench-end to know where.
+  ;; Write usage properties on the assistant heading before tearing
+  ;; down the markers — we still need bench-end to know where.
   (when (and old-stream
              (hermes-stream-p old-stream)
              (markerp hermes--bench-end)
              (marker-position hermes--bench-end))
-    (let* ((msg (hermes--message-from-stream
-                 old-stream
-                 (and (boundp 'hermes--state)
-                      hermes--state
-                      (hermes-state-usage hermes--state)))))
+    (let* ((per-turn-usage
+            ;; Per-turn token deltas live on the assistant message the
+            ;; reducer just pushed to pending-turns (message.complete).
+            ;; Session-cumulative `hermes-state-usage' would leak the
+            ;; running total into every drawer; avoid that.
+            (let ((tt (let ((st (hermes--current-state)))
+                        (and st (hermes-state-pending-turns st)))))
+              (when (and (vectorp tt) (> (length tt) 0))
+                (let ((last (aref tt (1- (length tt)))))
+                  (when (eq 'assistant (hermes-message-kind last))
+                    (hermes-message-usage last))))))
+           (msg (hermes--message-from-stream old-stream per-turn-usage)))
       (save-excursion
-        (goto-char (marker-position hermes--bench-end))
-        (unless (bolp) (insert "\n"))
-        (hermes--insert-raw-drawer msg)
-        ;; Drawer may have extended past `hermes--bench-end' (depending
-        ;; on the marker's insertion type).  Push the end marker to the
-        ;; latest written position so the post-commit refresh covers it.
-        (when (> (point) (marker-position hermes--bench-end))
-          (set-marker hermes--bench-end (point))))
+        (goto-char (marker-position hermes--bench-start))
+        (hermes--write-usage-properties (hermes-message-usage msg)))
       ;; Rewrite the assistant heading from `** <model>' placeholder
       ;; into `** <response excerpt> :hermes:<model>:'.
       (hermes--finalize-assistant-heading msg)))
@@ -1325,7 +1358,7 @@ refresh by the caller, or nil if no bench was active."
   ;; Snapshot the committed region before clearing markers, so the
   ;; caller can run `hermes--refresh-region' on it (after the silent
   ;; block exits) to restore `line-prefix' on the rewritten heading and
-  ;; collapse the just-inserted raw drawer.
+      ;; collapse the just-finalized assistant subtree.
   (let ((committed-start (and (markerp hermes--bench-start)
                               (marker-position hermes--bench-start)))
         (committed-end   (and (markerp hermes--bench-end)
@@ -1390,21 +1423,18 @@ happens, re-arms the cooldown so further deltas continue to throttle."
   (when (buffer-live-p buf)
     (with-current-buffer buf
       (setq hermes--stream-render-timer nil)
-      (let ((ns hermes--stream-render-pending)
-            (bench-buf (and (fboundp 'hermes-bench-active-p)
-                            (hermes-bench-active-p (current-buffer)))))
+      (let* ((ns hermes--stream-render-pending)
+             (target-visible (hermes--buffer-visible-p (current-buffer))))
         (setq hermes--stream-render-pending nil)
         (when (and ns
-                   hermes--state
-                   (eq ns (hermes-state-stream hermes--state))
-                   (or bench-buf
-                       (and (markerp hermes--bench-start)
-                            (marker-position hermes--bench-start))))
-          (if bench-buf
-              (hermes-bench--stream-update bench-buf nil ns)
-            (with-silent-modifications
-              (save-excursion
-                (hermes--stream-update nil ns))))
+                   target-visible
+                   (hermes--current-state)
+                   (eq ns (hermes-state-stream (hermes--current-state)))
+                   (markerp hermes--bench-start)
+                   (marker-position hermes--bench-start))
+          (with-silent-modifications
+            (save-excursion
+              (hermes--stream-update nil ns)))
           (when (derived-mode-p 'org-mode)
             (org-element-cache-reset)
             (when (and (markerp hermes--bench-start)
@@ -1428,75 +1458,5 @@ happens, re-arms the cooldown so further deltas continue to throttle."
   (when (vectorp (hermes-stream-subagents new-stream))
     (hermes--update-subagent-views (hermes-stream-subagents new-stream))))
 
-;;;; Mode line
-
-(defun hermes--mode-line-update (&optional _old _new)
-  "Recompute `hermes--mode-line-status' from the current state.
-Installed on `hermes-state-change-hook' so connection/model/token
-changes refresh the mode-line immediately.  Hook arguments are ignored
-\(state is read live from buffer-local `hermes--state').
-
-We trust the buffer-local state here.  Earlier we hit a bug where the
-mode-line showed `disconnected' throughout a live streaming session
-because `gateway.ready' updated `hermes--state' but left the entry in
-`hermes--buffer-sessions' pointing at the stale struct, and subsequent
-session-scoped dispatches read that stale entry back.  The proper fix
-landed in `hermes--state-slot-write' (it now mirrors writes into the
-registry entry of the active session-id).  If that ever regresses, a
-defensive fallback that reads `hermes-rpc--state' here as ground-truth
-will paper over it — see the commented block below."
-  ;; --- Defensive fallback (currently disabled).  Uncomment if the
-  ;; mode-line is observed to lie again (e.g. another state-sync
-  ;; regression in `hermes--state-slot-write').  This trusts the RPC
-  ;; process when buffer state contradicts it.
-  ;;
-  ;; (let* ((buf-conn (and hermes--state (hermes-state-connection hermes--state)))
-  ;;        (rpc-conn (and (boundp 'hermes-rpc--state)
-  ;;                       (pcase hermes-rpc--state
-  ;;                         ('starting 'connecting)
-  ;;                         ('ready    'connected)
-  ;;                         (_         'disconnected))))
-  ;;        (conn (if (and (eq buf-conn 'disconnected)
-  ;;                       (eq rpc-conn 'connected))
-  ;;                  'connected
-  ;;                (or buf-conn rpc-conn 'disconnected))))
-  ;;   ...use CONN instead of `(hermes-state-connection hermes--state)' below...)
-  (setq hermes--mode-line-status
-        (concat
-         (pcase (and hermes--state (hermes-state-connection hermes--state))
-           ('connected    "●")
-           ('connecting   "◐")
-           ('disconnected "○")
-           (_             "○"))
-         (let ((sid  (and hermes--state (hermes-state-session-id hermes--state)))
-               (conn (and hermes--state (hermes-state-connection hermes--state))))
-           (if sid
-               (format " · session %s %s"
-                       (if (> (length sid) 8) (substring sid 0 8) sid)
-                       (pcase conn
-                         ('connected    "ready")
-                         ('connecting   "connecting")
-                         ('disconnected "disconnected")
-                         (_             "unknown")))
-             " · session ?"))
-         (let* ((info  (and hermes--state (hermes-state-session-info hermes--state)))
-                (model (and (hash-table-p info) (gethash "model" info))))
-           (if model (format " · %s" model) ""))
-         (let ((ui (or hermes--ui-line "")))
-           (if (string-empty-p (string-trim ui))
-               ""
-             (format " · %s" (string-trim ui))))
-         (let* ((usage (and hermes--state (hermes-state-usage hermes--state)))
-                (sent  (and usage (gethash "tokens_sent" usage)))
-                (recv  (and usage (gethash "tokens_received" usage))))
-           (if (or sent recv)
-               (format " · (%s tokens)" (+ (or sent 0) (or recv 0)))
-             ""))
-         (let ((q (and hermes--state (hermes-state-queue hermes--state))))
-           (if (and q (> (length q) 0))
-               (format " · queue: %d" (length q))
-             ""))))
-  (force-mode-line-update))
-
-(provide 'hermes-render)
-;;; hermes-render.el ends here
+(provide 'hermes-org-render)
+;;; hermes-org-render.el ends here

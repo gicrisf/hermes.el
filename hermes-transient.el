@@ -9,9 +9,9 @@
 ;; Optional Transient popup for Hermes commands.  Load with
 ;; `(require 'hermes-transient)' after `hermes-mode' is loaded.
 ;;
-;; When loaded, this file binds `C-c C-t' in `hermes-mode-map' to the
-;; main transient prefix.  In Doom, `hermes-doom.el' additionally binds
-;; it under the `SPC h' leader.
+;; When loaded, this file binds `C-c C-t' in `hermes-org-minor-mode-map'
+;; to the main transient prefix.  In Doom, `hermes-doom.el' additionally
+;; binds it under the `SPC h' leader.
 ;;
 ;; Safe to load without Transient installed: the prefix definition and
 ;; keybinding are skipped, leaving the helper commands available.
@@ -19,16 +19,16 @@
 ;;; Code:
 
 (require 'transient nil t)
-(require 'hermes-mode)
+(require 'hermes)
+(require 'hermes-session)
 
 (defun hermes-transient--in-session-p ()
   "Non-nil when the current buffer has a reachable Hermes session target.
 Returns non-nil in:
-- `hermes-mode' buffers with an assigned session;
-- `hermes-minor-mode' Org buffers inside a `:hermes:' container;
-- `hermes-bench-mode' buffers (resolved via `hermes-bench--parent-buffer').
-Returns nil in arbitrary buffers and in `hermes-mode' buffers before
-`session.create' resolves."
+- `hermes-org-minor-mode' Org buffers inside a `:hermes:' container;
+- `hermes-bench-mode' and `hermes-comint-mode' buffers (resolved via the
+  buffer-local `hermes--current-session-id').
+Returns nil in arbitrary buffers and before `session.create' resolves."
   (and (fboundp 'hermes--resolve-session-target)
        (hermes--resolve-session-target)))
 
@@ -80,12 +80,12 @@ skills commands only when a Hermes session is reachable."
     ["Session"
      ("o" "Open / create session" hermes)
      ("n" "New session" hermes-transient--new-session)
-     ("l" "Session list" hermes-sessions)]
+     ("l" "Session list" hermes-current-sessions)]
 
     ["Input" :if hermes-transient--in-session-p
-     ("i" "Send / focus bench" hermes-send-or-focus-bench)
+     ("i" "Focus bench" hermes-bench-focus)
      ("c" "Compose" hermes-compose)
-     ("k" "Interrupt" hermes-interrupt)
+     ("k" "Interrupt" hermes-interrupt-current-session)
      ("S" "Steer" hermes-steer)]
 
     ["Config" :if hermes-transient--in-session-p
@@ -113,8 +113,8 @@ skills commands only when a Hermes session is reachable."
      ("v" "View log" hermes-view-log)])
 
   ;;;###autoload
-  (with-eval-after-load 'hermes-mode
-    (define-key hermes-mode-map (kbd "C-c C-t") #'hermes-transient)))
+  (with-eval-after-load 'hermes
+    (define-key hermes-org-minor-mode-map (kbd "C-c C-t") #'hermes-transient)))
 
 (provide 'hermes-transient)
 ;;; hermes-transient.el ends here

@@ -73,9 +73,20 @@
 (defconst hermes-rpc-methods
   '(;; Session lifecycle
     "session.create"         ; {cols?}                       → {session_id}
-    "session.resume"         ; {session_id}                  (long handler, async)
+    "session.resume"         ; {session_id}                  (long handler, async) → {session_id, resumed, message_count, messages, info}
     "session.close"          ; {session_id}
     "session.interrupt"      ; {session_id}
+    "session.list"           ; {limit?, cwd?}                → [{id, title, preview, started_at, message_count, source}]
+    "session.branch"         ; {session_id, name?}           (long handler, async) → {session_id, title, parent}
+    "session.delete"         ; {session_id}                  → bool
+    "session.save"           ; {session_id}                  → {file}
+    "session.title"          ; {session_id, title?}          → {session_id, title}
+    "session.compress"       ; {session_id, focus_topic?}    (long handler, async)
+    "session.undo"           ; {session_id}                  → {status}
+    "session.status"         ; {session_id}                  → {id, path, model, created_at, last_active, running, usage}
+    "session.usage"          ; {session_id}                  → {tokens_sent, tokens_received, cost, ...}
+    "session.history"        ; {session_id}                  → [{role, text, ...}]
+    "session.most_recent"    ; {}                            → {session_id}
     ;; Conversation
     "prompt.submit"          ; {session_id, text}
     "prompt.background"      ; {session_id, text}            → {task_id}

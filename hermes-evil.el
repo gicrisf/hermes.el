@@ -6,8 +6,9 @@
 
 ;;; Commentary:
 
-;; Normal-state Evil bindings for `hermes-mode' buffers.  Works in any
-;; Emacs that has Evil installed (vanilla + evil-mode, Spacemacs, Doom).
+;; Normal-state Evil bindings for `hermes-org-minor-mode' buffers.
+;; Works in any Emacs that has Evil installed (vanilla + evil-mode,
+;; Spacemacs, Doom).
 ;;
 ;; Usage: (require 'hermes-evil)
 ;;
@@ -16,7 +17,7 @@
 
 ;;; Code:
 
-(require 'hermes-mode)
+(require 'hermes)
 
 ;; Ensure `evil-define-key' macro is available at compile time so
 ;; byte-compilation in environments without Evil loaded does not
@@ -25,10 +26,14 @@
   (require 'evil nil t))
 
 (with-eval-after-load 'evil
-  (evil-define-key 'normal hermes-mode-map
-    (kbd "C-c C-i") #'hermes-send-or-focus-bench
-    (kbd "C-c C-k") #'hermes-interrupt
-    (kbd "C-c C-l") #'hermes-compose))
+  (evil-define-key 'normal hermes-org-minor-mode-map
+    (kbd "C-c C-i") #'hermes-bench-focus
+    (kbd "C-c C-k") #'hermes-interrupt-current-session
+    (kbd "C-c C-l") #'hermes-compose)
+  ;; The comint viewer is a typing surface — start in insert state so
+  ;; bare letters flow to the prompt instead of being swallowed by Evil
+  ;; normal-state prefix keys (e.g. `g').
+  (evil-set-initial-state 'hermes-comint-mode 'insert))
 
 (provide 'hermes-evil)
 ;;; hermes-evil.el ends here

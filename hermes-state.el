@@ -6,11 +6,15 @@
 
 ;;; Commentary:
 
-;; Two buffer-local atoms per session: `hermes--state' (ephemeral; the
-;; canonical history lives in the Org buffer) and `hermes--ui-state'
-;; (ephemeral).  Mutations go through `hermes-dispatch' /
-;; `hermes-ui-dispatch', which call a pure reducer and swap the var
-;; atomically, then run a change hook for the renderer to subscribe to.
+;; Persistent per-session state lives in the global `hermes--sessions'
+;; hash table (session-id → `hermes-state').  Process-wide events
+;; without a session-id (e.g. `gateway.ready', connection-state
+;; broadcasts) update `hermes--global-state'.  Ephemeral UI state
+;; lives in `hermes--ui-states' (session-id → `hermes-ui-state'),
+;; parallel to `hermes--sessions'.  Mutations go through
+;; `hermes-dispatch' / `hermes-ui-dispatch', which call a pure
+;; reducer and swap the slot atomically, then run a change hook for
+;; renderers to subscribe to.
 
 ;;; Code:
 
@@ -60,8 +64,8 @@
 ;;;; Structs
 
 (cl-defstruct (hermes-segment (:copier hermes-segment-copy))
-  type        ; 'text | 'thinking | 'reasoning | 'tool | 'system
-  content     ; string for text/thinking/reasoning/system; hermes-tool for tool segments
+  type        ; 'text | 'reasoning | 'tool | 'system | 'image
+  content     ; string for text/reasoning/system; hermes-tool for tool; image plist for image
   id)         ; unique segment id (for stable updates)
 
 (cl-defstruct (hermes-tool (:copier hermes-tool-copy))
@@ -70,7 +74,9 @@
   context     ; tool args preview from tool.start
   preview     ; live preview from tool.progress
   inline-diff ; diff output from tool.complete
-  todos       ; list of plists (:text :done) from tool.complete
+  todos       ; list of hash-tables with "content" "status" "id" — from
+              ; tool.complete (and defensively tool.start/tool.progress
+              ; when the gateway forwards them earlier)
   output      ; string or nil (raw tool result text — rarely populated)
   summary     ; string or nil (human summary from gateway, e.g. "Did 3 searches")
   error duration)
@@ -89,7 +95,8 @@
   kind        ; 'user | 'assistant | 'system
   segments    ; vector of hermes-segment
   usage timestamp
-  subagents)  ; vector of hermes-subagent
+  subagents   ; vector of hermes-subagent
+  (id nil))   ; unique string like "msg-42" — set by `hermes--push-committed'
 
 (cl-defstruct (hermes-stream (:copier hermes-stream-copy))
   segments    ; vector of hermes-segment, ordered by arrival
@@ -108,6 +115,10 @@
   stream             ; hermes-stream or nil (in-flight only)
   pending            ; hermes-pending or nil
   (pending-turns []) ; vector of hermes-message structs awaiting buffer insert
+  (turns [])         ; vector of hermes-message — canonical conversation log,
+                     ; accumulates every committed user/assistant turn, never
+                     ; cleared except by `:turns-load'.  System messages are
+                     ; excluded (they live in `pending-turns' only).
   slash-catalog
   (queue nil)
   (history nil)
@@ -119,7 +130,9 @@
                      ; client-side MIRROR of gateway's session["attached_images"] — never authoritative.
                      ; :attach-id is a client-generated identifier used to match RPC callbacks back to
                      ; their optimistic placeholder entry.  :status is 'pending | 'attached | 'error.
-  (bg-tasks []))     ; vector of hermes-bg-task — background prompt tasks for this session
+  (bg-tasks [])      ; vector of hermes-bg-task — background prompt tasks for this session
+  (parent-sid nil))  ; string or nil — sid of the session this one was branched from
+                     ; (set from `session.branch' response; informational only).
 
 (cl-defstruct (hermes-bg-task (:copier hermes-bg-task-copy))
   task-id          ; string — gateway-assigned task id
@@ -141,15 +154,137 @@
 
 ;;;; Atoms and dispatchers
 
-(defvar-local hermes--state nil
-  "Current persistent state (a `hermes-state').
-In a multi-session buffer this mirrors the most recently dispatched
-session's slot in `hermes--buffer-sessions' — kept in sync so older
-code reading `hermes--state' directly still sees coherent values
-during the slice-B transition.")
+(defvar hermes--sessions (make-hash-table :test 'equal)
+  "Global map: session-id (string) → `hermes-state' struct.
+Sole canonical store for per-session persistent state.")
 
-(defvar-local hermes--ui-state nil
-  "Current ephemeral UI state (a `hermes-ui-state').")
+(defvar hermes--global-state (make-hermes-state :connection 'disconnected)
+  "State for process-wide events before any session exists.
+Receives `gateway.ready', `skin.changed', connection-state changes,
+and diagnostic events (`gateway.stderr', `gateway.protocol_error',
+`gateway.start_timeout') that fire via `hermes--broadcast-dispatch'
+or `hermes--route-connection' without a session-id argument.")
+
+(defvar hermes--org-buffers (make-hash-table :test 'equal)
+  "Map session-id (string) → org-mode conversation buffer.")
+
+(defvar hermes--bench-buffers (make-hash-table :test 'equal)
+  "Map session-id (string) → bench buffer.")
+
+(defvar hermes-comint--buffers (make-hash-table :test 'equal)
+  "Map session-id (string) → comint conversation buffer.")
+
+(defun hermes--session-exists-p ()
+  "Return non-nil when at least one session is in `hermes--sessions'."
+  (> (hash-table-count hermes--sessions) 0))
+
+(defun hermes--most-recent-session-id ()
+  "Return the session-id of the session with the newest committed turn, or nil.
+Walks `hermes--sessions' and returns the one whose `turns' vector
+has the latest `hermes-message-timestamp' on its last entry."
+  (let (best-id best-ts)
+    (maphash
+     (lambda (sid st)
+       (let ((turns (hermes-state-turns st)))
+         (when (> (length turns) 0)
+           (let ((ts (hermes-message-timestamp
+                      (aref turns (1- (length turns))))))
+             (when (or (null best-ts) (time-less-p best-ts ts))
+               (setq best-id sid best-ts ts))))))
+     hermes--sessions)
+    best-id))
+
+(defun hermes--list-active-sessions ()
+  "Return an alist (SID . STATE) of live sessions, most-recent first.
+Recency is measured by the timestamp of the last committed turn;
+sessions with no turns sort to the end (in arbitrary order)."
+  (let (acc)
+    (maphash (lambda (sid st) (push (cons sid st) acc)) hermes--sessions)
+    (sort acc
+          (lambda (a b)
+            (let* ((ta (let ((turns (hermes-state-turns (cdr a))))
+                         (and (> (length turns) 0)
+                              (hermes-message-timestamp
+                               (aref turns (1- (length turns)))))))
+                   (tb (let ((turns (hermes-state-turns (cdr b))))
+                         (and (> (length turns) 0)
+                              (hermes-message-timestamp
+                               (aref turns (1- (length turns))))))))
+              (cond
+               ((and ta tb) (time-less-p tb ta))
+               (ta t)
+               (tb nil)
+               (t nil)))))))
+
+(defun hermes--message-plain-text (msg)
+  "Concatenate text/reasoning segments of MSG into a flat string."
+  (let ((segs (hermes-message-segments msg))
+        parts)
+    (when (vectorp segs)
+      (dotimes (i (length segs))
+        (let* ((seg (aref segs i))
+               (type (hermes-segment-type seg))
+               (c    (hermes-segment-content seg)))
+          (when (and (memq type '(text reasoning))
+                     (stringp c)
+                     (> (length c) 0))
+            (push c parts)))))
+    (mapconcat #'identity (nreverse parts) "")))
+
+(defun hermes--session-completion-table (sessions)
+  "Build an alist (SID . DISPLAY) for completing-read over SESSIONS.
+SESSIONS is an alist (SID . STATE) as returned by
+`hermes--list-active-sessions'.  DISPLAY shows a short sid prefix,
+an excerpt of the most recent user message, and a relative age."
+  (mapcar
+   (lambda (entry)
+     (let* ((sid    (car entry))
+            (state  (cdr entry))
+            (turns  (hermes-state-turns state))
+            (n      (length turns))
+            (last-user (let ((i (1- n)) found)
+                         (while (and (>= i 0) (not found))
+                           (let ((m (aref turns i)))
+                             (when (eq (hermes-message-kind m) 'user)
+                               (setq found m)))
+                           (setq i (1- i)))
+                         found))
+            (excerpt (if last-user
+                         (let ((s (hermes--message-plain-text last-user)))
+                           (replace-regexp-in-string
+                            "\n+" " "
+                            (if (> (length s) 50) (substring s 0 50) s)))
+                       "(empty)"))
+            (last-ts (and (> n 0)
+                          (hermes-message-timestamp (aref turns (1- n)))))
+            (age (if last-ts
+                     (hermes--format-age (float-time (time-since last-ts)))
+                   "new"))
+            (short-sid (if (> (length sid) 8) (substring sid 0 8) sid))
+            (display (format "%s  %-50s  (%s)" short-sid excerpt age)))
+       (cons sid display)))
+   sessions))
+
+(defun hermes--format-age (secs)
+  "Format SECS as a short human-readable age string."
+  (cond
+   ((< secs 60)    (format "%ds ago" (truncate secs)))
+   ((< secs 3600)  (format "%dm ago" (truncate (/ secs 60))))
+   ((< secs 86400) (format "%dh ago" (truncate (/ secs 3600))))
+   (t              (format "%dd ago" (truncate (/ secs 86400))))))
+
+(defvar hermes--ui-states (make-hash-table :test 'equal)
+  "Per-session ephemeral UI state, keyed by session id.
+Parallel to `hermes--sessions'.  Session-scoped (not buffer-local) so
+the bench, viewer, and any other UI subscriber for the same session
+see identical streaming-status text.")
+
+(defun hermes-ui-state-get (session-id)
+  "Return the `hermes-ui-state' for SESSION-ID, creating it if absent."
+  (or (gethash session-id hermes--ui-states)
+      (let ((st (make-hermes-ui-state)))
+        (puthash session-id st hermes--ui-states)
+        st)))
 
 (defvar hermes--current-session-id nil
   "Session id of the dispatch currently in progress, or nil.
@@ -158,60 +293,116 @@ calls by the event router.  Hook handlers consult it to discover
 which session a change applies to.")
 
 (defvar hermes-state-change-hook nil
-  "Hook of (OLD NEW) called after `hermes--state' is swapped.
+  "Hook of (OLD NEW) called after a session's persistent state is swapped.
 Both arguments are `hermes-state' structs; OLD may be nil at init.
 The active session id is available via `hermes--current-session-id'.")
 
 (defvar hermes-ui-state-change-hook nil
-  "Hook of (OLD NEW) called after `hermes--ui-state' is swapped.")
-
-(defun hermes-state-init ()
-  "Initialise the buffer-local atoms.  Safe to call on an existing buffer."
-  (unless hermes--state
-    (setq hermes--state (make-hermes-state :connection 'disconnected)))
-  (unless hermes--ui-state
-    (setq hermes--ui-state (make-hermes-ui-state))))
+  "Hook of (OLD NEW) called after a session's ephemeral UI state is swapped.
+Both arguments are `hermes-ui-state' structs; OLD may be the initial
+empty struct.  `hermes--current-session-id' is bound to the affected
+session id for the duration of the hook run.")
 
 (defun hermes--state-slot-read (session-id)
-  "Return the persistent state for SESSION-ID, or `hermes--state' as fallback.
-Resolves to the per-session registry entry when SESSION-ID is non-nil
-and `hermes--buffer-sessions' carries a struct for it; otherwise
-hands back the buffer-local `hermes--state'."
-  (or (and session-id
-           (boundp 'hermes--buffer-sessions)
-           (hash-table-p hermes--buffer-sessions)
-           (gethash session-id hermes--buffer-sessions))
-      hermes--state))
+  "Return state for SESSION-ID, or `hermes--global-state' when SESSION-ID is nil."
+  (if session-id
+      (or (gethash session-id hermes--sessions)
+          hermes--global-state)
+    hermes--global-state))
 
 (defun hermes--state-slot-write (session-id new-state)
-  "Persist NEW-STATE under SESSION-ID and mirror to `hermes--state'.
-When SESSION-ID is non-nil and present in `hermes--buffer-sessions',
-that entry is replaced.  The buffer-local `hermes--state' is always
-updated.  Additionally, if NEW-STATE carries a session-id that differs
-from SESSION-ID, the registry entry for that active session is also
-updated — this prevents stale data when global events (e.g.
-`gateway.ready') update `hermes--state' without touching the registry."
-  (when (and session-id
-             (boundp 'hermes--buffer-sessions)
-             (hash-table-p hermes--buffer-sessions)
-             (gethash session-id hermes--buffer-sessions))
-    (puthash session-id new-state hermes--buffer-sessions))
-  (let ((active-sid (and new-state (hermes-state-session-id new-state))))
-    (when (and active-sid
-               (not (equal active-sid session-id))
-               (boundp 'hermes--buffer-sessions)
-               (hash-table-p hermes--buffer-sessions)
-               (gethash active-sid hermes--buffer-sessions))
-      (puthash active-sid new-state hermes--buffer-sessions)))
-  (setq hermes--state new-state))
+  "Store NEW-STATE for SESSION-ID, or into `hermes--global-state' when nil."
+  (if session-id
+      (puthash session-id new-state hermes--sessions)
+    (setq hermes--global-state new-state)))
+
+(defun hermes--current-state ()
+  "Return the active persistent `hermes-state' struct.
+Prefers `hermes--current-session-id' (dynamically bound by dispatch);
+otherwise resolves the current buffer through `hermes--org-buffers'
+and falls back to `hermes--global-state'."
+  (or (and hermes--current-session-id
+           (gethash hermes--current-session-id hermes--sessions))
+      (let* ((buf (current-buffer))
+             (sid (catch 'found
+                    (maphash (lambda (k b)
+                               (when (eq b buf) (throw 'found k)))
+                             hermes--org-buffers)
+                    nil)))
+        (and sid (gethash sid hermes--sessions)))
+      hermes--global-state))
+
+(defun hermes--buffer-session-state (buffer)
+  "Return the persistent state for the session hosted in BUFFER, or nil.
+Looks BUFFER up in `hermes--org-buffers' and returns the matching
+entry from `hermes--sessions'."
+  (when (buffer-live-p buffer)
+    (let ((sid (catch 'found
+                 (maphash (lambda (k b)
+                            (when (eq b buffer) (throw 'found k)))
+                          hermes--org-buffers)
+                 nil)))
+      (and sid (gethash sid hermes--sessions)))))
+
+(defun hermes--current-sid ()
+  "Return the active session id, or nil.
+Same resolution as `hermes--current-state' but returns the id."
+  (or hermes--current-session-id
+      (let ((buf (current-buffer)))
+        (catch 'found
+          (maphash (lambda (k b) (when (eq b buf) (throw 'found k)))
+                   hermes--org-buffers)
+          nil))))
+
+(defun hermes--buffer-sid (&optional buffer)
+  "Return the session-id for BUFFER (or current buffer), or nil.
+Recognises every viewer kind:
+- Comint, bench, and section buffers (buffer-local
+  `hermes--current-session-id').
+- Org viewers (walked through `hermes--org-buffers')."
+  (let ((buf (or buffer (current-buffer))))
+    (when (buffer-live-p buf)
+      (or (buffer-local-value 'hermes--current-session-id buf)
+          (catch 'found
+            (maphash (lambda (sid b) (when (eq b buf) (throw 'found sid)))
+                     hermes--org-buffers)
+            nil)))))
+
+(defun hermes--maybe-kill-bench (sid)
+  "Kill the bench for SID if no viewers remain across all registries."
+  (when sid
+    (unless (or (buffer-live-p (gethash sid hermes--org-buffers))
+                (buffer-live-p (gethash sid hermes-comint--buffers)))
+      (let ((bench (gethash sid hermes--bench-buffers)))
+        (when (buffer-live-p bench)
+          (dolist (w (get-buffer-window-list bench nil t))
+            (when (window-live-p w) (delete-window w)))
+          (kill-buffer bench))
+        (remhash sid hermes--bench-buffers)))))
+
+(defun hermes--buffer-visible-p (buf)
+  "Return non-nil if BUF is live and shown in some window on any visible frame."
+  (and (buffer-live-p buf)
+       (get-buffer-window buf 'visible)))
+
+(defmacro hermes--on-session-buffer (registry &rest body)
+  "If the current session has a live buffer in REGISTRY, run BODY there.
+Reads `hermes--current-session-id', looks up REGISTRY (a hash-table
+expression), and executes BODY with the matching buffer current when
+it is live.  No-op otherwise."
+  (declare (indent 1))
+  `(let ((sid hermes--current-session-id))
+     (when sid
+       (let ((buf (gethash sid ,registry)))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf ,@body))))))
 
 (defun hermes-dispatch (msg &optional session-id)
   "Reduce MSG into the persistent state and notify subscribers.
-If SESSION-ID is provided and present in `hermes--buffer-sessions',
-the reduction targets that session's slot; otherwise it targets the
-buffer-local `hermes--state'.  `hermes--current-session-id' is bound
-to SESSION-ID for the duration so hook handlers can see which
-session changed."
+When SESSION-ID is non-nil the reduction targets that session's entry
+in `hermes--sessions'; otherwise it targets `hermes--global-state'.
+`hermes--current-session-id' is bound to SESSION-ID for the duration
+so hook handlers can see which session changed."
   (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
          (old (hermes--state-slot-read hermes--current-session-id))
          (new (hermes--reduce old msg)))
@@ -220,15 +411,14 @@ session changed."
       (run-hook-with-args 'hermes-state-change-hook old new))))
 
 (defun hermes-ui-dispatch (msg &optional session-id)
-  "Reduce MSG into the ephemeral state and notify subscribers.
-SESSION-ID is accepted for symmetry with `hermes-dispatch' and bound
-into `hermes--current-session-id' for the hook run; the ephemeral
-state itself remains buffer-local in slice B."
+  "Reduce MSG into the session's ephemeral state and notify subscribers.
+SESSION-ID is bound into `hermes--current-session-id' for the hook run.
+The ephemeral state lives in `hermes--ui-states' (session-scoped)."
   (let* ((hermes--current-session-id (or session-id hermes--current-session-id))
-         (old hermes--ui-state)
+         (old (hermes-ui-state-get hermes--current-session-id))
          (new (hermes--ui-reduce old msg)))
     (unless (eq old new)
-      (setq hermes--ui-state new)
+      (puthash hermes--current-session-id new hermes--ui-states)
       (run-hook-with-args 'hermes-ui-state-change-hook old new))))
 
 ;;;; Reducer helpers
@@ -239,6 +429,19 @@ state itself remains buffer-local in slice B."
         ((and (consp payload) (consp (car payload)))
          (alist-get key payload nil nil #'equal))
         (t (plist-get payload key))))
+
+(defun hermes--strip-ansi (string)
+  "Remove ANSI escape sequences from STRING.
+Returns nil for nil input, the filtered string otherwise.
+Empty strings are preserved as empty strings."
+  (and string (ansi-color-filter-apply string)))
+
+(defun hermes--slug-for-name (id)
+  "Sanitize ID into a single token safe for use as an Org #+name value.
+Replaces any character outside [A-Za-z0-9_-] with `-'.  Returns nil for
+nil input.  Used to derive collision-resistant block names from tool IDs
+when emitting body-canonical fields (see `hermes--extract-named-block')."
+  (and id (replace-regexp-in-string "[^A-Za-z0-9_-]" "-" id)))
 
 (defmacro hermes--with-copy (struct copier place &rest body)
   "Bind PLACE to a fresh shallow copy of STRUCT and run BODY for side effects.
@@ -252,12 +455,23 @@ BODY is expected to `setf' slots on PLACE.  Returns PLACE."
   "Return a new vector that is VEC with ELT pushed onto the end."
   (vconcat vec (vector elt)))
 
+;; TEA violation (reducer purity): these counters are global mutable
+;; state read+incremented from inside the reducer.  Same (msg, state)
+;; pair yields different output across calls.  Fix would move them into
+;; `hermes-state' slots and `setf' on the copy.  No current bug.
 (defvar hermes--segment-counter 0
   "Monotonic counter for segment IDs.")
 
 (defun hermes--next-segment-id ()
   "Return a fresh segment ID string."
   (format "seg-%d" (cl-incf hermes--segment-counter)))
+
+(defvar hermes--message-counter 0
+  "Monotonic counter for message IDs.")
+
+(defun hermes--next-message-id ()
+  "Return a fresh message ID string."
+  (format "msg-%d" (cl-incf hermes--message-counter)))
 
 ;;;; Segment helpers
 
@@ -338,10 +552,33 @@ containment so truncated echoes are caught."
 ;;;; Pending-turns helper
 
 (defun hermes--push-pending (state msg)
-  "Return a new STATE with MSG pushed onto `pending-turns'."
+  "Return a new STATE with MSG pushed onto `pending-turns' only.
+Used for system messages — they render in the org buffer but are not
+part of the canonical conversation log."
   (hermes--with-copy state hermes-state-copy s
     (setf (hermes-state-pending-turns s)
           (hermes--vector-append (hermes-state-pending-turns state) msg))))
+
+(defun hermes--push-committed (state msg)
+  "Return a new STATE with MSG committed as a conversation turn.
+Assigns a fresh monotonic `:id' to a copy of MSG, then appends it to
+`pending-turns' (for the org renderer) AND `turns' (canonical log).
+Used by `:user-submit', `\"message.complete\"', and the `\"error\"' path
+that commits a partial assistant turn.  Both `setf' branches read from
+the original STATE — not the in-flight copy — matching the
+`hermes--push-pending' convention.
+
+TEA: `hermes-message-copy' is shallow — the `:segments' vector is
+shared between MSG and the committed copy.  Safe today (no mutation
+sites), latent risk if a future writer mutates the shared vector."
+  (let ((m (hermes--with-copy msg hermes-message-copy x
+             ;; TEA: see `hermes--next-message-id' header.
+             (setf (hermes-message-id x) (hermes--next-message-id)))))
+    (hermes--with-copy state hermes-state-copy s
+      (setf (hermes-state-pending-turns s)
+            (hermes--vector-append (hermes-state-pending-turns state) m))
+      (setf (hermes-state-turns s)
+            (hermes--vector-append (hermes-state-turns state) m)))))
 
 ;;;; Serialization — struct ↔ plist
 
@@ -493,7 +730,7 @@ hash-tables (usage)."
                        ((null ts) nil)
                        (t (format-time-string "%Y-%m-%dT%H:%M:%S%z" ts)))))
     (list :kind (hermes-message-kind msg)
-          :text (hermes--message-text msg)
+          :id (hermes-message-id msg)
           :segments seg-plists
           :subagents sa-plists
           :usage usage-plist
@@ -522,6 +759,7 @@ Inverse of `hermes--message-to-plist'."
                     (t []))))
     (make-hermes-message
      :kind (plist-get plist :kind)
+     :id (plist-get plist :id)
      :segments segs
      :subagents sas
      :usage (plist-get plist :usage)
@@ -550,11 +788,44 @@ which case dispatch routes to the correct typed reconstructor."
 
 ;;;; Build a hermes-message from an in-flight stream
 
+(defun hermes--strip-surrounding-blank-lines (s)
+  "Return S with leading and trailing whitespace-only newlines removed.
+Internal blank lines (paragraph breaks) are preserved."
+  (let ((s (or s "")))
+    (when (string-match "\\`\\(?:[ \t]*\n\\)+" s)
+      (setq s (substring s (match-end 0))))
+    (when (string-match "\\(?:\n[ \t]*\\)+\\'" s)
+      (setq s (substring s 0 (match-beginning 0))))
+    s))
+
+(defun hermes--normalize-segments (segs)
+  "Return a copy of SEGS with text/reasoning content blank-line-normalized.
+Strips leading and trailing whitespace-only newlines on `text' and
+`reasoning' segments so committed buffer rendering does not get blank
+lines between a heading's `:END:' and the body or between body and the
+next heading.  Other segment types (`tool', `image', `system') are
+untouched — their bodies are structured."
+  (if (not (vectorp segs))
+      segs
+    (let* ((n (length segs))
+           (out (make-vector n nil)))
+      (dotimes (i n)
+        (let ((seg (aref segs i)))
+          (aset out i
+                (if (memq (hermes-segment-type seg) '(text reasoning))
+                    (hermes--with-copy seg hermes-segment-copy ns
+                      (setf (hermes-segment-content ns)
+                            (hermes--strip-surrounding-blank-lines
+                             (hermes-segment-content seg))))
+                  seg))))
+      out)))
+
 (defun hermes--message-from-stream (stream usage)
   "Build an assistant `hermes-message' from STREAM and USAGE."
   (make-hermes-message
    :kind 'assistant
-   :segments (or (hermes-stream-segments stream) [])
+   :segments (hermes--normalize-segments
+              (or (hermes-stream-segments stream) []))
    :subagents (or (hermes-stream-subagents stream) [])
    :usage usage
    :timestamp (current-time)))
@@ -566,7 +837,19 @@ which case dispatch routes to the correct typed reconstructor."
 ;; (e.g. :user-submit, :connected).  PAYLOAD is a hash-table or plist.
 
 (defun hermes--reduce (state msg)
-  "Pure: produce a new `hermes-state' from STATE and MSG."
+  "Pure: produce a new `hermes-state' from STATE and MSG.
+
+TEA known impurities (pragmatic concessions, kept out of equality
+branching so they don't affect reducer determinism):
+- `current-time' / `format-time-string' for message and bg-task
+  timestamps (sites at 825, 875, 1190, 1401, 961, 1459, 1468).
+  Strict fix would capture the timestamp in the transport layer and
+  pass it in the message payload.
+- `hermes--next-message-id' / `hermes--next-segment-id' mutate global
+  counters (see their defvars).
+- `hermes--log-write' calls in several gateway-error handlers below
+  perform a buffer write from inside the reducer.  Move to a hook
+  subscriber if reducer purity ever needs to be auditable."
   (unless state (setq state (make-hermes-state :connection 'disconnected)))
   (let ((type (car msg))
         (p    (cdr msg)))
@@ -608,7 +891,7 @@ which case dispatch routes to the correct typed reconstructor."
                     :kind 'user
                     :segments segs
                     :timestamp (current-time)))
-              (s1 (hermes--push-pending state msg)))
+              (s1 (hermes--push-committed state msg)))
          (hermes--with-copy s1 hermes-state-copy s
            (setf (hermes-state-history s)
                  (let ((h (cons text (hermes-state-history state))))
@@ -675,6 +958,10 @@ which case dispatch routes to the correct typed reconstructor."
       (:pending-turns-clear
        (hermes--with-copy state hermes-state-copy s
          (setf (hermes-state-pending-turns s) [])))
+      (:turns-load
+       (let ((new-turns (or (plist-get p :turns) [])))
+         (hermes--with-copy state hermes-state-copy s
+           (setf (hermes-state-turns s) new-turns))))
       ;; --- Background tasks (client-side synthetic events) ---------------
       (:background-start
        (let* ((tid (plist-get p :task-id))
@@ -723,9 +1010,16 @@ which case dispatch routes to the correct typed reconstructor."
       ("session.info"
        (hermes--with-copy state hermes-state-copy s
          (when (hash-table-p p)
+           ;; `copy-hash-table' is required: without it, `puthash' below
+           ;; mutates the *old* state's hash in place, leaving (eq old.X
+           ;; new.X) = t for subscribers that diff old vs new and
+           ;; silently suppressing UI updates (e.g. mode-line token
+           ;; refresh).  Reducer purity invariant — see same fix in
+           ;; "message.complete" usage branch.
            (let ((sid (hermes--get p "session_id"))
-                 (merged (or (hermes-state-session-info state)
-                             (make-hash-table :test 'equal)))
+                 (merged (if (hermes-state-session-info state)
+                             (copy-hash-table (hermes-state-session-info state))
+                           (make-hash-table :test 'equal)))
                  (usage-payload (hermes--get p "usage")))
              (maphash (lambda (k v) (puthash k v merged)) p)
              (setf (hermes-state-session-info s) merged)
@@ -734,8 +1028,9 @@ which case dispatch routes to the correct typed reconstructor."
                (when (and busy (stringp busy) (not (string-empty-p busy)))
                  (setf (hermes-state-busy-mode s) busy)))
              (when usage-payload
-               (let ((u (or (hermes-state-usage state)
-                            (make-hash-table :test 'equal))))
+               (let ((u (if (hermes-state-usage state)
+                            (copy-hash-table (hermes-state-usage state))
+                          (make-hash-table :test 'equal))))
                  (cond
                   ((hash-table-p usage-payload)
                    (maphash (lambda (k v) (puthash k v u)) usage-payload))
@@ -806,10 +1101,20 @@ which case dispatch routes to the correct typed reconstructor."
              state
            (let* ((sent (hermes--get p "tokens_sent"))
                   (received (hermes--get p "tokens_received"))
+                  ;; Per-turn usage attached to the message itself.  Carries
+                  ;; only the deltas from this turn, not the session total.
                   (msg-usage (make-hash-table :test 'equal))
+                  (_ (progn
+                       (when sent     (puthash "tokens_sent" sent msg-usage))
+                       (when received (puthash "tokens_received" received msg-usage))))
                   (msg (hermes--message-from-stream str msg-usage))
-                  (acc-usage (or (hermes-state-usage state)
-                                 (make-hash-table :test 'equal))))
+                  ;; Cumulative session-wide counter lives in state.
+                  ;; `copy-hash-table' is required: mutating the old hash
+                  ;; in place would leave (eq old.usage new.usage) = t,
+                  ;; suppressing mode-line refresh.  Reducer purity.
+                  (acc-usage (if (hermes-state-usage state)
+                                 (copy-hash-table (hermes-state-usage state))
+                               (make-hash-table :test 'equal))))
              (when sent
                (puthash "tokens_sent" (+ (or (gethash "tokens_sent" acc-usage) 0) sent)
                         acc-usage))
@@ -817,7 +1122,7 @@ which case dispatch routes to the correct typed reconstructor."
                (puthash "tokens_received" (+ (or (gethash "tokens_received" acc-usage) 0)
                                              received)
                         acc-usage))
-             (let ((s1 (hermes--push-pending state msg)))
+             (let ((s1 (hermes--push-committed state msg)))
                (hermes--with-copy s1 hermes-state-copy s
                  (setf (hermes-state-usage s) acc-usage
                        (hermes-state-stream s) nil)))))))
@@ -981,7 +1286,8 @@ which case dispatch routes to the correct typed reconstructor."
       ("tool.start"
        (let ((str (hermes-state-stream state))
              (tid (hermes--get p "tool_id"))
-             (ctx (hermes--get p "context")))
+             (ctx (hermes--strip-ansi (hermes--get p "context")))
+             (todos-raw (hermes--get p "todos")))
          (if (or (null str) (null tid))
              state
            (let* ((segs (hermes-stream-segments str))
@@ -992,7 +1298,9 @@ which case dispatch routes to the correct typed reconstructor."
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
                                   (setf (hermes-tool-status nt) 'running
-                                        (hermes-tool-context nt) ctx)))
+                                        (hermes-tool-context nt) ctx)
+                                  (when todos-raw
+                                    (setf (hermes-tool-todos nt) todos-raw))))
                       (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
                                  (setf (hermes-segment-content ns) new-tool)))
                       (new-segs (copy-sequence segs)))
@@ -1004,7 +1312,8 @@ which case dispatch routes to the correct typed reconstructor."
       ("tool.progress"
        (let ((str (hermes-state-stream state))
              (tid (hermes--get p "tool_id"))
-             (preview (hermes--get p "preview")))
+             (preview (hermes--strip-ansi (hermes--get p "preview")))
+             (todos-raw (hermes--get p "todos")))
          (if (or (null str) (null tid))
              state
            (let* ((segs (hermes-stream-segments str))
@@ -1014,7 +1323,9 @@ which case dispatch routes to the correct typed reconstructor."
                (let* ((old-seg (aref segs idx))
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                  (setf (hermes-tool-preview nt) preview)))
+                                  (setf (hermes-tool-preview nt) preview)
+                                  (when todos-raw
+                                    (setf (hermes-tool-todos nt) todos-raw))))
                       (new-seg (hermes--with-copy old-seg hermes-segment-copy ns
                                  (setf (hermes-segment-content ns) new-tool)))
                       (new-segs (copy-sequence segs)))
@@ -1034,11 +1345,11 @@ which case dispatch routes to the correct typed reconstructor."
                                    (let ((last-seg (aref segs (1- (length segs)))))
                                      (and (eq 'tool (hermes-segment-type last-seg))
                                           (hermes-tool-id (hermes-segment-content last-seg)))))))))
-              (inline-diff (hermes--get p "inline_diff"))
+              (inline-diff (hermes--strip-ansi (hermes--get p "inline_diff")))
               (todos-raw (hermes--get p "todos"))
-              (output (hermes--get p "output"))
-              (summary (hermes--get p "summary"))
-              (err    (hermes--get p "error"))
+              (output (hermes--strip-ansi (hermes--get p "output")))
+              (summary (hermes--strip-ansi (hermes--get p "summary")))
+              (err    (hermes--strip-ansi (hermes--get p "error")))
               (dur    (hermes--get p "duration_s")))
          (if (or (null str) (null tid))
              state
@@ -1126,7 +1437,7 @@ which case dispatch routes to the correct typed reconstructor."
          (if (null str)
              state
            (let* ((amsg (hermes--message-from-stream str nil))
-                  (s1 (hermes--push-pending state amsg)))
+                  (s1 (hermes--push-committed state amsg)))
              (hermes--with-copy s1 hermes-state-copy s
                (setf (hermes-state-stream s) nil))))))
       ;; --- Gateway diagnostics -------------------------------------------
@@ -1234,7 +1545,7 @@ which case dispatch routes to the correct typed reconstructor."
                   (hermes-ui-state-thinking-text s) nil))))
        ("tool.progress"
         (let ((tid (hermes--get p "tool_id"))
-              (preview (hermes--get p "preview")))
+              (preview (hermes--strip-ansi (hermes--get p "preview"))))
           (if (null tid)
               state
             (hermes--with-copy state hermes-ui-state-copy s

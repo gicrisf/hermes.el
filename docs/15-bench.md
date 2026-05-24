@@ -1,53 +1,52 @@
 ## 15. Bottom Bench
 
 > **Scope:** The persistent bottom bench for `hermes-mode` major-mode buffers.
-> Minor mode (`hermes-minor-mode` in arbitrary org files) does **not** show a bench.
+> Minor mode (`hermes-org-minor-mode` in arbitrary org files) does **not** show a bench.
 >
-> **Date:** 2026-05-17
+> **Date:** 2026-05-24
 
 ---
 
 ## 15.1 Overview
 
-The bench is a bottom side-window paired with a `hermes-mode` buffer. It serves
-as the user's primary interactive surface: the last turn (user prompt,
-reasoning, answer) is displayed in structured zones, with an editable input
-area at the bottom. The org buffer remains the canonical history.
+The bench is a bottom side-window paired with a `hermes-mode` org buffer.  It is
+a `hermes-comint-mode` buffer flagged with `hermes-comint--bench-p = t`.  It
+shows only the current in-flight turn (user prompt + assistant stream) above a
+writable `> ` prompt; committed history lives in the org buffer only.  The
+bench provides comint's history ring (M-p / M-n) and field-based prompt
+handling.
 
 ### Visual layout
 
 ```
-+------------------------------------------+
-|  Hermes · ● · claude-sonnet · 12->34     |  <- header-line (status)
-|                                           |
-|  ** hello there                           |  <- user prompt zone
-|                                           |
-|  *** Reasoning                            |  <- reasoning zone (always visible)
-|  The user sent a greeting...              |
-|  ...                                      |
-|                                           |
-|  Hello! How can I help you today?         |  <- answer zone
-|  ...                                      |
-|                                           |
-|  ------                                   |  <- separator (read-only)
-|  >                                        |  <- input area (cursor)
-+------------------------------------------+
+┌──────────────────────────────────────────┐
+│ > User · 14:52                            │  ← user heading (shown on send)
+│ what is 2+2?                              │
+│                                            │
+│ Let me think carefully...                  │  ← reasoning + answer
+│                                            │     (from stream)
+│ 2+2 is 4.  This is basic arithmetic.      │
+│                                            │
+│ [tool: calculator] DONE 2+2=4 (0.3s)      │  ← tool summaries
+├──────────────────────────────────────────┤
+│ > █                                prompt │  ← field-based input (cursor)
+└──────────────────────────────────────────┘
 ```
+
+The header-line shows persistent session-level status: background task counters
+(`[bg: 1 running]`) and attachment counts (`[2 attachment(s)]`).
 
 ### Key behaviors
 
 | Behavior | Spec |
 |----------|------|
-| **Window** | Bottom side-window, 20 lines, dedicated, preserve-size |
-| **User prompt** | Echoed as `** <text>` when sent |
-| **Reasoning** | Always shows `*** Reasoning` header; populated from `reasoning` segments |
-| **Answer** | Populated from `text`, `tool`, `system` segments |
-| **No thinking** | `thinking` deltas are ignored (not committed-visible) |
-| **ASCII-only** | `[tool: <name>] <status>`, `[system] <text>` — no emojis |
-| **Clear-on-send** | Old answer wiped immediately on RET |
-| **Commit-late** | Assistant turn commits to org buffer on `message.complete` |
-| **Persistence** | Answer stays visible after commit until next user prompt |
-| **Auto-scroll** | Window stays pinned to bottom (input area always visible) |
+| **Window** | Bottom side-window, 20 lines, dedicated |
+| **User prompt** | Shown as `> User · HH:MM\n<text>` on send |
+| **Stream** | In-flight turn rendered atomically via `hermes-comint--paint-stream` |
+| **Commit** | On `message.complete`, ephemeral region clears; turn lands in org buffer only |
+| **History ring** | comint-input-ring — M-p / M-n cycling through past prompts |
+| **Auto-scroll** | Window stays pinned to bottom (prompt always visible) |
+| **Status** | Bg tasks + attachments in header-line; steer + transient feedback in ephemeral region |
 
 ---
 
@@ -55,123 +54,156 @@ area at the bottom. The org buffer remains the canonical history.
 
 ### Design principles
 
-1. **Pure display surface.** The bench has no state atom. All reads go through
-the parent's buffer-local `hermes--state`.
-2. **One boundary marker.** `hermes-bench--input-boundary` is the only persistent
-marker. Everything above it is ephemeral and rebuilt from scratch on every paint.
-Everything below is editable input.
-3. **Zero renderer coupling.** The bench does not import or call any org renderer
-internals (`hermes--render-stream-segments`, `hermes--segment-block`, etc.).
-4. **Full rebuild per delta.** The bench rebuilds its entire ephemeral area on
-every stream update. This is fast for a 20-line plain-text buffer and eliminates
-marker-drift issues entirely.
+1. **Single mode, two behaviors.** The bench is `hermes-comint-mode` with a
+   buffer-local `hermes-comint--bench-p` flag.  When t, committed-turn
+   rendering is suppressed (`load-from-state` and `append-new-turns` are no-ops).
+
+2. **One region, two markers.** `hermes-comint--output-end` and
+   `hermes-comint--prompt-start` partition the buffer: everything between them
+   is the ephemeral region; everything after `prompt-start` is the writable
+   prompt + input.
+
+3. **Atomic rebuild per delta.** `paint-stream` deletes the entire ephemeral
+   region and re-inserts all content on every tick: user heading + steer lines
+   + transient status + assistant turn.  No incremental diff, no zone markers.
+
+4. **Pure projection.** The bench reads from the same `hermes--sessions` state
+   atom as the org viewer and comint viewer.  It subscribes to
+   `hermes-state-change-hook` independently.
 
 ### Buffer structure
 
 ```
 [point-min]
+                                           ← output-end (nil insertion-type)
+> User · 14:52                             ← ephemeral user heading
+what is 2+2?                                     (read-only, field output)
 
-** <user prompt>              (optional, face: hermes-bench-user-face)
+Let me think carefully...                   ← stream content
+2+2 is 4.                                         (overwritten on every tick)
+[tool: calculator] DONE 2+2=4 (0.3s)
 
-*** Reasoning                 (always present, face: hermes-bench-reasoning-heading-face)
-<reasoning text>              (face: hermes-bench-reasoning-face)
-
-<answer text>                 (plain text)
-
-------                        (read-only separator, face: hermes-bench-separator-face)
->                             (read-only prompt, face: hermes-bench-prompt-face)
-<input text>                  (user-editable)
+                                           ← prompt-start (t insertion-type)
+>                                          ← prompt prefix (read-only, field input)
+█                                          ← user input (editable)
 [point-max]
 ```
 
-The separator and prompt use `rear-nonsticky (read-only)` so the `read-only`
-property does not leak into the input area. The prompt uses `front-sticky
-(read-only)` so it does not leak backward into the separator.
+The prompt uses `rear-nonsticky (read-only)` on the `> ` prefix so typed text
+inherits the `field 'input` property but not `read-only`.
+
+### Buffer-local state
+
+| Variable | Purpose |
+|----------|---------|
+| `hermes-comint--bench-p` | Non-nil → bench mode (suppress history rendering) |
+| `hermes-comint--current-user-prompt` | Last user prompt text, preserved across stream ticks |
+| `hermes-comint--steer-messages` | List of `[steer]` strings; cleared on commit |
+| `hermes-comint--status-message` | Transient status `(:text :error-p)`; cleared on commit |
+| `hermes-comint--bg-cookie` | face-remap cookie for skin background |
 
 ---
 
 ## 15.3 Rendering model
 
-### `hermes-bench--paint-ephemeral`
+### `hermes-comint--paint-stream` (bench mode)
 
-The single renderer function. Called from:
-- `hermes-bench-send` — clears old turn, shows new user prompt
-- `hermes-bench--stream-begin` — initializes empty reasoning/answer zones
-- `hermes-bench--stream-update` — rebuilds reasoning/answer from latest segments
+In bench mode, `paint-stream` prepends ephemeral content before the assistant
+turn.  On every stream tick, the entire ephemeral region is rebuilt atomically:
 
-Algorithm:
-1. Save input text and point offset from input start
-2. Delete entire buffer contents (`(delete-region (point-min) (point-max))`)
-3. Insert ephemeral content (user prompt, reasoning header + text, answer text)
-4. Insert separator line + prompt (read-only)
-5. Restore input text and point
+1. Delete `[output-end, prompt-start)` — wipe the old ephemeral region
+2. If `current-user-prompt` is set: insert `> User · HH:MM\n<fontified body>\n\n`
+3. If `steer-messages` non-empty: insert `[steer] <msg>\n` lines
+4. If `status-message` set: insert the status line
+5. Insert the in-flight assistant turn via `hermes-comint--insert-turn`
 
-This is stateless: no zone markers, no incremental diff, no snapshot vectors.
+In full-comint mode, only step 5 runs (unchanged behavior).
 
-### Segment partitioning
+### Segment content
 
-`hermes-bench--segments-by-zone` walks the segment vector and buckets content:
+Bench rendering goes through `hermes-comint--insert-turn`, which handles all
+segment types using the same logic as the full comint viewer:
 
-| Segment type | Destination |
-|--------------|-------------|
-| `reasoning` | Reasoning zone text |
-| `text` | Answer zone text |
-| `tool` | Answer zone: `[tool: <name>] <status> <summary>` |
-| `system` | Answer zone: `[system] <text>` |
-| `thinking` | Dropped |
+| Segment type | Bench rendering |
+|--------------|-----------------|
+| `reasoning` | `--- Reasoning ---` block in reasoning face |
+| `text` | Markdown→Org fontified body |
+| `tool` | `STATUS name summary duration` line + formatted body |
+| `subagent` | `Subagent: goal (status)` with thinking/notes/tools/result |
+| `system` | Fontified text |
+
+No separate `segments-by-zone` function — comint's `--insert-turn` already
+does this.
 
 ---
 
 ## 15.4 Stream lifecycle
 
-The bench hooks into the existing `hermes-state-change-hook` via `hermes--render`
-branching. When `hermes-bench-active-p` is non-nil:
+The bench subscribes to `hermes-state-change-hook` via `hermes-comint--refresh`,
+which dispatches four branches.  Bench-mode gating (`when hermes-comint--bench-p`)
+controls which branches are active:
 
-### Stream begin (`os` nil, `ns` non-nil)
-
-```
-hermes-bench--stream-begin
-  → paint-ephemeral(user-prompt, "", "")
-  → set-header
-```
-
-### Stream update (`os` and `ns` both non-nil)
+### Stream begin (`old-stream` nil, `new-stream` non-nil)
 
 ```
-hermes-bench--stream-update
-  → segments-by-zone(stream-segments)
-  → paint-ephemeral(nil, reasoning, answer)
+hermes-comint--stream-begin
+  → paint-stream(state)
+    → delete ephemeral, insert user-heading + steer + status + assistant turn
 ```
 
-The `nil` user-text preserves the existing prompt.
-
-### Stream commit (`os` non-nil, `ns` nil)
+### Stream update (`old-stream` and `new-stream` both non-nil, not `eq`)
 
 ```
-hermes-bench--stream-commit
-  → builds hermes-message from old-stream
-  → hermes--insert-committed-turn (in parent org buffer)
-  → bench NOT cleared
+hermes-comint--stream-update
+  → throttle dispatch → paint-stream(state)
+    → same atomic rebuild as stream-begin
 ```
 
-The answer remains visible until the next `hermes-bench-send`.
+The `current-user-prompt` variable survives across ticks, so the user heading
+is re-rendered on every paint-stream call.
+
+### Stream commit (`old-stream` non-nil, `new-stream` nil)
+
+```
+hermes-comint--stream-commit (bench branch)
+  → cancel throttle timer
+  → clear steer-messages, status-message
+  → delete-region [output-end, prompt-start)   ← clear ephemeral
+  → do NOT advance output-end
+  → do NOT update turns-snapshot
+```
+
+### Committed appends (no stream, turns changed)
+
+Bench mode: **no-op**.  The `append-new-turns` path is gated with
+`(when hermes-comint--bench-p (cl-return nil))`.  Committed turns
+live only in the org buffer.
+
+### State load (on bench creation)
+
+Bench mode: **no-op**.  `load-from-state` returns immediately.  The bench starts
+with an empty ephemeral region — no history is loaded.
 
 ---
 
 ## 15.5 Send flow
 
 ```
-User hits RET in bench input area
-  → hermes-bench-send
-    1. Grab input text
-    2. hermes-bench--clear-input
-    3. hermes-bench--paint-ephemeral(text, "", "")
-       → wipes old turn, shows "** <text>"
-    4. hermes-input-send (in parent org buffer)
-       → :user-submit dispatched → org buffer gets "** user: <text>"
+User hits RET in bench prompt
+  → hermes-comint-send
+    1. Read prompt text (hermes-comint--prompt-text)
+    2. Push to comint-input-ring (M-p / M-n history)
+    3. Clear old ephemeral: delete [output-end, prompt-start)
+    4. Store user prompt: (setq hermes-comint--current-user-prompt input)
+    5. Insert user heading in ephemeral region
+    6. Clear prompt input area
+    7. hermes-send
+       → :user-submit dispatched → org buffer gets user turn
        → prompt.submit RPC sent
-    5. goto-char (point-max)
 ```
+
+The user heading stays visible until the first stream tick overwrites it with
+the assistant's response.  On commit, the ephemeral region clears entirely.
 
 ---
 
@@ -182,8 +214,12 @@ User hits RET in bench input area
 | hermes-mode | `C-c C-i` | Focus bench input area |
 | Bench | `RET` | Send prompt |
 | Bench | `C-c C-c` | Send prompt |
+| Bench | `M-p` | Previous input from history ring |
+| Bench | `M-n` | Next input from history ring |
 | Bench | `C-c C-k` | Interrupt parent session |
 | Bench | `C-c C-l` | Open multi-line composer |
+| Bench | `C-c C-a` | Attach image file |
+| Bench | `C-c C-b` | List background tasks |
 
 ---
 
@@ -191,11 +227,10 @@ User hits RET in bench input area
 
 | File | Role |
 |------|------|
-| `hermes-bench.el` | Bench buffer lifecycle, renderer, input handling, stream hooks |
-| `hermes-mode.el` | Creates bench on `hermes-mode` startup, `C-c C-i` binding |
-| `hermes-render.el` | Branches stream lifecycle when bench is active |
-| `hermes-input.el` | Called programmatically by bench send |
+| `hermes-comint.el` | Bench API (`hermes-bench-ensure/active-p/hide/...`) + implementation (`bench-p` flag, paint-stream bench path, skin bg, CAPF) |
+| `hermes-mode.el` | Creates bench on `hermes-mode` startup via `hermes-bench-ensure`, `C-c C-i` binding |
+| `hermes-state.el` | `hermes--bench-buffers` registry, `hermes--maybe-kill-bench` lifecycle |
 
 ---
 
-*Document version: 1.0*
+*Document version: 2.0*

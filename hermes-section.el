@@ -481,17 +481,20 @@ Heading is turn-number based (per plan 11), so no dedup needed."
 
 ;;;; Insert turn
 
-(defun hermes-section--insert-turn (msg index)
-  "Insert MSG as a magit section at point, labeled with 1-based INDEX."
+(defun hermes-section--insert-turn (msg index &optional defer-body)
+  "Insert MSG as a magit section at point, labeled with 1-based INDEX.
+When DEFER-BODY is non-nil, the section is created with HIDE=t and
+the body form is stashed in the section's `washer' slot — it runs
+once on first expand (`magit-section-show') rather than at rebuild
+time.  When nil, the body runs immediately."
   (let* ((kind  (hermes-message-kind msg))
          (class (hermes-section--turn-class kind))
          (head-face (hermes-section--head-face kind))
          (bg-face (hermes-section--bg-face kind))
          (heading (hermes-section--heading-text msg index))
          (id    (or (hermes-message-id msg)
-                    (format "anon-%d" (sxhash-equal msg))))
-         (hide  nil))
-    (magit-insert-section ((eval class) id hide)
+                    (format "anon-%d" (sxhash-equal msg)))))
+    (magit-insert-section ((eval class) id defer-body)
       (magit-insert-heading
         (propertize heading
                     'face (list head-face bg-face)
@@ -504,26 +507,53 @@ Heading is turn-number based (per plan 11), so no dedup needed."
         (unless (bolp) (insert "\n"))
         (insert "\n")))))
 
+;;;; Turn windowing (plan 18 §5)
+;;
+;; All turn headings render immediately (cheap — one line + face props).
+;; Older turn bodies are deferred via magit's washer pattern: when a
+;; section is created with HIDE=t and its body is wrapped in
+;; `magit-insert-section-body', the BODY form is stored as a thunk in
+;; the section's `washer' slot instead of being evaluated.  The thunk
+;; runs once on first expand (`magit-section-show'), inserting the body
+;; in place, and is then cleared.  This keeps rebuild cost O(window) for
+;; the fontification-heavy body work, while leaving all turns navigable
+;; via headings.
+
+(defcustom hermes-section-turn-window-size 1
+  "How many most-recent turn bodies to render immediately on rebuild.
+Older turns get heading-only rendering; their bodies materialize on
+first expand via magit's washer mechanism.  Default 1 keeps rebuild
+cost at O(1) body renders per commit regardless of conversation
+length — the fresh turn renders immediately, every prior turn is
+heading-only until expanded.  Visibility cache re-runs the washer
+for turns the user has kept expanded, so manually-pinned turns stay
+visible across rebuilds (at the cost of re-washing them each time)."
+  :type 'integer
+  :group 'hermes)
+
 ;;;; Refresh pipeline
 
 (defun hermes-section--rebuild (state)
   "Erase the current buffer and rebuild sections from STATE.
-Point lands at the end so the window shows latest content on
-streaming updates.  Previously wrapped in `save-excursion', but
-`erase-buffer' inside it causes the saved marker to fall to
-position 1, and default marker insertion type does not advance
-when text is inserted at that position, so point jumped to the
-top of the buffer on every refresh."
-  (let ((inhibit-read-only t)
-        (turns (hermes-state-turns state)))
+All turn headings are rendered immediately; bodies for turns older
+than `hermes-section-turn-window-size' are deferred via magit's
+washer pattern."
+  (let* ((inhibit-read-only t)
+         (turns (hermes-state-turns state))
+         (total (length turns))
+         (defer-before (max 0 (- total hermes-section-turn-window-size))))
     (setq hermes-section--turns-snapshot turns)
     (erase-buffer)
     (magit-insert-section (hermes-section-turn-section nil)
-      (if (zerop (length turns))
-          (insert "(No messages yet)\n")
-        (seq-do-indexed (lambda (msg i)
-                          (hermes-section--insert-turn msg (1+ i)))
-                        turns)))
+      (cond
+       ((zerop total)
+        (insert "(No messages yet)\n"))
+       (t
+        (let ((i 0))
+          (while (< i total)
+            (hermes-section--insert-turn (aref turns i) (1+ i)
+                                         (< i defer-before))
+            (cl-incf i))))))
     (when magit-root-section
       (magit-section-show magit-root-section))
     (goto-char (point-max))))

@@ -170,8 +170,8 @@ or `hermes--route-connection' without a session-id argument.")
 (defvar hermes--bench-buffers (make-hash-table :test 'equal)
   "Map session-id (string) → bench buffer.")
 
-(defvar hermes-section--buffers (make-hash-table :test 'equal)
-  "Map session-id (string) → magit-section conversation buffer.")
+(defvar hermes-comint--buffers (make-hash-table :test 'equal)
+  "Map session-id (string) → comint conversation buffer.")
 
 (defun hermes--session-exists-p ()
   "Return non-nil when at least one session is in `hermes--sessions'."
@@ -365,7 +365,7 @@ Recognises every viewer kind:
   "Kill the bench for SID if no viewers remain across all registries."
   (when sid
     (unless (or (buffer-live-p (gethash sid hermes--org-buffers))
-                (buffer-live-p (gethash sid hermes-section--buffers)))
+                (buffer-live-p (gethash sid hermes-comint--buffers)))
       (let ((bench (gethash sid hermes--bench-buffers)))
         (when (buffer-live-p bench)
           (dolist (w (get-buffer-window-list bench nil t))

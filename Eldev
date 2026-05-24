@@ -4,10 +4,6 @@
 (eldev-use-package-archive 'nongnu)
 (eldev-use-package-archive 'melpa)
 
-;; hermes-section.el is an optional viewer that depends on magit-section.
-(eldev-add-extra-dependencies 'build 'magit-section)
-(eldev-add-extra-dependencies 'test  'magit-section)
-
 (setf eldev-main-fileset
       '("hermes-events.el"
         "hermes-rpc.el"
@@ -28,7 +24,7 @@
         "hermes-bg.el"
         "hermes-migrate.el"
         "hermes-mode.el"
-        "hermes-section.el"))
+        "hermes-comint.el"))
 
 (setf eldev-test-fileset '("test/hermes-state-test.el"
                            "test/hermes-render-test.el"
@@ -38,5 +34,4 @@
                            "test/hermes-bench-test.el"
                            "test/hermes-bg-test.el"
                            "test/hermes-project-test.el"
-                           "test/hermes-sessions-test.el"
-                           "test/hermes-section-test.el"))
+                           "test/hermes-sessions-test.el"))

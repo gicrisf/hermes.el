@@ -208,11 +208,6 @@ may be disabled."
 Runs through `hermes-md-to-org' then `hermes-comint--fontify-as-org'."
   (hermes-comint--fontify-as-org (hermes-md-to-org (or text ""))))
 
-;;;; Registry
-
-;; `hermes-comint--buffers' is declared in hermes-state.el alongside the
-;; other viewer registries so `hermes--maybe-kill-bench' can see it.
-
 ;;;; Buffer-local state
 
 (defvar-local hermes-comint--output-end nil

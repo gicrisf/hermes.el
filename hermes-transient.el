@@ -25,7 +25,7 @@
   "Non-nil when the current buffer has a reachable Hermes session target.
 Returns non-nil in:
 - `hermes-org-minor-mode' Org buffers inside a `:hermes:' container;
-- `hermes-bench-mode' and `hermes-section-mode' buffers (resolved via the
+- `hermes-bench-mode' and `hermes-comint-mode' buffers (resolved via the
   buffer-local `hermes--current-session-id').
 Returns nil in arbitrary buffers and before `session.create' resolves."
   (and (fboundp 'hermes--resolve-session-target)

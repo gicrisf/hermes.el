@@ -16,7 +16,7 @@ hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
 hermes-bench.el      Persistent bottom bench for hermes-mode (user prompt, reasoning, answer, input)
-hermes-section.el    magit-section conversation viewer (pure `turns` projection, never reads org buffer)
+hermes-comint.el     Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer; zero external deps)
 hermes-sessions.el   Minibuffer selectors: hermes-current-sessions (live), hermes-stored-{resume,branch,delete,save} (DB); also hosts the DB→Org renderer + install helper for hermes-resume-from-db / hermes-branch-from-db
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)
@@ -24,9 +24,10 @@ hermes-config.el     Wrappers for config.get/set, toolsets.list, tools.configure
 hermes-bg.el         Background task buffers (`/bg` prompts run async in dedicated Org buffers)
 ```
 
-**Section view vs org view:** `hermes-section.el` is a pure projection of
+**Comint view vs org view:** `hermes-comint.el` is a pure projection of
 `hermes--sessions[sid].turns`.  It has zero awareness of org buffers,
-`pending-turns`, or `hermes-org-minor-mode`.  The `turns` vector is the
+`pending-turns`, or `hermes-org-minor-mode`, and ships its own inline
+writable prompt at the buffer bottom (no bench).  The `turns` vector is the
 event-canonical conversation log — populated by `hermes--push-committed`
 from three reducer paths (`:user-submit`, `"message.complete"`, `"error"`)
 at `hermes-state.el:547-561` and never cleared except by `:turns-load`.

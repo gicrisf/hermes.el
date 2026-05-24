@@ -169,7 +169,7 @@ entry point, which can safely ask the user when ambiguous."
 - In an arbitrary Org buffer with `hermes-org-minor-mode' enabled,
   walks up from point to find the enclosing `:hermes:' container and
   looks the corresponding state up in `hermes--sessions'.
-- In a section or bench buffer, reads `hermes--current-session-id'
+- In a comint or bench buffer, reads `hermes--current-session-id'
   set buffer-locally at creation.
 Returns nil when no session is reachable."
   (cond
@@ -195,11 +195,11 @@ Returns nil when no session is reachable."
       ;; from "no container at all" (nil return) so it can trigger
       ;; an on-demand resume.
       (and sid (cons sid state))))
-   ;; Section / bench view: read session-id from the buffer-local
+   ;; Comint / bench view: read session-id from the buffer-local
    ;; variable installed at creation.  Look the state up directly in
    ;; `hermes--sessions' (not via `hermes--state-slot-read', which
    ;; would mask absence by returning `hermes--global-state').
-   ((or (derived-mode-p 'hermes-section-mode)
+   ((or (derived-mode-p 'hermes-comint-mode)
         (derived-mode-p 'hermes-bench-mode))
     (let ((sid (buffer-local-value 'hermes--current-session-id
                                    (current-buffer))))

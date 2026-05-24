@@ -42,8 +42,10 @@ first session is typically created AFTER `gateway.ready' lands — so
 without this cache, the very first session would never see the skin.")
 
 (defun hermes--lookup-buffer (session-id)
-  "Return the org buffer registered for SESSION-ID, or nil."
-  (let ((buf (gethash session-id hermes--org-buffers)))
+  "Return any live viewer buffer for SESSION-ID, or nil.
+Checks the org and comint registries in that order."
+  (let ((buf (or (gethash session-id hermes--org-buffers)
+                 (gethash session-id hermes-comint--buffers))))
     (and (buffer-live-p buf) buf)))
 
 (defun hermes--org-detach ()
@@ -365,10 +367,13 @@ background; for the user-facing entry that also pops the buffer, see
   (hermes--do-session-create callback))
 
 (defun hermes--live-session-buffers ()
-  "Return live session buffers, most-recently-touched first."
+  "Return live session buffers across all viewer registries.
+Sorted most-recently-touched first."
   (let (acc)
     (maphash (lambda (_sid b) (when (buffer-live-p b) (push b acc)))
              hermes--org-buffers)
+    (maphash (lambda (_sid b) (when (buffer-live-p b) (push b acc)))
+             hermes-comint--buffers)
     (sort acc (lambda (a b) (> (buffer-modified-tick a)
                                (buffer-modified-tick b))))))
 
@@ -387,6 +392,8 @@ background; for the user-facing entry that also pops the buffer, see
   create a fresh one if none exists."
   (interactive)
   (cond
+   ((derived-mode-p 'hermes-comint-mode)
+    (goto-char (point-max)))
    (hermes-org-minor-mode
     (when-let ((sid (hermes--buffer-sid (current-buffer))))
       (hermes-bench-ensure sid))

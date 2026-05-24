@@ -16,7 +16,7 @@
   (setq hermes--sessions (make-hash-table :test 'equal))
   (setq hermes--org-buffers (make-hash-table :test 'equal))
   (setq hermes--bench-buffers (make-hash-table :test 'equal))
-  (setq hermes-section--buffers (make-hash-table :test 'equal))
+  (setq hermes-comint--buffers (make-hash-table :test 'equal))
   (setq hermes--session-markers (make-hash-table :test 'equal))
   (setq hermes--global-state (make-hermes-state :connection 'disconnected)))
 

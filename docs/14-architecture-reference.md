@@ -43,18 +43,18 @@ hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes-mode.el: route-
                                                                     ▼
                                                             Bench buffer (*hermes-bench:SID*)
 
-                   hermes-section.el: hermes-section--refresh
+                   hermes-comint.el: hermes-comint--refresh
                                                        │
-                                                       │  reads turns, rebuilds all sections
+                                                       │  appends new turns / repaints streaming region
                                                        ▼
-                                              Section buffer (*hermes-section:SID*)
+                                              Comint buffer (*hermes-comint:SID*)
 ```
 
-**Section view path:** The section view (`hermes-section.el`) attaches a separate renderer to `hermes-state-change-hook`. When a dispatch modifies `turns`, `hermes-section--refresh` fires independently from the org renderer. It erases the section buffer and rebuilds all visible sections from the full `turns` vector. It has no awareness of org buffers, `pending-turns`, or `hermes-org-minor-mode` — it is a pure projection of the state atom.
+**Comint view path:** The comint view (`hermes-comint.el`) attaches a separate renderer to `hermes-state-change-hook`. When a dispatch modifies `turns`, `hermes-comint--refresh` fires independently from the org renderer. It appends only new turns to the read-only output region above its inline `> ` prompt; the active stream is painted into a pending region between `output-end` and `prompt-start` and sealed on `message.complete`. It has no awareness of org buffers, `pending-turns`, or `hermes-org-minor-mode` — it is a pure projection of the state atom.
 
 **Org view path:** The org renderer (`hermes-render.el`) drains `pending-turns` into the org buffer and renders the live stream segment-by-segment. The bench (`hermes-bench.el`) mirrors the latest turn's ephemeral zones (prompt, reasoning, answer, input).
 
-Both viewers coexist: opening a section view for an existing session does not affect the org buffer, and vice versa. The `turns` vector is the shared, sole authority.
+Both viewers coexist: opening a comint view for an existing session does not affect the org buffer, and vice versa. The `turns` vector is the shared, sole authority.
 
 **Output path:**
 
@@ -77,7 +77,7 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 | `hermes-input.el` | 209 | Input queue, slash commands, history |
 | `hermes-prompts.el` | 116 | Minibuffer prompt handlers (approval, clarify, secret, sudo) |
 | `hermes-compose.el` | 81 | Multi-line org-mode composer |
-| `hermes-section.el` | 357 | magit-section conversation viewer (pure `turns` projection, never reads org buffer) |
+| `hermes-comint.el` | 802 | Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer; zero external deps) |
 | `hermes-sessions.el` | ~420 | Minibuffer selectors (`hermes-current-sessions`, `hermes-stored-{resume,branch,delete,save}`); also hosts the DB→Org renderer and the resume/branch install path |
 | `hermes-skin.el` | 83 | Gateway skin → face-remap |
 | `hermes-md.el` | 164 | Markdown → Org syntax converter |

@@ -559,29 +559,30 @@ org renderer firing `:pending-turns-clear' after a `message.complete'),
 both the inner and outer hook invocations see the same post-commit
 state and converge to the same buffer content."
   (hermes--on-session-buffer hermes-comint--buffers
-    (let* ((state  (hermes--current-state))
-           (stream (and state (hermes-state-stream state)))
-           (turns  (and state (hermes-state-turns state))))
-      (when state
-        (cond
-         ;; A stream lifecycle is in flight (stream-begin already ran).
-         ;; Whether the live stream is still set (mid-flight delta) or
-         ;; already cleared (commit pending — possibly via a re-entrant
-         ;; inner firing before the outer message.complete hook reaches
-         ;; us), the right action is the corresponding step.
-         (hermes-comint--stream-active
-          (if stream
-              (hermes-comint--stream-update state)
-            (hermes-comint--stream-commit state)))
-         ;; No active lifecycle, but a stream has appeared → open one.
-         (stream
-          (hermes-comint--stream-begin state))
-         ;; No stream activity; `turns' grew (or was loaded) → append.
-         ((not (eq turns hermes-comint--turns-snapshot))
-          (hermes-comint--append-new-turns state)))
-        ;; Always refresh the header-line: bg / attachments / status may
-        ;; have changed independent of the streaming dispatch above.
-        (hermes-comint--refresh-header-line state)))))
+    (let ((buffer-undo-list t))
+      (let* ((state  (hermes--current-state))
+             (stream (and state (hermes-state-stream state)))
+             (turns  (and state (hermes-state-turns state))))
+        (when state
+          (cond
+           ;; A stream lifecycle is in flight (stream-begin already ran).
+           ;; Whether the live stream is still set (mid-flight delta) or
+           ;; already cleared (commit pending — possibly via a re-entrant
+           ;; inner firing before the outer message.complete hook reaches
+           ;; us), the right action is the corresponding step.
+           (hermes-comint--stream-active
+            (if stream
+                (hermes-comint--stream-update state)
+              (hermes-comint--stream-commit state)))
+           ;; No active lifecycle, but a stream has appeared → open one.
+           (stream
+            (hermes-comint--stream-begin state))
+           ;; No stream activity; `turns' grew (or was loaded) → append.
+           ((not (eq turns hermes-comint--turns-snapshot))
+            (hermes-comint--append-new-turns state)))
+          ;; Always refresh the header-line: bg / attachments / status may
+          ;; have changed independent of the streaming dispatch above.
+          (hermes-comint--refresh-header-line state))))))
 
 ;;;; Committed appends
 
@@ -724,19 +725,20 @@ cleared the stream, the stale paint is silently discarded.  Matches
 the org renderer's `eq' check on stream identity."
   (when (buffer-live-p buf)
     (with-current-buffer buf
-      (setq hermes-comint--stream-timer nil)
-      (let* ((ns hermes-comint--stream-pending)
-             (cur (hermes--current-state))
-             (stashed-stream (and ns (hermes-state-stream ns))))
-        (setq hermes-comint--stream-pending nil)
-        (when (and stashed-stream cur
-                   (eq stashed-stream (hermes-state-stream cur))
-                   (hermes--buffer-visible-p buf))
-          (hermes-comint--paint-stream ns)
-          (setq hermes-comint--stream-timer
-                (run-with-timer (hermes-comint--adaptive-throttle-interval)
-                                nil
-                                #'hermes-comint--stream-flush buf)))))))
+      (let ((buffer-undo-list t))
+        (setq hermes-comint--stream-timer nil)
+        (let* ((ns hermes-comint--stream-pending)
+               (cur (hermes--current-state))
+               (stashed-stream (and ns (hermes-state-stream ns))))
+          (setq hermes-comint--stream-pending nil)
+          (when (and stashed-stream cur
+                     (eq stashed-stream (hermes-state-stream cur))
+                     (hermes--buffer-visible-p buf))
+            (hermes-comint--paint-stream ns)
+            (setq hermes-comint--stream-timer
+                  (run-with-timer (hermes-comint--adaptive-throttle-interval)
+                                  nil
+                                  #'hermes-comint--stream-flush buf))))))))
 
 (defun hermes-comint--stream-cancel-timer ()
   (when (timerp hermes-comint--stream-timer)
@@ -1010,6 +1012,7 @@ Assumes the prompt is already inserted at point-max.  No-op in bench
 mode — committed history lives in the paired org buffer."
   (unless hermes-comint--bench-p
     (let* ((inhibit-read-only t)
+           (buffer-undo-list t)
            (turns (hermes-state-turns state))
            (total (length turns)))
       (save-excursion
@@ -1025,7 +1028,8 @@ mode — committed history lives in the paired org buffer."
   "Rebuild the buffer from state."
   (interactive)
   (let ((state (hermes--state-slot-read hermes--current-session-id))
-        (inhibit-read-only t))
+        (inhibit-read-only t)
+        (buffer-undo-list t))
     (when state
       ;; Reset markers, wipe content (preserving the prompt at end), reload.
       (let ((pr-start (marker-position hermes-comint--prompt-start)))
@@ -1326,6 +1330,7 @@ back to the echo area."
 Clears [output-end, prompt-start) and re-inserts user heading + steer
 + status (no stream content)."
   (let ((inhibit-read-only t)
+        (buffer-undo-list t)
         (out-end (marker-position hermes-comint--output-end))
         (pr-start (marker-position hermes-comint--prompt-start)))
     (delete-region out-end pr-start)

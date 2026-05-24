@@ -7,13 +7,11 @@
 ;;; Commentary:
 
 ;; The bench is a bottom side-window paired with a `hermes-mode' buffer.
-;; It is the user's interactive surface: ephemeral assistant content
-;; above (user prompt, reasoning, answer), separator, editable input
-;; area below.  The parent Org buffer remains the canonical history.
+;; It is the user's input surface: a status header (background tasks,
+;; pending attachments), a separator, and an editable prompt line.
 ;;
-;; Rendering model (plan v3): one persistent marker, `input-boundary'.
-;; Everything above it is rebuilt from scratch on every paint via
-;; `hermes-bench--paint-ephemeral'.  No zone markers, no diffing.
+;; All streaming content lives in the primary viewer (org or section);
+;; the bench never renders the assistant's in-flight turn.  See plan 20.
 
 ;;; Code:
 
@@ -30,8 +28,6 @@
 (declare-function hermes-image-attach-file "hermes-image" (&optional file))
 (declare-function hermes-image-clipboard-paste "hermes-image" ())
 (declare-function hermes-state-attachments "hermes-state" (state))
-(declare-function hermes--insert-committed-turn "hermes-render" (msg))
-(declare-function hermes--message-from-stream "hermes-state" (stream usage))
 
 (defcustom hermes-bench-height 20
   "Height in lines of the bench side-window."
@@ -41,16 +37,8 @@
   "Prompt string shown at the start of the bench input area."
   :type 'string :group 'hermes)
 
-(defcustom hermes-bench-banner-type 'ascii
-  "Which built-in banner to show when the gateway provides none.
-`ascii'  — NOUS HERMES ASCII art
-`unicode' — N O U S  R E S E A R C H  Unicode block art"
-  :type '(choice (const :tag "ASCII NOUS HERMES" ascii)
-                 (const :tag "Unicode block art" unicode))
-  :group 'hermes)
-
 (defcustom hermes-bench-separator "------"
-  "Separator line between ephemeral zones and the input area."
+  "Separator line between the status header and the input area."
   :type 'string :group 'hermes)
 
 (defcustom hermes-bench-background-color nil
@@ -66,51 +54,6 @@ When nil, the bench falls back to the gateway skin color
 (declare-function hermes-state-session-id "hermes-state" (state))
 (declare-function hermes-state-session-info "hermes-state" (state))
 
-(defconst hermes-bench--builtin-logo
-  "\
-██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
-██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
-███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
-██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
-██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
-╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
-  "Fallback NOUS HERMES ASCII splash banner.")
-
-(defconst hermes-bench--unicode-logo
-  "\
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡠⠴⠶⠶⠶⣿⣿⣷⣶⣶⣤⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⣶⣿⣿⣿⣿⣿⣿⣶⣤⡀⠉⠻⣿⣿⣿⣿⣿⣷⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⢀⣤⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀⠈⢻⣿⣿⣿⣿⣿⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⢀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⢿⠋⢀⣾⡷⡄⠀⢹⣿⡿⣿⡿⠋⢡⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⢀⡞⠉⠉⡻⣟⣽⣉⣻⣽⣦⣤⣯⣉⣀⣈⣿⣿⣿⣿⣷⠀⠀⢻⣷⣿⣿⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣶⣾⣿⣿⣿⣿⣿⣿⣿⣷⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⢠⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⠀⠀
-⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⠷⠿⣿⣿⣿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠹⣿⣿⣿⣿⣛⣧⠀⠀⠉⡾⣿⣿⡷⣦⡄⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠈⠙⠋⣿⣟⣿⠃⠀⠀⠐⠾⠿⠗⠋⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⣿⣏⠁⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⢀⣿⡇⣵⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⢸⣿⣷⡹⣟⠳⠖⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⠀⠀
-⠀⠀⡤⠀⠀⠀⣸⣿⣿⣷⡁⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⡏⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟⣿⣷⠀⠀⠀
-⠀⢸⡇⠀⠀⢀⣿⣿⣿⣿⣷⣤⣀⣠⣤⣤⣤⡀⠀⢸⣿⣿⣿⡿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⡆⣦⠀
-⠀⣾⣿⣶⣶⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣄⣼⣿⣿⣿⣤⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣰⣿⣿⡇⣼⡇
-⠀⠹⣿⣟⣿⣛⣩⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠋⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢡⣿⡇
-⠀⠀⠈⠛⠿⣿⠿⠿⣫⣿⣿⣿⣿⣿⣿⣿⣿⡅⠀⠀⠀⠈⣹⣿⣿⣿⣿⣿⣿⠿⢿⣿⣿⣿⣿⣿⣿⣿⣣⣿⠟⠀
-⠀⠀⠀⠀⠀⠙⢿⣿⣿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣴⡶⠟⡫⢉⣵⡿⠋⠀⠀⠀⠀⠀⠙⠳⣽⣿⣿⡿⠟⠁⠀⠀
-⣀⣀⣀⣀⣀⣀⣀⣀⣀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣋⣉⣠⣾⣱⣿⣋⣀⣀⣀⣀⣀⣀⣀⣀⣀⣙⣿⣇⣀⣀⣀⣀⣀
-⠀⠀⠀⠀⠀⠀⠀◎ N O U S  R E S E A R C H ◎⠀⠀⠀⠀⠀⠀⠀"
-  "Fallback Unicode splash banner.")
-
-(defface hermes-bench-logo-face
-  '((t :inherit font-lock-keyword-face :weight bold))
-  "Face for the bench splash banner."
-  :group 'hermes)
-
-(defface hermes-bench-splash-status-face
-  '((t :inherit shadow))
-  "Face for the bench splash status line."
-  :group 'hermes)
-
 (defface hermes-bench-prompt-face
   '((t :inherit minibuffer-prompt))
   "Face for the bench input prompt."
@@ -121,24 +64,14 @@ When nil, the bench falls back to the gateway skin color
   "Face for the bench separator line."
   :group 'hermes)
 
-(defface hermes-bench-user-face
-  '((t :inherit hermes-user-face))
-  "Face for the user prompt in the bench."
-  :group 'hermes)
-
-(defface hermes-bench-reasoning-heading-face
-  '((t :inherit org-level-3))
-  "Face for the `*** Reasoning' heading in the bench."
-  :group 'hermes)
-
-(defface hermes-bench-reasoning-face
-  '((t :inherit italic :foreground "gray60"))
-  "Face for reasoning text in the bench."
-  :group 'hermes)
-
-(defface hermes-bench-steer-face
+(defface hermes-bench-status-face
   '((t :inherit warning :weight bold))
-  "Face for `[steer]' messages shown above the reasoning zone."
+  "Face for bench status header lines (bg tasks, attachments)."
+  :group 'hermes)
+
+(defface hermes-bench-attachment-face
+  '((t :inherit shadow))
+  "Face for the per-attachment metadata line in the bench."
   :group 'hermes)
 
 (defface hermes-bench-buffer-face
@@ -170,28 +103,15 @@ keyed by this id, and is registered in `hermes--bench-buffers'.")
 
 (defvar-local hermes-bench--input-boundary nil
   "Marker at the start of the separator line.
-Everything above is ephemeral; everything below (separator + prompt +
-user input) is the input frame.")
-
-(defvar-local hermes-bench--current-user-prompt nil
-  "Last user prompt painted into the bench (preserved across rebuilds).")
+Set once by `hermes-bench--paint-frame' and never moves.  Everything
+above the marker is the status header (rebuilt by
+`hermes-bench--refresh-status'); the separator lives at the marker
+position and survives across refreshes; everything below is the prompt
+and editable user input.")
 
 (defvar-local hermes-bench--bg-cookie nil
   "`face-remap-add-relative' cookie for the bench background.
 Removed and recreated when the skin changes.")
-
-(defvar-local hermes-bench--steer-messages nil
-  "List of `[steer]' messages (oldest-first) shown above the reasoning zone.
-Cleared by `hermes-bench--stream-commit' when the turn ends.")
-
-(defvar-local hermes-bench--status-message nil
-  "Transient status plist (:text :error-p) rendered above the separator.
-Cleared after one paint cycle.")
-
-(defface hermes-bench-attachment-face
-  '((t :inherit shadow))
-  "Face for the per-attachment metadata line in the bench."
-  :group 'hermes)
 
 ;;;; Mode
 
@@ -201,7 +121,6 @@ Cleared after one paint cycle.")
     (define-key m (kbd "C-c C-c") #'hermes-bench-send)
     (define-key m (kbd "C-c C-k") #'hermes-bench-interrupt-parent)
     (define-key m (kbd "C-c C-l") #'hermes-bench-compose)
-    (define-key m (kbd "C-c C-s") #'hermes-bench-steer)
     (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
     (define-key m (kbd "C-c C-v") #'hermes-image-clipboard-paste)
     (define-key m (kbd "C-c C-b") #'hermes-bench-bg-list)
@@ -214,7 +133,6 @@ Cleared after one paint cycle.")
       "C-c C-c" "Send prompt"
       "C-c C-k" "Interrupt session"
       "C-c C-l" "Compose multi-line"
-      "C-c C-s" "Steer mid-turn"
       "C-c C-a" "Attach image file"
       "C-c C-v" "Paste from clipboard")))
 
@@ -263,6 +181,11 @@ state in `hermes--sessions' and delegates to `hermes-input--slash-complete'."
   (add-hook 'pre-command-hook #'hermes-bench--ensure-input-point nil t)
   (add-hook 'completion-at-point-functions
             #'hermes-bench-completion-at-point nil t))
+
+;; State-change subscription is GLOBAL (not buffer-local): dispatch fires
+;; from whatever buffer triggered the RPC, not the bench.  The handler
+;; uses `hermes--on-session-buffer' to route to the right bench.
+(add-hook 'hermes-state-change-hook #'hermes-bench--on-state-change t)
 
 (add-hook 'hermes-bench-mode-hook #'hermes-bench--disable-line-numbers)
 
@@ -335,18 +258,14 @@ Alias for `hermes-bench-active-p'.")
   "Initialize the bench buffer contents for session SID."
   (hermes-bench-mode)
   (hermes-bench--apply-bg)
-  (setq hermes-bench--session-id sid
-        hermes-bench--current-user-prompt nil)
+  (setq hermes-bench--session-id sid)
   ;; Buffer-local hint so resolvers (`hermes--resolve-session-target',
   ;; `hermes--current-state', `hermes-send' fallback path) can find the
   ;; session without walking registries.
   (setq-local hermes--current-session-id sid)
   (let ((inhibit-read-only t))
     (erase-buffer)
-    ;; Seed `input-boundary' at point-min so the first paint has a
-    ;; valid marker to delete up to.
-    (setq hermes-bench--input-boundary (copy-marker (point-min) nil))
-    (hermes-bench--paint-ephemeral))
+    (hermes-bench--paint-frame))
   (setq-local header-line-format nil)
   (goto-char (point-max)))
 
@@ -483,47 +402,6 @@ Does nothing if the current command is a motion command."
     (when (and start (< start (point-max)))
       (delete-region start (point-max)))))
 
-;;;; Splash
-
-(defun hermes-bench--short-sid (sid)
-  (if (and (stringp sid) (> (length sid) 8)) (substring sid 0 8) (or sid "?")))
-
-(defun hermes-bench--strip-rich (string)
-  "Drop Rich `[style]…[/]' tags from STRING."
-  (replace-regexp-in-string "\\[/?[^]]*\\]" "" string))
-
-(defun hermes-bench--splash-logo ()
-  "Return the splash banner: gateway-provided when available, else builtin."
-  (let* ((skin (and (boundp 'hermes--last-gateway-ready)
-                    hermes--last-gateway-ready))
-         (h (and (hash-table-p skin) (gethash "skin" skin)))
-         (src (or h skin))
-         (banner (and (hash-table-p src)
-                      (or (gethash "banner_hero" src)
-                          (gethash "banner_logo" src)))))
-    (hermes-bench--strip-rich
-     (if (and (stringp banner) (not (string-empty-p banner)))
-         banner
-       (pcase hermes-bench-banner-type
-         ('unicode hermes-bench--unicode-logo)
-         (_        hermes-bench--builtin-logo))))))
-
-(defun hermes-bench--insert-splash ()
-  "Insert the splash banner at point."
-  (let ((logo (hermes-bench--splash-logo)))
-    (insert "\n\n")
-    (let ((start (point)))
-      (insert logo)
-      (add-face-text-property start (point) 'hermes-bench-logo-face)
-      (insert "\n\n"))))
-
-(defun hermes-bench--should-show-splash-p ()
-  "Return non-nil when the bench has no conversation content to display."
-  (let ((state (hermes-bench--state)))
-    (and (or (null hermes-bench--current-user-prompt)
-             (string-empty-p hermes-bench--current-user-prompt))
-         (not (and state (hermes-state-stream state))))))
-
 ;;;; Attachment helpers
 
 (defun hermes-bench--attachments ()
@@ -549,31 +427,18 @@ token estimate; error → error marker."
          (when tok (push (format "~%s tok" tok) parts))
          (concat "[img] " (string-join (nreverse parts) " | ")))))))
 
-(defun hermes-bench--repaint-preserving-stream ()
-  "Repaint the bench, preserving any in-flight stream content.
-Used by `hermes-image' callbacks to refresh the attachment line(s)."
-  (let* ((state  (hermes-bench--state))
-         (stream (and state (hermes-state-stream state))))
-    (if (hermes-stream-p stream)
-        (pcase-let ((`(,reasoning . ,answer)
-                     (hermes-bench--segments-by-zone
-                      (hermes-stream-segments stream))))
-          (hermes-bench--paint-ephemeral nil reasoning answer))
-      (hermes-bench--paint-ephemeral nil nil nil))))
-
-;;;; Background-task status zone
+;;;; Status header
 
 (declare-function hermes-tool--truncate "hermes-tool-formatters" (s n))
 (declare-function hermes-bg--list-for-sid "hermes-bg" (sid))
 
 (defun hermes-bench--insert-bg-status ()
-  "Insert a one-line summary of background tasks into the bench.
-Shows `[bg: N running]' while any task is running, otherwise
-`[bg #ID complete] PROMPT' for the most recently completed task.
-No-op when the session has no background tasks."
+  "Insert the status header at point: bg tasks (if any) + attachments (if any).
+No-op when neither has content."
   (let* ((state (hermes-bench--state))
          (bg-tasks (and state (hermes-state-bg-tasks state)))
          (running 0))
+    ;; Background task summary line.
     (when (and (vectorp bg-tasks) (> (length bg-tasks) 0))
       (dotimes (i (length bg-tasks))
         (when (eq 'running (hermes-bg-task-status (aref bg-tasks i)))
@@ -581,7 +446,7 @@ No-op when the session has no background tasks."
       (cond
        ((> running 0)
         (insert (propertize (format "[bg: %d running]\n" running)
-                            'face 'hermes-bench-steer-face)))
+                            'face 'hermes-bench-status-face)))
        (t
         ;; Walk backward to find the most recently completed task.
         (let* ((n (length bg-tasks))
@@ -599,7 +464,14 @@ No-op when the session has no background tasks."
                       (symbol-name (hermes-bg-task-status last))
                       (hermes-tool--truncate
                        (or (hermes-bg-task-prompt last) "") 40))
-              'face 'hermes-bench-steer-face)))))))))
+              'face 'hermes-bench-status-face)))))))
+    ;; Pending image/clipboard attachments — one line each.
+    (let ((atts (hermes-bench--attachments)))
+      (when atts
+        (dolist (a atts)
+          (insert (propertize (hermes-bench--format-attachment a)
+                              'face 'hermes-bench-attachment-face)
+                  "\n"))))))
 
 (defun hermes-bench-bg-list ()
   "Pop the background-task list for this bench's session."
@@ -610,98 +482,76 @@ No-op when the session has no background tasks."
                (hermes-bg--list-for-sid sid))
       (message "hermes: no active session"))))
 
-;;;; The single renderer
+;;;; Frame renderer
 
-(defun hermes-bench--paint-ephemeral (&optional user-text reasoning answer)
-  "Rebuild the ephemeral area above the separator.
-USER-TEXT, when non-nil, replaces the stored user prompt (a nil value
-preserves it).  REASONING and ANSWER are inserted verbatim into their
-zones; nil/empty leaves the zone empty.  The user's draft input text
-(below the prompt) is preserved across the rebuild."
-  (when user-text
-    (setq hermes-bench--current-user-prompt user-text))
+(defun hermes-bench--paint-frame ()
+  "Draw the static bench frame: status header + separator + input prompt.
+Sets `hermes-bench--input-boundary' once at the start of the separator
+line; `--input-start' / `--refresh-status' depend on that semantics.
+Preserves any pre-existing input text and cursor position so callers
+may invoke it from setup or from a full reset without losing the
+user's draft."
   (let* ((inhibit-read-only t)
-         (effective-user (or hermes-bench--current-user-prompt ""))
          (saved-input (hermes-bench--input-text))
-         ;; Where (relative to start-of-input) was point sitting?
-         (saved-point-offset
+         (saved-offset
           (let ((istart (hermes-bench--input-start)))
-            (if (and istart (>= (point) istart))
-                (- (point) istart)
-              nil))))
-    ;; 1. Wipe everything from point-min through the old input frame.
+            (and istart (>= (point) istart) (- (point) istart)))))
     (delete-region (point-min) (point-max))
     (goto-char (point-min))
-    ;; 2. Splash, or normal ephemeral zones.
-    (if (and (string-empty-p effective-user)
-             (null (hermes-bench--attachments))
-             (hermes-bench--should-show-splash-p))
-        (hermes-bench--insert-splash)
-      (unless (string-empty-p effective-user)
-        (insert (propertize (concat "** U: " effective-user "\n\n")
-                            'face 'hermes-bench-user-face)))
-      ;; Pending image/clipboard attachments — one metadata line each.
-      ;; Shown above any reasoning/answer so the user can see what will be
-      ;; sent with the next prompt.  No inline thumbnails (bench is 20
-      ;; lines tall; thumbnails would blow the layout).
-      (let ((atts (hermes-bench--attachments)))
-        (when atts
-          (dolist (a atts)
-            (insert (propertize (hermes-bench--format-attachment a)
-                                'face 'hermes-bench-attachment-face)
-                    "\n"))
-          (insert "\n")))
-      ;; Steer messages — shown between user prompt and reasoning so the
-      ;; user can see what was injected into the running turn.
-      (when hermes-bench--steer-messages
-        (dolist (steer hermes-bench--steer-messages)
-          (insert (propertize (concat "[steer] " steer "\n")
-                              'face 'hermes-bench-steer-face)))
-        (insert "\n"))
-      ;; Reasoning zone — trim model-supplied trailing whitespace so we
-      ;; control the exact spacing between zones (otherwise stray "\n\n"
-      ;; in the stream stacks with the separator newlines below).
-      (let ((trimmed (and reasoning (string-trim-right reasoning))))
-        (when (and trimmed (not (string-empty-p trimmed)))
-          (insert (propertize trimmed 'face 'hermes-bench-reasoning-face))
-          (insert "\n\n")))
-      ;; Answer zone.
-      (let ((trimmed (and answer (string-trim-right answer))))
-        (when (and trimmed (not (string-empty-p trimmed)))
-          (insert trimmed)
-          (insert "\n")))
-      ;; Transient status message (skills command feedback, etc.).
-      (when hermes-bench--status-message
-        (let ((text (plist-get hermes-bench--status-message :text))
-              (err (plist-get hermes-bench--status-message :error-p)))
-          (insert (propertize text
-                              'face (if err 'error 'hermes-bench-user-face))
-                  "\n"))
-        (setq hermes-bench--status-message nil))
-      ;; Background task status — counts and most-recent-complete pointer.
-      (hermes-bench--insert-bg-status))
-    ;; 3. Separator + prompt — input frame.
+    (hermes-bench--insert-bg-status)
+    ;; Boundary anchored at start of separator (option a from plan 20).
     (setq hermes-bench--input-boundary (copy-marker (point) nil))
     (insert (propertize (concat hermes-bench-separator "\n")
                         'face 'hermes-bench-separator-face
-                        'read-only t
-                        'front-sticky '(read-only)
-                        'rear-nonsticky '(read-only)))
+                        'read-only t 'rear-nonsticky '(read-only)))
     (insert (propertize hermes-bench-prompt
                         'face 'hermes-bench-prompt-face
-                        'read-only t
-                        'front-sticky '(read-only)
-                        'rear-nonsticky '(read-only)))
+                        'read-only t 'rear-nonsticky '(read-only)))
     (put-text-property (point-min) (point) 'read-only t)
-    (put-text-property (point-min) (1+ (point-min)) 'front-sticky '(read-only))
-    ;; 4. Restore input text + point.
-    (unless (string-empty-p saved-input)
+    (unless (string-empty-p (or saved-input ""))
       (insert saved-input))
     (let ((istart (hermes-bench--input-start)))
-      (goto-char (if saved-point-offset
-                     (min (point-max) (+ istart saved-point-offset))
-                   (point-max)))))
-  (hermes-bench--ensure-visible-end))
+      (goto-char (if (and saved-offset istart)
+                     (min (point-max) (+ istart saved-offset))
+                   (point-max))))
+    (hermes-bench--ensure-visible-end)))
+
+(defun hermes-bench--refresh-status ()
+  "Rewrite the status header region, preserving input text and cursor.
+Deletes `[point-min, boundary)' — the separator lives at the boundary
+position and survives.  The input area below the boundary is also
+preserved (untouched).  Cheap no-op when the bench hasn't been
+initialised yet."
+  (when (and hermes-bench--input-boundary
+             (marker-position hermes-bench--input-boundary))
+    (let* ((inhibit-read-only t)
+           (boundary (marker-position hermes-bench--input-boundary))
+           (saved-offset
+            (let ((istart (hermes-bench--input-start)))
+              (and istart (>= (point) istart) (- (point) istart)))))
+      (save-excursion
+        (delete-region (point-min) boundary)
+        (goto-char (point-min))
+        (hermes-bench--insert-bg-status)
+        ;; Re-anchor boundary at the (new) start of separator.  After
+        ;; the delete-region the marker collapsed to point-min, then
+        ;; the bg-status insertion (insertion-type nil) pushed it to
+        ;; the new separator start automatically.  Setting it
+        ;; explicitly is defensive.
+        (set-marker hermes-bench--input-boundary (point))
+        (put-text-property (point-min) hermes-bench--input-boundary
+                           'read-only t))
+      (when saved-offset
+        (let ((istart (hermes-bench--input-start)))
+          (when istart
+            (goto-char (min (point-max) (+ istart saved-offset)))))))))
+
+(defun hermes-bench--on-state-change (_old _new)
+  "`hermes-state-change-hook' callback: refresh the bench status header.
+Routes to the bench buffer for the currently dispatched session via
+`hermes--on-session-buffer'."
+  (hermes--on-session-buffer hermes--bench-buffers
+    (hermes-bench--refresh-status)))
 
 (defun hermes-bench--ensure-visible-end ()
   "Keep bench windows showing the bottom (input area)."
@@ -711,131 +561,10 @@ zones; nil/empty leaves the zone empty.  The user's draft input text
         (goto-char (point-max))
         (recenter -1)))))
 
-;;;; Segment partitioning
-
-(defun hermes-bench--segments-by-zone (segments)
-  "Return (REASONING-TEXT . ANSWER-TEXT) from SEGMENTS (a vector)."
-  (let (rparts aparts)
-    (when (vectorp segments)
-      (dotimes (i (length segments))
-        (let* ((s (aref segments i))
-               (type (hermes-segment-type s))
-               (content (hermes-segment-content s)))
-          (pcase type
-            ('reasoning
-             (when (and (stringp content) (not (string-empty-p content)))
-               (push content rparts)))
-            ('text
-             (when (stringp content) (push content aparts)))
-            ('tool
-             (let* ((tool content)
-                    (name (and (hermes-tool-p tool) (hermes-tool-name tool)))
-                    (status (and (hermes-tool-p tool) (hermes-tool-status tool)))
-                    (formatter (and name (hermes-tool--lookup name)))
-                    (parts (and formatter (funcall formatter tool)))
-                    (summary (or (plist-get parts :summary) name "tool"))
-                    (one (replace-regexp-in-string
-                          "[ \t\n]+" " " (format "%s" summary))))
-               (push (format "[tool: %s] %s %s"
-                             (or name "?") (or status "?") one)
-                     aparts)))
-            ('system
-             (when (stringp content)
-               (push (format "[system] %s" content) aparts)))
-            ('thinking nil)
-            (_ nil)))))
-    (cons (string-join (nreverse rparts) "")
-          (string-join (nreverse aparts) ""))))
-
-;;;; Latest user prompt discovery (fallback for out-of-bench submissions)
-
-(defun hermes-bench--latest-user-text (&optional state)
-  "Return the most-recent user prompt text from STATE, or nil.
-STATE defaults to the bench's session state.  Looks at pending-turns
-first, then walks the session's history ring."
-  (let* ((state (or state (hermes-bench--state)))
-         (turns (and state (hermes-state-pending-turns state))))
-      (or (and (vectorp turns)
-               (let ((i (1- (length turns))) found)
-                 (while (and (not found) (>= i 0))
-                   (let ((m (aref turns i)))
-                     (when (eq 'user (hermes-message-kind m))
-                       (let ((segs (hermes-message-segments m)))
-                         (when (and (vectorp segs) (> (length segs) 0))
-                           (let ((s (aref segs 0)))
-                             (when (eq 'text (hermes-segment-type s))
-                               (setq found (hermes-segment-content s))))))))
-                   (cl-decf i))
-                 found))
-          (and state
-               (let ((hist (hermes-state-history state)))
-                 (and (consp hist) (car hist)))))))
-
-;;;; Stream lifecycle (called from hermes--render)
-
-(defun hermes-bench--stream-begin (bench)
-  "Stream started: ensure user prompt is set, clear reasoning/answer."
-  (when (buffer-live-p bench)
-    (with-current-buffer bench
-      (let ((user (or hermes-bench--current-user-prompt
-                      (hermes-bench--latest-user-text)
-                      "")))
-        (hermes-bench--paint-ephemeral user "" "")))))
-
-(defun hermes-bench--stream-update (bench _old new)
-  "Repaint reasoning and answer zones from NEW stream."
-  (when (and (buffer-live-p bench) (hermes-stream-p new))
-    (with-current-buffer bench
-      (pcase-let ((`(,reasoning . ,answer)
-                   (hermes-bench--segments-by-zone
-                    (hermes-stream-segments new))))
-        (hermes-bench--paint-ephemeral nil reasoning answer)))))
-
-(defun hermes-bench--stream-commit (bench old-stream)
-  "Stream ended: commit OLD-STREAM into the session's org buffer.
-The bench is NOT cleared; the answer remains until the next
-`hermes-bench-send'."
-  (when (buffer-live-p bench)
-    (with-current-buffer bench
-      ;; Steer messages were valid for the now-ending turn only.
-      (setq hermes-bench--steer-messages nil))
-    (let* ((sid (buffer-local-value 'hermes-bench--session-id bench))
-           (org-buf (and sid (gethash sid hermes--org-buffers))))
-      (when (and (buffer-live-p org-buf)
-                 (hermes-stream-p old-stream))
-        (with-current-buffer org-buf
-          (let* ((state (gethash sid hermes--sessions))
-                 (usage (and state (hermes-state-usage state)))
-                 (msg (hermes--message-from-stream old-stream usage)))
-            (with-silent-modifications
-              (save-excursion
-                (hermes--insert-committed-turn msg)))))))))
-
-(defun hermes-bench-add-steer (sid text)
-  "Append TEXT as a `[steer]' message to the bench for session SID.
-No-op if SID has no live bench.  Repaints so the message is visible
-above the reasoning zone immediately, preserving any in-flight stream
-content."
-  (let ((bench (hermes-bench-active-p sid)))
-    (when (and bench (stringp text) (not (string-empty-p text)))
-      (with-current-buffer bench
-        (setq hermes-bench--steer-messages
-              (append hermes-bench--steer-messages (list text)))
-        (let* ((state  (hermes-bench--state))
-               (stream (and state (hermes-state-stream state))))
-          (if (hermes-stream-p stream)
-              (pcase-let ((`(,reasoning . ,answer)
-                           (hermes-bench--segments-by-zone
-                            (hermes-stream-segments stream))))
-                (hermes-bench--paint-ephemeral nil reasoning answer))
-            (hermes-bench--paint-ephemeral nil nil nil)))))))
-
 ;;;; Send / interrupt / compose
 
 (defun hermes-bench-send ()
-  "Send the current input-area text to this bench's session.
-Clears the bench ephemeral content first (showing the new user prompt),
-then dispatches the text via `hermes-send'."
+  "Send the current input-area text to this bench's session."
   (interactive)
   (let ((text (string-trim (hermes-bench--input-text)))
         (sid hermes-bench--session-id))
@@ -843,14 +572,10 @@ then dispatches the text via `hermes-send'."
       (user-error "Bench has no session"))
     (when (string-empty-p text)
       (user-error "Nothing to send"))
-    ;; 1+2. Clear input area first so it's not preserved by paint.
     (hermes-bench--clear-input)
-    ;; 3. Wipe old turn, show new user prompt + empty reasoning/answer.
-    (hermes-bench--paint-ephemeral text "" "")
-    ;; 3a. Pull org-viewer windows to point-max so the post-commit
-    ;; follow logic in `hermes--render' sees them as tail-tracking.
+    ;; Pull org-viewer windows to point-max so the post-commit follow
+    ;; logic in `hermes--render' sees them as tail-tracking.
     (hermes-bench--align-org-to-tail)
-    ;; 4. Dispatch via `hermes-send' bound to this session.
     (let ((hermes--current-session-id sid))
       (hermes-send text))
     (goto-char (point-max))))
@@ -862,47 +587,18 @@ then dispatches the text via `hermes-send'."
     (let ((hermes--current-session-id hermes-bench--session-id))
       (call-interactively #'hermes-interrupt-current-session))))
 
-(declare-function hermes-steer "hermes-config" (text))
-
-(defun hermes-bench-steer ()
-  "Send the current input-area text as a `session.steer' message.
-Clears the input area, shows `[steer] <text>' above the reasoning zone,
-and dispatches the steer RPC against the bench's session."
-  (interactive)
-  (let ((text (string-trim (hermes-bench--input-text)))
-        (sid hermes-bench--session-id))
-    (unless sid
-      (user-error "Bench has no session"))
-    (when (string-empty-p text)
-      (user-error "Nothing to steer"))
-    (hermes-bench--clear-input)
-    (let ((hermes--current-session-id sid))
-      (hermes-steer text))))
-
 (defun hermes-bench-compose ()
   "Open the multi-line composer targeting the bench's session."
   (interactive)
   (when hermes-bench--session-id
     (call-interactively #'hermes-compose)))
 
-(defun hermes-bench-show-status (sid text &optional error-p)
-  "Show TEXT as a transient status line in the bench for SID.
-If ERROR-P is non-nil, apply `error' face.  The text is stored in
-`hermes-bench--status-message' and rendered immediately."
-  (let ((bench (hermes-bench-active-p sid)))
-    (when bench
-      (with-current-buffer bench
-        (setq hermes-bench--status-message
-              (list :text text :error-p error-p))
-        ;; Trigger repaint so the status appears immediately.
-        (let* ((state  (hermes-bench--state))
-               (stream (and state (hermes-state-stream state))))
-          (if (hermes-stream-p stream)
-              (pcase-let ((`(,reasoning . ,answer)
-                           (hermes-bench--segments-by-zone
-                            (hermes-stream-segments stream))))
-                (hermes-bench--paint-ephemeral nil reasoning answer))
-            (hermes-bench--paint-ephemeral nil nil nil)))))))
+(defun hermes-bench-show-status (_sid text &optional error-p)
+  "Show TEXT as a transient status message in the echo area.
+ERROR-P selects the `error' face.  Kept as a thin wrapper so existing
+callers (image, config) keep working without a behavior fork."
+  (let ((msg (if error-p (propertize text 'face 'error) text)))
+    (message "%s" msg)))
 
 (declare-function ansi-color-apply "ansi-color" (string))
 

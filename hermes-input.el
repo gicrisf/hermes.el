@@ -36,7 +36,6 @@
 (declare-function hermes-interrupt-current-session "hermes-mode" ())
 (declare-function hermes-resume-from-db "hermes-sessions" (sid))
 (declare-function hermes-branch-from-db "hermes-sessions" (sid))
-(declare-function hermes-bench-add-steer "hermes-bench" (sid text))
 
 (defvar-local hermes-input--history nil
   "Buffer-local mirror of `hermes-state-history' for `read-string' HISTORY.")
@@ -596,8 +595,6 @@ Substitutions are applied right-to-left to preserve byte offsets."
      ((hermes-state-stream (hermes--current-state))
       (pcase (hermes-state-busy-mode (hermes--current-state))
         ("steer"
-         (when (fboundp 'hermes-bench-add-steer)
-           (hermes-bench-add-steer sid text))
          (hermes--request
           "session.steer"
           (list :session_id sid :text text)

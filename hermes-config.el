@@ -187,21 +187,17 @@ Bound around the `completing-read' call in `hermes--set-model-prompt'.")
 
 (declare-function hermes-bench-active-p "hermes-bench" (&optional buffer-or-sid))
 (declare-function hermes-bench-live-p "hermes-bench" (&optional buffer-or-sid))
-(declare-function hermes-bench-add-steer "hermes-bench" (sid text))
 (declare-function hermes-bench-show-status "hermes-bench" (sid text &optional error-p))
 
 (defun hermes-steer (text)
   "Send TEXT as a steer message to the current session's in-flight turn.
 Safe mid-turn: the gateway threads the message into the running turn
-without interrupting it.  If a bench is paired with the target buffer,
-the message is also shown above its reasoning zone."
+without interrupting it.  Confirmation appears in the echo area."
   (interactive (list (read-string "Steer: ")))
   (let ((sid    (hermes--config-resolve-target))
         (trimmed (string-trim (or text ""))))
     (when (string-empty-p trimmed)
       (user-error "Empty steer message"))
-    (when (fboundp 'hermes-bench-add-steer)
-      (hermes-bench-add-steer sid trimmed))
     (hermes--request
      "session.steer"
      (list :session_id sid :text trimmed)

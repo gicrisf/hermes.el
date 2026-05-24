@@ -93,14 +93,15 @@ CALLBACK receives (RESULT ERROR)."
 ;;;; Bench repaint
 
 (defun hermes-image--repaint-bench (sid)
-  "Trigger a bench repaint for SID, preserving in-flight content.
-The bench reads `hermes-state-attachments' from its session state."
+  "Trigger a bench status refresh for SID after an attachment change.
+The bench reads `hermes-state-attachments' from its session state and
+renders one line per attachment in the status header."
   (when (and sid (fboundp 'hermes-bench-active-p))
     (let ((bench (hermes-bench-active-p sid)))
       (when (buffer-live-p bench)
         (with-current-buffer bench
-          (when (fboundp 'hermes-bench--repaint-preserving-stream)
-            (hermes-bench--repaint-preserving-stream)))))))
+          (when (fboundp 'hermes-bench--refresh-status)
+            (hermes-bench--refresh-status)))))))
 
 ;;;; Interactive commands
 

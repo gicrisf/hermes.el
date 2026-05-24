@@ -65,13 +65,12 @@ Tool segments are body-canonical in `#+name:'d blocks and heading properties;
 subagents are body-canonical in child `HERMES_KIND: SUBAGENT` headings.
 
 **Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
-bench (`*hermes-bench:<sid>*`) — a 20-line side-window with structured zones
-for the last turn: user prompt, reasoning, answer, and an editable input area.
-The bench is a pure display surface (no state atom). On `RET` the old turn is
-cleared, the new user prompt appears, and the assistant response streams in.
-On `message.complete` the turn is committed to the org buffer; the answer
-persists in the bench until the next prompt. Minor mode buffers do not show
-the bench (header-line only).
+bench (`*hermes-bench:<sid>*`) — a 20-line side-window that is a pure input
+surface: status header (background tasks, pending attachments) + separator +
+editable prompt. Streaming content lives in the primary viewer (org or
+section); the bench never renders the assistant's in-flight turn. On `RET`
+the input dispatches via `hermes-send` and the response streams into the
+viewer above. Minor mode buffers do not show the bench (header-line only).
 
 **Doom Emacs integration (separate files, optional):**
 

@@ -8,6 +8,21 @@ comint bench prompt — all over JSON-RPC 2.0 to the agent's `tui_gateway`.
 M-x hermes
 ```
 
+## Features
+
+- Org-mode buffers as lossless portable chats — every turn is an Org heading
+  with properties, saved as plain .org files; edits survive across resume.
+- Org-mode powered tool rendering — Bash, Read, Edit, Grep, and more
+  rendered as rich subtrees with status keywords, inline diffs, and named blocks.
+- Image support — paste from clipboard or attach files, rendered inline.
+- Background tasks — `/bg` prompts run asynchronously in dedicated Org buffers.
+- Subagent delegation — spawned subagent trees render in-place with goal,
+  thinking trace, tools, and result summaries.
+- Interactive configuration — switch models, toggle fast/reasoning/yolo,
+  set personality/skin, enable/disable toolsets on the fly.
+- Slash commands with completion — client-side session management shortcuts,
+  server-side dispatch for everything else with TAB-driven catalog completion.
+
 ## Prerequisites
 
 - Emacs 27.1+

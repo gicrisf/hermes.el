@@ -49,10 +49,9 @@ Returns the buffer."
     (with-current-buffer buf
       (should (markerp hermes-comint--output-end))
       (should (markerp hermes-comint--prompt-start))
-      (should (= 1 (marker-position hermes-comint--output-end)))
-      ;; Pending region is empty initially: output-end == prompt-start.
-      (should (= (marker-position hermes-comint--output-end)
-                 (marker-position hermes-comint--prompt-start)))
+      ;; Splash logo is in committed output region.
+      (let ((committed (hermes-comint-test--committed-text)))
+        (should (string-match-p "HERMES" committed)))
       ;; Prompt is at point-max area.
       (should (string-prefix-p hermes-comint--prompt-string
                                (buffer-substring-no-properties

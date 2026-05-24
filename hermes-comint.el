@@ -54,6 +54,48 @@ When nil, the bench falls back to the gateway skin color
                  (color :tag "Custom color"))
   :group 'hermes)
 
+(defcustom hermes-bench-banner-type 'ascii
+  "Which built-in banner to show when the gateway provides none.
+`ascii'  — NOUS HERMES ASCII art
+`unicode' — N O U S  R E S E A R C H  Unicode block art"
+  :type '(choice (const :tag "ASCII NOUS HERMES" ascii)
+                 (const :tag "Unicode block art" unicode))
+  :group 'hermes)
+
+(defconst hermes-comint--builtin-logo
+  "\
+██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
+███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
+██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
+██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝"
+  "Fallback NOUS HERMES ASCII splash banner.")
+
+(defconst hermes-comint--unicode-logo
+  "\
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡠⠴⠶⠶⠶⣿⣿⣷⣶⣶⣤⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⣶⣿⣿⣿⣿⣿⣿⣶⣤⡀⠉⠻⣿⣿⣿⣿⣿⣷⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⢀⣤⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀⠈⢻⣿⣿⣿⣿⣿⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⢀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⢿⠋⢀⣾⡷⡄⠀⢹⣿⡿⣿⡿⠋⢡⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⢀⡞⠉⠉⡻⣟⣽⣉⣻⣽⣦⣤⣯⣉⣀⣈⣿⣿⣿⣿⣷⠀⠀⢻⣷⣿⣿⣿⣿⣿⣷⡀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣶⣾⣿⣿⣿⣿⣿⣿⣿⣷⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⢠⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⠀⠀⠀
+⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⡿⣿⣿⣿⠷⠿⣿⣿⣿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠹⣿⣿⣿⣿⣛⣧⠀⠀⠉⡾⣿⣿⡷⣦⡄⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠈⠙⠋⣿⣟⣿⠃⠀⠀⠐⠾⠿⠗⠋⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⣿⣏⠁⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⢀⣿⡇⣵⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣼⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣧⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⢸⣿⣷⡹⣟⠳⠖⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡆⠀⠀⠀
+⠀⠀⡤⠀⠀⠀⣸⣿⣿⣷⡁⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⡏⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟⣿⣷⠀⠀⠀
+⠀⢸⡇⠀⠀⢀⣿⣿⣿⣿⣷⣤⣀⣠⣤⣤⣤⡀⠀⢸⣿⣿⣿⡿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⡆⣦⠀
+⠀⣾⣿⣶⣶⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣄⣼⣿⣿⣿⣤⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣰⣿⣿⡇⣼⡇
+⠀⠹⣿⣟⣿⣛⣩⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠋⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⢡⣿⡇
+⠀⠀⠈⠛⠿⣿⠿⠿⣫⣿⣿⣿⣿⣿⣿⣿⣿⡅⠀⠀⠀⠈⣹⣿⣿⣿⣿⣿⣿⠿⢿⣿⣿⣿⣿⣿⣿⣿⣣⣿⠟⠀
+⠀⠀⠀⠀⠀⠙⢿⣿⣿⠿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣴⡶⠟⡫⢉⣵⡿⠋⠀⠀⠀⠀⠀⠙⠳⣽⣿⣿⡿⠟⠁⠀⠀
+⣀⣀⣀⣀⣀⣀⣀⣀⣀⣴⣿⣿⣿⣿⣿⣿⣿⣿⣋⣉⣠⣾⣱⣿⣋⣀⣀⣀⣀⣀⣀⣀⣀⣀⣙⣿⣇⣀⣀⣀⣀⣀"
+  "Fallback Unicode splash banner.")
+
 ;;; Bench: faces
 
 (defface hermes-bench-buffer-face
@@ -109,6 +151,10 @@ When nil, the bench falls back to the gateway skin color
 (defface hermes-comint-face-subagent
   '((t :inherit font-lock-builtin-face :weight bold))
   "Face for subagent child heading.")
+
+(defface hermes-bench-logo-face
+  '((t :inherit font-lock-comment-face))
+  "Face for the bench splash banner.")
 
 ;;; Message accessors (pure, from hermes-state structs)
 
@@ -421,7 +467,14 @@ copy commands are always allowed in the read-only history region."
     (setq hermes-comint--stream-pending nil)
     ;; output-end starts at point-min; advances as committed turns arrive.
     (setq hermes-comint--output-end (copy-marker (point-min) nil))
-    (hermes-comint--insert-prompt))
+    (hermes-comint--insert-prompt)
+    (unless hermes-comint--bench-p
+      (save-excursion
+        (goto-char (point-min))
+        (let ((start (point)))
+          (hermes-comint--insert-splash)
+          (hermes-comint--apply-output-props start (point)))
+        (set-marker hermes-comint--output-end (point)))))
   (add-hook 'hermes-state-change-hook #'hermes-comint--refresh t)
   (add-hook 'hermes-state-change-hook #'hermes-comint--refresh-mode-line t)
   (add-hook 'hermes-ui-state-change-hook #'hermes-comint--refresh-mode-line t)
@@ -641,6 +694,44 @@ inserts everything that lives above the assistant turn."
     (hermes-comint-bench--insert-steer-lines))
   (when hermes-comint--status-message
     (hermes-comint-bench--insert-status-line)))
+
+;;;; Splash
+
+(defun hermes-comint--strip-rich (string)
+  "Drop Rich `[style]…[/]' tags from STRING."
+  (replace-regexp-in-string "\\[/?[^]]*\\]" "" string))
+
+(defun hermes-comint--splash-logo ()
+  "Return the splash banner: gateway-provided when available, else builtin."
+  (let* ((skin (and (boundp 'hermes--last-gateway-ready)
+                    hermes--last-gateway-ready))
+         (h (and (hash-table-p skin) (gethash "skin" skin)))
+         (src (or h skin))
+         (banner (and (hash-table-p src)
+                      (or (gethash "banner_hero" src)
+                          (gethash "banner_logo" src)))))
+    (hermes-comint--strip-rich
+     (if (and (stringp banner) (not (string-empty-p banner)))
+         banner
+       (pcase hermes-bench-banner-type
+         ('unicode hermes-comint--unicode-logo)
+         (_        hermes-comint--builtin-logo))))))
+
+(defun hermes-comint--insert-splash ()
+  "Insert the splash banner at point."
+  (let ((logo (hermes-comint--splash-logo)))
+    (insert "\n\n")
+    (let ((start (point)))
+      (insert logo)
+      (add-face-text-property start (point) 'hermes-bench-logo-face)
+      (insert "\n\n"))))
+
+(defun hermes-comint--should-show-splash-p ()
+  "Return non-nil when the bench has no conversation content to display."
+  (let ((state (hermes--state-slot-read hermes--current-session-id)))
+    (and (or (null hermes-comint--current-user-prompt)
+             (string-empty-p hermes-comint--current-user-prompt))
+         (not (and state (hermes-state-stream state))))))
 
 (defun hermes-comint-bench--insert-user-heading (text)
   "Insert `> User · HH:MM' heading and TEXT as a fontified body.
@@ -1369,7 +1460,8 @@ back to the echo area."
 (defun hermes-comint-bench--repaint-ephemeral ()
   "Repaint the bench ephemeral region without an in-flight stream.
 Clears [output-end, prompt-start) and re-inserts user heading + steer
-+ status (no stream content)."
++ status (no stream content).  When the bench is empty, shows the
+splash banner."
   (let ((inhibit-read-only t)
         (buffer-undo-list t)
         (out-end (marker-position hermes-comint--output-end))
@@ -1377,7 +1469,9 @@ Clears [output-end, prompt-start) and re-inserts user heading + steer
     (delete-region out-end pr-start)
     (save-excursion
       (goto-char (marker-position hermes-comint--output-end))
-      (hermes-comint-bench--insert-ephemeral-prelude))
+      (if (hermes-comint--should-show-splash-p)
+          (hermes-comint--insert-splash)
+        (hermes-comint-bench--insert-ephemeral-prelude)))
     (hermes-comint--ensure-prompt-visible t)))
 
 (defun hermes-bench-bg-list ()

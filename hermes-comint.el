@@ -695,8 +695,7 @@ Assumes the prompt is already inserted at point-max."
     (define-key m (kbd "C-c C-k") #'hermes-comint-interrupt)
     (define-key m (kbd "C-c C-l") #'hermes-compose)
     (define-key m (kbd "C-c C-i") #'hermes-comint-focus-prompt)
-    (define-key m (kbd "g")       #'hermes-comint-refresh)
-    (define-key m (kbd "q")       #'quit-window)
+    (define-key m (kbd "C-c C-r") #'hermes-comint-refresh)
     m)
   "Keymap for `hermes-comint-mode'.")
 
@@ -705,7 +704,7 @@ Assumes the prompt is already inserted at point-max."
 (define-derived-mode hermes-comint-mode comint-mode "Hermes-Comint"
   "Comint-derived conversation viewer for Hermes sessions.
 Read-only output history with a writable prompt at the bottom.
-Projects from the same `turns' state as the org and section viewers.
+Projects from the same `turns' state as the org viewer.
 
 \\{hermes-comint-mode-map}"
   ;; Field-based prompt detection (modern default — not regexp).

@@ -34,4 +34,5 @@
                            "test/hermes-bench-test.el"
                            "test/hermes-bg-test.el"
                            "test/hermes-project-test.el"
-                           "test/hermes-sessions-test.el"))
+                           "test/hermes-sessions-test.el"
+                           "test/hermes-comint-test.el"))

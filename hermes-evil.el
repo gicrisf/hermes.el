@@ -29,7 +29,11 @@
   (evil-define-key 'normal hermes-org-minor-mode-map
     (kbd "C-c C-i") #'hermes-bench-focus
     (kbd "C-c C-k") #'hermes-interrupt-current-session
-    (kbd "C-c C-l") #'hermes-compose))
+    (kbd "C-c C-l") #'hermes-compose)
+  ;; The comint viewer is a typing surface — start in insert state so
+  ;; bare letters flow to the prompt instead of being swallowed by Evil
+  ;; normal-state prefix keys (e.g. `g').
+  (evil-set-initial-state 'hermes-comint-mode 'insert))
 
 (provide 'hermes-evil)
 ;;; hermes-evil.el ends here

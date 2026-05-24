@@ -55,25 +55,12 @@ In `~/.config/doom/packages.el`:
 In `~/.config/doom/config.el`:
 
 ```elisp
-(use-package! hermes
-  :config
-  (require 'hermes-doom))
-```
+(use-package! hermes)
 
-If you prefer not to register the package, this also works:
-
-```elisp
-(add-to-list 'load-path "~/Projects/hermes.el")
-(after! evil
-  (require 'hermes-doom))
-```
-
-### Optional
-
-```elisp
-(require 'hermes-transient)      ; C-c C-t popup, SPC h . leader
-(require 'hermes-notifications)   ; desktop alerts
-(setq doom-theme 'hermes-doom)    ; bundled dark theme
+;; Optional modules:
+(use-package! hermes-evil)           ; normal-state C-c bindings
+(use-package! hermes-doom)           ; SPC h leader prefix
+;; and other ones
 ```
 
 ## Keybindings

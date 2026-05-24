@@ -412,7 +412,8 @@ copy commands are always allowed in the read-only history region."
 
 (defun hermes-comint--setup ()
   "Initialize buffer-local state and insert the initial prompt line."
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (buffer-undo-list t))
     (erase-buffer)
     (setq hermes-comint--turns-snapshot nil)
     (setq hermes-comint--stream-active nil)
@@ -591,6 +592,7 @@ state and converge to the same buffer content."
 No-op in bench mode — committed history lives in the paired org buffer."
   (unless hermes-comint--bench-p
     (let* ((inhibit-read-only t)
+           (buffer-undo-list t)
            (turns (hermes-state-turns state))
            (start-idx (if hermes-comint--turns-snapshot
                           (length hermes-comint--turns-snapshot)
@@ -612,6 +614,7 @@ In bench mode, also prepends the user-prompt heading and any steer /
 status lines so the entire ephemeral surface rebuilds atomically per
 tick."
   (let* ((inhibit-read-only t)
+         (buffer-undo-list t)
          (stream (hermes-state-stream state))
          (turns  (hermes-state-turns state))
          (index  (1+ (length turns)))
@@ -755,13 +758,15 @@ buffer."
   (hermes-comint--stream-cancel-timer)
   (setq hermes-comint--stream-active nil)
   (if hermes-comint--bench-p
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (buffer-undo-list t))
         (setq hermes-comint--steer-messages nil)
         (setq hermes-comint--status-message nil)
         (delete-region (marker-position hermes-comint--output-end)
                        (marker-position hermes-comint--prompt-start)))
     ;; Full viewer: re-paint from the committed turn and advance output-end.
     (let* ((inhibit-read-only t)
+           (buffer-undo-list t)
            (turns (hermes-state-turns state))
            (out-end (marker-position hermes-comint--output-end))
            (pr-start (marker-position hermes-comint--prompt-start)))

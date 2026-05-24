@@ -551,24 +551,27 @@ copy commands are always allowed in the read-only history region."
               (if (string-suffix-p "\n" summary) "" "\n")
               (if (string-empty-p dur) "" (format "%s\n" dur))))))
 
+(defun hermes-comint--insert-text-segment (seg)
+  "Insert a single text segment SEG fontified as Org."
+  (let ((c (hermes-segment-content seg)))
+    (when (and (stringp c) (> (length c) 0))
+      (insert (hermes-comint--fontify-org
+               (concat c (unless (string-suffix-p "\n" c) "\n")))))))
+
 (defun hermes-comint--insert-assistant-body (msg)
   (let* ((segs (or (hermes-message-segments msg) []))
          (sas  (or (hermes-message-subagents msg) [])))
-    ;; Pass 1: reasoning blocks
+    ;; Single pass: render segments in natural order (matching backend progression).
     (dotimes (i (length segs))
       (let ((seg (aref segs i)))
-        (when (eq 'reasoning (hermes-segment-type seg))
-          (hermes-comint--insert-reasoning-block seg))))
-    ;; Pass 2: response text
-    (hermes-comint--insert-full-text msg)
-    ;; Pass 3: tool blocks
-    (dotimes (i (length segs))
-      (let ((seg (aref segs i)))
-        (when (eq 'tool (hermes-segment-type seg))
-          (let ((c (hermes-segment-content seg)))
-            (when (hermes-tool-p c)
-              (hermes-comint--insert-tool-block c))))))
-    ;; Pass 4: subagent blocks
+        (pcase (hermes-segment-type seg)
+          ('reasoning (hermes-comint--insert-reasoning-block seg))
+          ('text (hermes-comint--insert-text-segment seg))
+          ('tool (let ((c (hermes-segment-content seg)))
+                   (when (hermes-tool-p c)
+                     (hermes-comint--insert-tool-block c))))
+          (_ nil))))
+    ;; Subagents at end.
     (dotimes (i (length sas))
       (hermes-comint--insert-subagent-block (aref sas i)))))
 

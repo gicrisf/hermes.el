@@ -239,6 +239,43 @@ position (pending stream growing before the prompt).")
 (defconst hermes-comint--prompt-string "> "
   "Prompt prefix string shown at the bottom of the buffer.")
 
+(defconst hermes-comint--motion-commands
+  '(nil
+    forward-char backward-char
+    next-line previous-line
+    beginning-of-line end-of-line
+    beginning-of-buffer end-of-buffer
+    scroll-up scroll-down
+    scroll-up-command scroll-down-command
+    goto-char mouse-set-point mouse-goto-line
+    kill-ring-save clipboard-kill-ring-save
+    mouse-save-then-kill
+    isearch-forward isearch-backward
+    isearch-forward-regexp isearch-backward-regexp
+    isearch-repeat-forward isearch-repeat-backward
+    set-mark-command mark-page exchange-point-and-mark
+    evil-forward-char evil-backward-char
+    evil-next-line evil-previous-line
+    evil-beginning-of-line evil-end-of-line
+    evil-goto-first-line evil-goto-line
+    evil-scroll-page-down evil-scroll-page-up
+    evil-scroll-line-down evil-scroll-line-up
+    evil-goto-mark evil-set-marker
+    evil-jump-forward evil-jump-backward
+    evil-search-next evil-search-previous
+    evil-ex-search-next evil-ex-search-previous
+    evil-find-char evil-find-char-backward
+    evil-find-char-to evil-find-char-to-backward
+    evil-repeat-find-char evil-repeat-find-char-reverse
+    evil-goto-percentage
+    evil-window-top evil-window-middle evil-window-bottom
+    evil-visual-char evil-visual-line evil-visual-block
+    evil-exit-visual-state
+    evil-escape)
+  "Commands that move or inspect text without modifying it.
+These are allowed to run when point is outside the writable input
+area.  All other commands trigger an auto-jump to `(point-max)'.")
+
 ;;;; Mode setup
 
 (defun hermes-comint--apply-output-props (start end)
@@ -270,6 +307,20 @@ read-only property from the prompt prefix."
              'rear-nonsticky '(read-only face font-lock-face)
              'font-lock-face 'comint-highlight-prompt))
       (setq hermes-comint--prompt-start (copy-marker start t)))))
+
+(defun hermes-comint--in-input-area-p ()
+  "Return non-nil if point is in the writable input region.
+The writable area starts after the `> ' prompt prefix."
+  (let ((p (marker-position hermes-comint--prompt-start)))
+    (and p (>= (point) (+ p (length hermes-comint--prompt-string))))))
+
+(defun hermes-comint--ensure-input-point ()
+  "If point is outside the writable input area, jump to `(point-max)'.
+Does nothing when the current command is a whitelisted motion command."
+  (when (and hermes-comint--prompt-start
+             (not (hermes-comint--in-input-area-p))
+             (not (memq this-command hermes-comint--motion-commands)))
+    (goto-char (point-max))))
 
 (defun hermes-comint--setup ()
   "Initialize buffer-local state and insert the initial prompt line."
@@ -724,6 +775,7 @@ Projects from the same `turns' state as the org viewer.
   (visual-line-mode 1)
   (setq-local scroll-conservatively 101)
   (setq-local scroll-margin 0)
+  (add-hook 'pre-command-hook #'hermes-comint--ensure-input-point nil t)
   (hermes-comint--setup))
 
 ;;;; Session picker

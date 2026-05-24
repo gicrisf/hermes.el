@@ -1,7 +1,6 @@
 ## 15. Bottom Bench
 
-> **Scope:** The persistent bottom bench for `hermes-mode` major-mode buffers.
-> Minor mode (`hermes-org-minor-mode` in arbitrary org files) does **not** show a bench.
+> **Scope:** The persistent bottom bench for Org buffers with `hermes-org-minor-mode`.
 >
 > **Date:** 2026-05-24
 
@@ -9,7 +8,7 @@
 
 ## 15.1 Overview
 
-The bench is a bottom side-window paired with a `hermes-mode` org buffer.  It is
+The bench is a bottom side-window paired with an Org buffer that has `hermes-org-minor-mode` enabled.  It is
 a `hermes-comint-mode` buffer flagged with `hermes-comint--bench-p = t`.  It
 shows only the current in-flight turn (user prompt + assistant stream) above a
 writable `> ` prompt; committed history lives in the org buffer only.  The
@@ -211,7 +210,7 @@ the assistant's response.  On commit, the ephemeral region clears entirely.
 
 | Context | Key | Action |
 |---------|-----|--------|
-| hermes-mode | `C-c C-i` | Focus bench input area |
+| Org buffer | `C-c C-i` | Focus bench input area |
 | Bench | `RET` | Send prompt |
 | Bench | `C-c C-c` | Send prompt |
 | Bench | `M-p` | Previous input from history ring |
@@ -228,7 +227,7 @@ the assistant's response.  On commit, the ephemeral region clears entirely.
 | File | Role |
 |------|------|
 | `hermes-comint.el` | Bench API (`hermes-bench-ensure/active-p/hide/...`) + implementation (`bench-p` flag, paint-stream bench path, skin bg, CAPF) |
-| `hermes-mode.el` | Creates bench on `hermes-mode` startup via `hermes-bench-ensure`, `C-c C-i` binding |
+| `hermes.el` / `hermes-org-minor-mode.el` | Creates bench on startup via `hermes-bench-ensure`, `C-c C-i` binding |
 | `hermes-state.el` | `hermes--bench-buffers` registry, `hermes--maybe-kill-bench` lifecycle |
 
 ---

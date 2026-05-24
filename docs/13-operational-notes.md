@@ -76,7 +76,7 @@ crashes in non-Org buffers (e.g. test buffers in `fundamental-mode`):
 
 Additional guards:
 - `(hash-table-p info)` before `(gethash "model" info)` — `session-info` can be nil before `session.info` arrives
-- `org-hide-leading-stars` and `org-startup-folded` set buffer-locally in `hermes-mode` init
+- `org-hide-leading-stars` and `org-startup-folded` set buffer-locally in `hermes-org-minor-mode` init
 
 #### `with-silent-modifications` and post-passes
 

@@ -102,7 +102,6 @@ All reference docs are in [`docs/`](docs/):
 ### Prerequisites
 
 - Emacs 27.1+ (27+ for `json-parse-string` / `json-serialize`)
-- Python 3.11+ (for the Hermes agent gateway)
 - A working Hermes agent installation — see the
   [Hermes installation docs](https://github.com/NousResearch/hermes-agent)
 

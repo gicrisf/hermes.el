@@ -11,8 +11,7 @@ M-x hermes
 ## Prerequisites
 
 - Emacs 27.1+
-- Python 3.11+
-- [Hermes agent](https://github.com/NousResearch/hermes-agent) installed
+- [Hermes agent](https://github.com/NousResearch/hermes-agent) installed (gateway reachable via `python3` or configured via `hermes-rpc-command`)
 - API key for your provider (e.g. `OPENROUTER_API_KEY`)
 
 ## Setup
@@ -22,7 +21,7 @@ M-x hermes
 (require 'hermes)
 ```
 
-If you run Hermes inside a virtualenv, point Emacs to its interpreter:
+If you run Hermes inside a virtualenv, or its gateway runs in Docker/elsewhere:
 
 ```elisp
 (setq hermes-rpc-python "/path/to/venv/bin/python")

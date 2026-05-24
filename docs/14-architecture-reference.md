@@ -21,7 +21,7 @@ Gateway (Python subprocess)
     │
     │  NDJSON over stdio (jsonrpc=2.0, method="event")
     ▼
-hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes-mode.el: route-event
+hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes.el: hermes--route-event
                                                       │
                                                       │  dispatch
                                                       ▼
@@ -33,7 +33,7 @@ hermes-rpc.el  ──hermes-rpc-event-functions──►  hermes-mode.el: route-
                                                        │
                                                        │  run-hook
                                                        ▼
-                                                hermes--render (hermes-render.el)
+                                                hermes--render (hermes-org-render.el)
                                                         │
                                                         ├─► diff & edit ──► Org buffer (*hermes:SID*)
                                                         │
@@ -69,25 +69,23 @@ Emacs (user-input) → hermes-input.el → hermes-dispatch (:user-submit)
 
 | File | Lines | Role |
 |------|-------|------|
-| `hermes-rpc.el` | 343 | JSON-RPC 2.0 transport (make-process, NDJSON, pending map) |
-| `hermes-state.el` | 399 | Buffer-local state atoms + pure reducer |
-| `hermes-render.el` | 409 | Diff-based Org buffer renderer |
-| `hermes-mode.el` | 225 | org-mode derived major mode + event routing + entrypoint |
-| `hermes-comint.el` (bench mode) | — | Bench lives in comint via `hermes-comint--bench-p = t`; see line above for comint line count |
-| `hermes-input.el` | 209 | Input queue, slash commands, history |
-| `hermes-prompts.el` | 116 | Minibuffer prompt handlers (approval, clarify, secret, sudo) |
-| `hermes-compose.el` | 81 | Multi-line org-mode composer |
-| `hermes-comint.el` | 1,209 | Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer; zero external deps); also hosts the bench via `hermes-comint--bench-p = t` |
-| `hermes-sessions.el` | ~420 | Minibuffer selectors (`hermes-current-sessions`, `hermes-stored-{resume,branch,delete,save}`); also hosts the DB→Org renderer and the resume/branch install path |
-| `hermes-skin.el` | 83 | Gateway skin → face-remap |
-| `hermes-md.el` | 164 | Markdown → Org syntax converter |
-| `hermes-dashboard.el` | 393 | Vanilla Emacs dashboard (`*Hermes*`) |
-| `hermes-events.el` | 97 | Event/method name registry |
-| `doom-dashboard-hermes.el` | 442 | Standalone Doom-styled dashboard (`*doom-hermes*`) |
-| `hermes-doom.el` | 66 | Doom `SPC h` leader prefix; pulls in Evil, Transient, Notifications |
-| `hermes-evil.el` | 28 | Normal-state Evil C-c bindings (works in any Evil-equipped Emacs) |
+| `hermes-rpc.el` | 396 | JSON-RPC 2.0 transport (make-process, NDJSON, pending map) |
+| `hermes-state.el` | 1596 | Buffer-local state atoms + pure reducer |
+| `hermes-org-render.el` | 1462 | Diff-based Org buffer renderer |
+| `hermes.el` | 227 | Context-aware entry point, event routing, debug commands |
+| `hermes-org-minor-mode.el` | 338 | Org minor mode, keybindings, session-scoped buffer parser |
+| `hermes-comint.el` | 1496 | Comint-derived conversation viewer with inline prompt (pure `turns` projection, never reads org buffer); also hosts the bench via `hermes-comint--bench-p = t` |
+| `hermes-input.el` | 633 | Input queue, slash commands, history |
+| `hermes-prompts.el` | 125 | Minibuffer prompt handlers (approval, clarify, secret, sudo) |
+| `hermes-compose.el` | 83 | Multi-line org-mode composer |
+| `hermes-sessions.el` | 493 | Minibuffer selectors (`hermes-current-sessions`, `hermes-stored-{resume,branch,delete,save}`); also hosts the DB→Org renderer and the resume/branch install path |
+| `hermes-skin.el` | 140 | Gateway skin → face-remap |
+| `hermes-md.el` | 207 | Markdown → Org syntax converter |
+| `hermes-events.el` | 135 | Event/method name registry |
+| `hermes-doom.el` | 63 | Doom `SPC h` leader prefix |
+| `hermes-evil.el` | 39 | Normal-state Evil C-c bindings (works in any Evil-equipped Emacs) |
 | `hermes-doom-theme.el` | 161 | Hermes-branded dark theme |
-| **Total** | **~3,853** | |
+| **Total** | **~7,700** | Core files only (excluding tests, plans, archive) |
 
 ---
 
@@ -219,7 +217,7 @@ Gateway sends:
 Process filter → parse JSON → dispatch to hermes-rpc-event-functions
   │
   ▼
-hermes--route-event (hermes-mode.el):
+hermes--route-event (hermes.el):
   1. If gateway.ready/skin.changed: cache payload globally
   2. Lookup session buffer by session-id
   3. hermes-dispatch in that buffer's context
@@ -233,7 +231,7 @@ map handles this correctly because each request has a unique id.
 
 ---
 
-## Rendering (`hermes-render.el`)
+## Rendering (`hermes-org-render.el`)
 
 ### Two hooks
 
@@ -300,27 +298,25 @@ visible buffer on resume, so user edits are preserved.
 
 ---
 
-## Major Mode (`hermes-mode.el`)
+## Entry Point (`hermes.el`)
+
+`hermes.el` is the context-aware entry point and event router — it is NOT a
+derived major mode.  Org-mode buffer integration is provided by
+`hermes-org-minor-mode` (a minor mode in `hermes-org-minor-mode.el`).
 
 ```elisp
-(define-derived-mode hermes-mode org-mode "Hermes"
-  (setq-local org-startup-folded nil)
-  (setq-local org-hide-leading-stars t)
-  (setq buffer-read-only t)
-  (hermes-state-init)
-  (insert "#+TITLE: hermes\n")
-  ;; Register hooks...
-  )
+(defun hermes--install-entry-hooks ()
+  "Install hooks for event routing and connection handling."
+  (add-hook 'hermes-rpc-event-functions #'hermes--route-event)
+  (add-hook 'hermes-rpc-connection-functions #'hermes--route-connection))
 ```
 
 ### Event routing
 
 ```elisp
-hermes--install-hooks
-  ├── hermes-rpc-event-functions   → hermes--route-event
-  ├── hermes-rpc-event-functions   → hermes-sessions--refresh-if-open
-  ├── hermes-rpc-connection-functions → hermes--route-connection
-  └── hermes-rpc-connection-functions → hermes-sessions--refresh-if-open
+hermes--install-entry-hooks
+  ├── hermes-rpc-event-functions      → hermes--route-event
+  └── hermes-rpc-connection-functions → hermes--route-connection
 ```
 
 `hermes--route-event` dispatches events into the correct session buffer:
@@ -333,10 +329,8 @@ hermes--install-hooks
 M-x hermes → hermes → hermes-new-session
   1. Start gateway if not running (hermes-rpc-connect)
   2. Send session.create request
-  3. On success: generate-new-buffer "*hermes:SID*"
-  4. Activate hermes-mode in that buffer
-  5. Replay last-gateway-ready event
-  6. Pop dashboard
+  3. On success: pop/create session buffer
+  4. Display bench side-window
   ```
 
 ---
@@ -383,7 +377,7 @@ Keybindings:
 - `C-c C-c` → send content through `hermes-send`, kill buffer
 - `C-c C-k` → kill buffer (cancel)
 
-The composer is a clean org-mode buffer (not hermes-mode derived) to avoid
+The composer is a clean org-mode buffer (not derived from any Hermes mode) to avoid
 polluting the conversation buffer's state.
 
 ---
@@ -432,33 +426,8 @@ Protected regions prevent nested passes from corrupting fenced code bodies.
 
 The gateway emits a `skin` payload on `gateway.ready` (and `skin.changed`)
 with a `colors` hash. The skin module remaps buffer-local faces to these
-colors:
-
-```elisp
-hermes-user-face      → user headline
-hermes-assistant-face → assistant headline
-hermes-system-face    → system headline
-hermes-tool-face      → tool headline
-```
-
----
-
-## Dashboard (`hermes-dashboard.el`)
-
-The vanilla dashboard (`*Hermes*`) is a `special-mode` buffer shown by
-`M-x hermes`. Sections:
-1. Unicode "HERMES" block-art logo with connection status
-2. Session information (model, session ID, tools/skills)
-3. Action menu (send, compose, sessions, refresh, quit)
-
-### Doom Dashboard (`doom-dashboard-hermes.el`)
-
-Standalone alternative (`*doom-hermes*`), Doom-styled. Centering via
-window margins + vertical pad. Debounced refresh (0.1s idle timer).
-Clickable menu with auto-detected keybindings. Independent faces
-inheriting from font-lock faces.
-
----
+colors. Note: there is no standalone dashboard; the entry point `M-x hermes`
+pops the session buffer directly.
 
 ## Org Buffer Structure
 
@@ -584,7 +553,7 @@ instead.
 
 ### `hermes-reload-from-org`
 
-`M-x hermes-reload-from-org` (in a `hermes-mode` buffer) is the direct entry point
+`M-x hermes-reload-from-org` (in a `hermes-org-minor-mode` buffer) is the direct entry point
 for option (1): creates a fresh gateway session bound to the current buffer.
 The gateway does not accept a `:history` parameter in `session.create`, so
 context is restored on the first outgoing prompt via the history seed
@@ -595,7 +564,7 @@ context is restored on the first outgoing prompt via the history seed
 Programmatic entry points for options (2) and (3).  Also reachable from
 the minibuffer commands (`M-x hermes-stored-resume`, `M-x hermes-stored-branch`).  Both call
 `session.resume` and install the response via `hermes--db-install-into-buffer`,
-which activates `hermes-mode`, writes `HERMES_SESSION` / `HERMES_CWD`
+which activates `hermes-org-minor-mode`, writes `HERMES_SESSION` / `HERMES_CWD`
 properties, appends the rendered body, and stamps `hermes--seeded-session-id`
 to suppress re-seeding.
 
@@ -625,24 +594,29 @@ round-trips.
 
 ### Evil Bindings (`hermes-evil.el`) & Doom Leader (`hermes-doom.el`)
 
-`hermes-evil.el` provides normal-state C-c bindings in `hermes-mode` buffers.
+`hermes-evil.el` provides normal-state C-c bindings in `hermes-org-minor-mode` buffers.
 `hermes-doom.el` provides the `SPC h` leader prefix:
 
 | Key | Action |
 |-----|--------|
-| `SPC h d` | Dashboard (`doom-dashboard-hermes`) |
-| `SPC h s` | Start / send prompt |
-| `SPC h i` | Start (alias) |
+| `SPC h h` / `SPC h s` / `SPC h i` / `SPC h g` | Go to primary session |
 | `SPC h n` | New session |
 | `SPC h c` | Multi-line composer |
-| `SPC h l` | Session list sidebar |
-| `SPC h g` | Go to primary session buffer |
+| `SPC h l` | Session list (minibuffer) |
 | `SPC h k` | Interrupt primary session |
+| `SPC h m` | Set model |
+| `SPC h f` | Toggle fast mode |
+| `SPC h r` | Cycle reasoning |
+| `SPC h y` | Toggle yolo |
+| `SPC h t` | Toggle toolsets |
+| `SPC h S` | Steer personality |
+| `SPC h K r/l/s/i/u` | Skills (reload/list/search/install/uninstall) |
+| `SPC h .` | Transient popup |
 
-In `hermes-mode` normal state:
+In `hermes-org-minor-mode` normal state:
 | Key | Action |
 |-----|--------|
-| `C-c C-i` | Send prompt |
+| `C-c C-i` | Focus bench input |
 | `C-c C-k` | Interrupt |
 | `C-c C-l` | Multi-line compose |
 

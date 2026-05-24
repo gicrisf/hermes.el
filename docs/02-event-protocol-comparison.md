@@ -57,7 +57,7 @@ Defined in `hermes-events.el` and used across the Emacs codebase.
 | **Session lifecycle** | | | |
 | `session.create` | `{cols?}` | Create new session | `hermes--do-session-create` |
 | `session.resume` | `{session_id}` | Resume prior session (long handler) | `hermes-resume-from-db`, `hermes-stored-resume`, `/resume` slash |
-| `session.close` | `{session_id}` | Close session | `hermes-sessions-close` |
+| `session.close` | `{session_id}` | Close session | `hermes-rpc-request` (registered in events.el, not called from client code) |
 | `session.interrupt` | `{session_id}` | Interrupt turn | `hermes-interrupt-current-session`, `C-c C-k` |
 | `session.list` | `{limit?, cwd?}` | List stored sessions | `hermes--stored-fetch` (used by all `hermes-stored-*` commands) |
 | `session.branch` | `{session_id, name?}` | Fork conversation (long handler) | `hermes-branch-from-db`, `hermes-stored-branch` |

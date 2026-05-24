@@ -59,9 +59,9 @@ High-frequency token streams (>25 Hz) would saturate the Emacs UI thread even wi
 
 The existing `hermes-render-stream-throttle` custom variable acts as a **floor** (minimum interval). Set to `0` for pure adaptive; set to `1.0` to force at least 1-second gaps regardless of text size.
 
-### Bench Renderer (Major Mode Only)
+### Bench Renderer
 
-When `hermes-bench-active-p` returns non-nil (i.e. a `hermes-mode` buffer has its
+When `hermes-bench-active-p` returns non-nil (i.e. an Org buffer with `hermes-org-minor-mode` has its
 bottom bench visible), the bench — a `hermes-comint-mode` buffer with
 `hermes-comint--bench-p = t` — handles its own stream rendering independently
 from the org renderer:
@@ -93,7 +93,8 @@ Six buffer-local variables govern the in-flight assistant message:
 | `hermes--stream-segments-start` | Right after assistant's `:END:\n` (nil insertion-type) |
 | `hermes--stream-segments-end` | End of rendered segment content (t insertion-type) |
 | `hermes--stream-subagents-marker` | Boundary between segments and subagent blocks (t insertion-type) |
-| `hermes--ui-line` | Right-hand status text in header line |
+| `hermes--bench-start` | Start of the live assistant turn region (nil insertion-type) |
+| `hermes--bench-end` | End of the live region (t insertion-type, rear-advancing) |
 
 ### Heading Conventions
 

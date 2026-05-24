@@ -21,15 +21,15 @@
 | `hermes-rpc.el` | JSON-RPC transport, process lifecycle |
 | `hermes-events.el` | Event/method name registry |
 | `hermes-state.el` | State atoms, reducer, structs |
-| `hermes-render.el` | Diff-based Org buffer renderer |
-| `hermes-mode.el` | Major mode, event routing, entry points |
+| `hermes-org-render.el` | Diff-based Org buffer renderer |
+| `hermes.el` | Context-aware entry point, event routing |
+| `hermes-org-minor-mode.el` | Org minor mode, keybindings
 | `hermes-prompts.el` | Minibuffer handlers for blocking prompts |
 | `hermes-input.el` | Input queue, slash commands, history |
-| `hermes-sessions.el` | Session list sidebar |
+| `hermes-sessions.el` | Minibuffer session selectors (current, stored resume/branch/delete/save) |
 | `hermes-skin.el` | Gateway skin → face remapping |
 | `hermes-md.el` | Markdown→Org converter |
 | `hermes-compose.el` | Multi-line composer |
-| `hermes-dashboard.el` | Landing dashboard |
 
 ---
 

@@ -88,7 +88,7 @@ const answerApproval = useCallback(
 )
 ```
 
-### 4.4 Emacs Frontend (`hermes-prompts.el:61-80`) — Fixed 2026-05-14
+### 4.4 Emacs Frontend (`hermes-prompts.el:65`) — Fixed 2026-05-14
 
 ```elisp
 (defun hermes--prompt-approval (sid rid payload)

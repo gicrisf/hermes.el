@@ -39,7 +39,7 @@
 | | `voice.transcript` | No-op | Full | Low |
 
 **Notes:**
-- `gateway.ready`: Emacs stores skin, sets connection=connected. Does **not** auto-resume or fetch catalog itself (catalog fetch is wired separately in `hermes-mode.el`).
+- `gateway.ready`: Emacs stores skin, sets connection=connected. Does **not** auto-resume or fetch catalog itself (catalog fetch is wired separately via `hermes-input-fetch-catalog`).
 - `status.update`: Emacs sets `status-text` and `status-kind` in ephemeral UI state. No activity feed (TUI has a capped activity trail with auto-restore). Low priority — the status text appears on the bench header line.
 - `browser.progress`, `voice.*`: No-ops by design — browser control and voice are not Emacs use cases.
 
@@ -49,7 +49,7 @@
 |--------|-------|-----|-----|----------------|
 | `session.create` | Full | Full | None | `hermes--do-session-create` — only sends `{:cols 100}`; no title (two-step via `session.title`) |
 | `session.resume` | Full | Full | None | `hermes-resume-from-db`, `hermes-stored-resume` (M-x), `/resume` slash (client-side picker) |
-| `session.close` | Full | Full | None | `hermes-sessions-close` |
+| `session.close` | Full | Full | None | `session.close` registered in hermes-events.el, not called from client code |
 | `session.interrupt` | Full | Full | None | `hermes-interrupt-current-session`, `C-c C-k` |
 | `session.list` | Full | Full | None | `hermes--stored-fetch` used by all `hermes-stored-*` commands |
 | `session.branch` | Full | Full | None | `hermes-branch-from-db`, `hermes-stored-branch` (M-x) |
@@ -111,7 +111,7 @@
 | `/compress [topic?]` | Gateway | Full | Falls through to `slash.exec` |
 | `/undo` | Gateway | Full | Falls through to `slash.exec` |
 | `/usage` | Gateway | Full | Falls through to `slash.exec` |
-| `/model` | Full | Full | `hermes-mode.el` / `hermes-config.el` |
+| `/model` | Full | Full | `hermes-config.el` |
 | `/fast` | Full | Full | `hermes-config.el` |
 | `/reasoning` | Full | Full | `hermes-config.el` |
 | `/yolo` | Full | Full | `hermes-config.el` |
@@ -157,4 +157,4 @@ This means all session-management slashes work in v1. The three client-side inte
 
 ---
 
-*Last updated: 2026-05-22 — reflects Phase 1 slash interception (377 tests, 0 unexpected).*
+*Last updated: 2026-05-22 — reflects Phase 1 slash interception (419 tests, 0 unexpected).*

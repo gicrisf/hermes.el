@@ -24,15 +24,16 @@ Same architecture, same role. Emacs replaces Ink as the display layer.
 ```
 ┌─────────────┐     NDJSON-RPC      ┌──────────────────┐
 │ Emacs Lisp  │ ◄──────stdio──────► │ tui_gateway      │
-│  hermes-mode│                     │  (Python)        │
+│  hermes.el  │                     │  (Python)        │
 │  Org buffer │                     │                  │
 └─────────────┘                     └──────────────────┘
 ```
 
 - `hermes-rpc.el` — transport (make-process, NDJSON, pending callback map)
 - `hermes-state.el` — TEA-style reducer (persistent + ephemeral UI state)
-- `hermes-render.el` — diff-based Org buffer renderer
-- `hermes-mode.el` — major mode, event routing, entry points
+- `hermes-org-render.el` — diff-based Org buffer renderer
+- `hermes.el` — context-aware entry point, event routing, debug commands
+- `hermes-org-minor-mode.el` — Org minor mode, keybindings
 - `hermes-comint.el` — comint-derived conversation viewer; also hosts the bench (`hermes-comint--bench-p = t` variant) displayed as a bottom side-window
 - `hermes-prompts.el` — minibuffer handlers for blocking prompts
 - `hermes-input.el` — input queue, slash commands, history

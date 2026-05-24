@@ -594,7 +594,7 @@ tick."
           (when hermes-comint--bench-p
             (hermes-comint-bench--insert-ephemeral-prelude))
           (hermes-comint--insert-turn msg index))))
-    (hermes-comint--ensure-prompt-visible)))
+    (hermes-comint--ensure-prompt-visible t)))
 
 (defun hermes-comint-bench--insert-ephemeral-prelude ()
   "Insert user heading + steer + status above the assistant stream.
@@ -742,7 +742,7 @@ buffer."
            (length turns))
           (set-marker hermes-comint--output-end (point))))
       (setq hermes-comint--turns-snapshot turns)))
-  (hermes-comint--ensure-prompt-visible))
+  (hermes-comint--ensure-prompt-visible t))
 
 ;;;; Header-line
 
@@ -856,10 +856,21 @@ first stream tick."
 
 ;;;; Visibility / display
 
-(defun hermes-comint--ensure-prompt-visible ()
-  "Scroll windows so the prompt is visible."
+(defun hermes-comint--window-at-bottom-p (w)
+  "Return non-nil if window W is scrolled to the bottom (prompt visible).
+The user is at bottom when `window-point' is at or past the prompt prefix."
+  (and (marker-position hermes-comint--prompt-start)
+       (>= (window-point w) (marker-position hermes-comint--prompt-start))))
+
+(defun hermes-comint--ensure-prompt-visible (&optional sticky)
+  "Scroll windows so the prompt is visible.
+When STICKY is non-nil, only scroll windows whose `window-point' is
+already at or past the prompt — windows the user has scrolled up are
+left alone."
   (dolist (w (get-buffer-window-list (current-buffer) nil t))
-    (when (window-live-p w)
+    (when (and (window-live-p w)
+               (or (not sticky)
+                   (hermes-comint--window-at-bottom-p w)))
       (with-selected-window w
         (when (< (window-point w) (marker-position hermes-comint--prompt-start))
           (set-window-point w (point-max)))))))
@@ -956,7 +967,7 @@ Projects from the same `turns' state as the org viewer.
   (setq-local comint-input-sender (lambda (_p _s) nil))
   (setq-local comint-eol-on-send nil)
   (setq-local comint-scroll-to-bottom-on-input t)
-  (setq-local comint-move-point-for-output 'this)
+  (setq-local comint-move-point-for-output nil)
   (setq-local comint-scroll-show-maximum-output t)
   (visual-line-mode 1)
   (setq-local scroll-conservatively 101)
@@ -1192,7 +1203,7 @@ Clears [output-end, prompt-start) and re-inserts user heading + steer
     (save-excursion
       (goto-char (marker-position hermes-comint--output-end))
       (hermes-comint-bench--insert-ephemeral-prelude))
-    (hermes-comint--ensure-prompt-visible)))
+    (hermes-comint--ensure-prompt-visible t)))
 
 (defun hermes-bench-bg-list ()
   "Pop the background-task list for this bench's session."

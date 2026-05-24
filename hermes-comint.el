@@ -479,8 +479,10 @@ copy commands are always allowed in the read-only history region."
   "Insert MSG body text fontified as Org."
   (let ((text (hermes-comint--body-text msg)))
     (unless (string-empty-p text)
-      (insert (hermes-comint--fontify-org
-               (concat text (unless (string-suffix-p "\n" text) "\n")))))))
+      (insert (propertize
+               (hermes-comint--fontify-org
+                (concat text (unless (string-suffix-p "\n" text) "\n")))
+               'line-prefix "  ")))))
 
 (defun hermes-comint--insert-user-body (msg)
   (hermes-comint--insert-image-segments msg)
@@ -496,7 +498,8 @@ copy commands are always allowed in the read-only history region."
               (concat c (if (or (string-empty-p c)
                                 (string-suffix-p "\n" c))
                             "" "\n")))
-             'font-lock-face 'hermes-comint-face-reasoning))))
+             'font-lock-face 'hermes-comint-face-reasoning
+             'line-prefix "  "))))
 
 (defun hermes-comint--insert-tool-block (tool)
   (let* ((kw (hermes-comint--tool-status-keyword tool))
@@ -512,8 +515,10 @@ copy commands are always allowed in the read-only history region."
             (propertize (format " %s%s%s\n" fmt-summary dur gw-summary)
                         'font-lock-face 'hermes-comint-face-tool))
     (when (and body (> (length body) 0))
-      (insert (hermes-comint--fontify-as-org body))
-      (unless (bolp) (insert "\n")))))
+      (let ((start (point)))
+        (insert (hermes-comint--fontify-as-org body))
+        (unless (bolp) (insert "\n"))
+        (add-text-properties start (point) '(line-prefix "  "))))))
 
 (defun hermes-comint--insert-subagent-block (sa)
   (let* ((goal (or (hermes-subagent-goal sa) "subagent"))
@@ -553,8 +558,10 @@ copy commands are always allowed in the read-only history region."
   "Insert a single text segment SEG fontified as Org."
   (let ((c (hermes-segment-content seg)))
     (when (and (stringp c) (> (length c) 0))
-      (insert (hermes-comint--fontify-org
-               (concat c (unless (string-suffix-p "\n" c) "\n")))))))
+      (insert (propertize
+               (hermes-comint--fontify-org
+                (concat c (unless (string-suffix-p "\n" c) "\n")))
+               'line-prefix "  ")))))
 
 (defun hermes-comint--insert-assistant-body (msg)
   (let* ((segs (or (hermes-message-segments msg) []))

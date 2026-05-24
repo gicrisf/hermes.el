@@ -9,8 +9,9 @@ Communicates via JSON-RPC 2.0 over stdio to the agent's `tui_gateway`.
 hermes-rpc.el        JSON-RPC 2.0 transport (make-process, NDJSON, pending callback map)
 hermes-events.el     Event/method name registry (single source of truth)
 hermes-state.el      TEA-style state atoms + pure reducers (ephemeral: stream, queue, pending; persistent: turns, usage, history)
-hermes-render.el     Org buffer renderer (typed segments, incremental diff, adaptive throttling)
-hermes-mode.el       Org-mode derived major mode, event routing, entry point, buffer parser
+hermes-org-render.el Org buffer renderer (typed segments, incremental diff, adaptive throttling)
+hermes.el            Context-aware entry point, event routing, debug commands
+hermes-org-minor-mode.el Org minor mode, keybindings, session-scoped buffer parser
 hermes-org.el        Heading-scoped session helpers + v2 buffer-canonical turn parser
 hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
@@ -29,7 +30,7 @@ hermes-bg.el         Background task buffers (`/bg` prompts run async in dedicat
 writable prompt at the buffer bottom (no bench).  The `turns` vector is the
 event-canonical conversation log — populated by `hermes--push-committed`
 from three reducer paths (`:user-submit`, `"message.complete"`, `"error"`)
-at `hermes-state.el:547-561` and never cleared except by `:turns-load`.
+at `hermes-state.el:562` and never cleared except by `:turns-load`.
 The org buffer is the body-canonical equivalent: you can dump `turns` into
 org without loss, and vice versa.
 
@@ -64,21 +65,20 @@ Usage counters are body-canonical in `HERMES_USAGE_*` heading properties.
 Tool segments are body-canonical in `#+name:'d blocks and heading properties;
 subagents are body-canonical in child `HERMES_KIND: SUBAGENT` headings.
 
-**Bench (major mode only):** `hermes-mode` buffers display a persistent bottom
+**Bench:** Org buffers with `hermes-org-minor-mode` display a persistent bottom
 side-window (`*hermes-bench:<sid>*`) — a `hermes-comint-mode` buffer with
 `hermes-comint--bench-p = t` that renders the in-flight turn ephemerally
 (user heading, steer, status, assistant stream) above a writable prompt.
 Committed turns live only in the paired org buffer; the bench wipes its
 ephemeral region on stream commit. The bench provides comint's history ring
 (M-p / M-n) and field-based prompt handling. Bg-task counters and attachment
-counts surface in the comint header-line. Minor mode buffers do not show the
-bench (header-line only).
+counts surface in the comint header-line.
 
 **Doom Emacs integration (separate files, optional):**
 
 ```
 hermes-evil.el            Normal-state Evil C-c bindings (any Emacs with Evil)
-hermes-doom.el            Doom SPC h leader prefix; pulls in evil/transient/notifications
+hermes-doom.el            Doom SPC h leader prefix (also binds SPC h S steer and SPC h K skills)
 hermes-doom-theme.el      Hermes-branded dark theme (gold/teal)
 ```
 
@@ -148,7 +148,7 @@ The included `.envrc` enters the Nix shell and applies the same
 
 ```elisp
 (add-to-list 'load-path "~/Projects/hermes.el")
-(require 'hermes-mode)
+(require 'hermes)
 
 ;; Optional extras — require individually:
 (require 'hermes-transient)        ; C-c C-t popup
@@ -174,15 +174,15 @@ its optional dependency (Evil, Transient) is absent.
 | `hermes-evil` | Normal-state Evil `C-c` bindings (works in any Emacs with Evil) |
 | `hermes-transient` | `C-c C-t` Transient popup (also bound under `SPC h .` in Doom) |
 | `hermes-notifications` | Desktop notifications on turn completion / blocking prompts / background task completion |
-| `hermes-doom` | Doom `SPC h` leader prefix; also pulls in `hermes-evil`, `hermes-transient`, `hermes-notifications` |
+| `hermes-doom` | Doom `SPC h` leader prefix |
 
 ### Doom Emacs
 
 In `~/.config/doom/config.el`:
 
 ```elisp
-(require 'hermes-mode)
-(require 'hermes-doom)   ; pulls in hermes-evil, hermes-transient, hermes-notifications
+(require 'hermes)
+(require 'hermes-doom)   ; SPC h leader prefix (also load hermes-evil, hermes-transient, hermes-notifications separately if desired)
 ```
 
 To use the bundled theme:
@@ -216,11 +216,11 @@ Disable at runtime with `(setq hermes-notifications-enabled nil)`.
 | Context | Key | Action |
 |---------|-----|--------|
 | anywhere | `M-x hermes` | Go to primary session (create if none) |
-| hermes-mode | `C-c C-i` | Focus bench input (or send via minibuffer if no bench) |
-| hermes-mode | `C-c C-k` | Interrupt current turn |
-| hermes-mode | `C-c C-l` | Multi-line compose |
-| hermes-mode | `C-c C-m` | Set model (prefix arg: refresh provider list) |
-| hermes-mode | `C-c C-f` | Toggle fast mode |
+| Org buffer | `C-c C-i` | Focus bench input (or send via minibuffer if no bench) |
+| Org buffer | `C-c C-k` | Interrupt current turn |
+| Org buffer | `C-c C-l` | Multi-line compose |
+| Org buffer | `C-c C-m` | Set model (prefix arg: refresh provider list) |
+| Org buffer | `C-c C-f` | Toggle fast mode |
 | anywhere | `M-x hermes-toggle-reasoning` | Cycle reasoning (prefix arg: pick) |
 | anywhere | `M-x hermes-toggle-yolo` | Toggle YOLO mode |
 | anywhere | `M-x hermes-set-personality` / `hermes-set-skin` | Set personality / skin |
@@ -230,9 +230,6 @@ Disable at runtime with `(setq hermes-notifications-enabled nil)`.
 | Bench | `C-c C-l` | Multi-line compose |
 | Bench | `C-c C-b` | List background tasks |
 | anywhere | `M-x hermes-bg-list` | List background tasks for current session |
-| Sessions sidebar | `RET` | Switch to session |
-| Sessions sidebar | `k` | Close session |
-| Sessions sidebar | `+` | New session |
 
 ### Doom Emacs keybindings
 
@@ -241,18 +238,20 @@ Disable at runtime with `(setq hermes-notifications-enabled nil)`.
 | `SPC h h` / `SPC h s` / `SPC h i` / `SPC h g` | Go to primary session (create if none) |
 | `SPC h n` | New session (background) |
 | `SPC h c` | Multi-line composer |
-| `SPC h l` | Session list sidebar |
+| `SPC h l` | Session list (minibuffer) |
 | `SPC h k` | Interrupt primary session |
 | `SPC h m` | Set model |
 | `SPC h f` | Toggle fast mode |
 | `SPC h r` | Cycle reasoning |
 | `SPC h y` | Toggle YOLO |
 | `SPC h t` | Toggle toolsets |
+| `SPC h S` | Steer personality |
+| `SPC h K r/l/s/i/u` | Skills (reload/list/search/install/uninstall) |
 | `SPC h .` | Transient command popup (requires `hermes-transient`) |
-| hermes-mode `C-c C-i` | Focus bench input |
-| hermes-mode `C-c C-t` | Transient command popup (requires `hermes-transient`) |
-| hermes-mode `C-c C-k` | Interrupt |
-| hermes-mode `C-c C-l` | Multi-line compose |
+| Org buffer `C-c C-i` | Focus bench input |
+| Org buffer `C-c C-t` | Transient command popup (requires `hermes-transient`) |
+| Org buffer `C-c C-k` | Interrupt |
+| Org buffer `C-c C-l` | Multi-line compose |
 
 ### Background tasks
 
@@ -286,20 +285,20 @@ nix-shell                           # Emacs 30.2 + Eldev
 
 ```sh
 eldev compile                        # byte-compile all source files
-eldev test                           # run all ERT tests (412/412 green)
+eldev test                           # run all ERT tests (419/419 green)
 eldev emacs -nw                      # interactive Emacs with project loaded
 ```
 
 ### Headless E2E test
 
 ```sh
-nix-shell --run 'eldev emacs --batch -L . -l hermes-mode -l hermes-render \
-  -l m2-check/e2e-test.el'
+nix-shell --run 'eldev emacs --batch -L . -l hermes -l hermes-org-render \
+  -l archive/m2-check/e2e-test.el'
 ```
 
-Expect `=== E2E PASSED ===` in `m2-check/e2e-test.log`.
+Expect `=== E2E PASSED ===` in `archive/m2-check/e2e-test.log`.
 
-**412/412 green, 0 unexpected** — all tests pass.
+**419/419 green, 0 unexpected** — all tests pass.
 
 ## Gateway
 

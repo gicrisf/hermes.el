@@ -204,6 +204,21 @@ empty or nil.  The `#+name' line is placed immediately before the
               block)
     block))
 
+(defun hermes-tool--strip-name-markers (s)
+  "Strip `#+name: hermes-tool-…' lines from S — body-canonical noise in comint."
+  (if (and s (stringp s))
+      (replace-regexp-in-string "^#\\+name: hermes-tool-[^\n]*\n" "" s)
+    (or s "")))
+
+(defun hermes-tool--body-comint-default (err out)
+  "Common comint body: error block, else output block, else empty.
+Used by formatters whose `:body-comint' is just the error/output payload
+with the context block and `#+name:' markers stripped."
+  (cond
+   (err (hermes-tool--example err))
+   (out (hermes-tool--example out))
+   (t "")))
+
 (defun hermes-tool--output-or-preview (tool)
   "Return OUTPUT if present, else PREVIEW, else nil."
   (or (and (hermes-tool-output tool)
@@ -234,7 +249,17 @@ empty or nil.  The `#+name' line is placed immediately before the
               tool "inline-diff"
               (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
            (hermes-tool--format-todos-table tool todos))))
-    (list :summary name :body body :fold nil :args nil)))
+    (list :summary name :body body :fold nil :args nil
+          :body-comint
+          (concat
+           (cond
+            (err (hermes-tool--example err))
+            (out (hermes-tool--example out))
+            (t ""))
+           (when diff
+             (format "#+begin_src diff\n%s\n#+end_src\n" diff))
+           (hermes-tool--strip-name-markers
+            (or (hermes-tool--format-todos-table tool todos) ""))))))
 
 ;;;; Bash
 
@@ -300,6 +325,22 @@ JSON object of the expected shape."
 
 ;;;; Read
 
+(defun hermes-tool--parse-read-output (raw)
+  "Unwrap a gateway read_file envelope from RAW.
+Returns clean file content with line-number prefixes stripped, or RAW
+unchanged when parsing fails."
+  (or (ignore-errors
+        (when (and raw (stringp raw)
+                   (string-match-p "\\`[[:space:]]*{" raw))
+          (let* ((obj (json-parse-string raw :object-type 'alist
+                                         :null-object nil
+                                         :false-object nil))
+                 (content (alist-get 'content obj)))
+            (when (and content (stringp content))
+              (replace-regexp-in-string
+               "^[[:space:]]*[0-9]+|" "" content)))))
+      raw))
+
 (defun hermes-tool-format-read (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
          (path (hermes-tool--primary-arg tool ctx 'file_path 'path 'file))
@@ -328,6 +369,13 @@ JSON object of the expected shape."
                          (hermes-tool--src-block
                           (hermes-tool--lang-from-path (or path "")) out)))
                   (t "")))
+          :body-comint
+          (cond
+           (err (hermes-tool--example err))
+           (out (hermes-tool--src-block
+                 (hermes-tool--lang-from-path (or path ""))
+                 (hermes-tool--parse-read-output out)))
+           (t ""))
           :fold (eq (hermes-tool-status tool) 'complete)
           :args args)))
 
@@ -360,6 +408,15 @@ JSON object of the expected shape."
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
+          :body-comint
+          (cond
+           (err (hermes-tool--example err))
+           (diff (format "#+begin_src diff\n%s\n#+end_src\n" diff))
+           ((and (string-equal-ignore-case name "write_file") out)
+            (hermes-tool--src-block
+             (hermes-tool--lang-from-path (or path "")) out))
+           (out (hermes-tool--example out))
+           (t ""))
           :fold nil
           :args args)))
 
@@ -467,6 +524,7 @@ Falls back to RAW when parsing fails."
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
+          :body-comint (hermes-tool--body-comint-default err out)
           :fold (eq (hermes-tool-status tool) 'complete)
           :args (and path (hermes-tool--truncate path 72)))))
 
@@ -485,6 +543,9 @@ Falls back to RAW when parsing fails."
           :body (concat
                  (hermes-tool--context-block tool)
                  (or (hermes-tool--format-todos-table tool todos) ""))
+          :body-comint
+          (hermes-tool--strip-name-markers
+           (or (hermes-tool--format-todos-table tool todos) ""))
           :fold nil
           :args args)))
 
@@ -526,6 +587,7 @@ Falls back to RAW when parsing fails."
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
+          :body-comint (hermes-tool--body-comint-default err out)
           :fold (eq (hermes-tool-status tool) 'complete)
           :args args)))
 
@@ -547,6 +609,7 @@ Falls back to RAW when parsing fails."
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
+          :body-comint (hermes-tool--body-comint-default err out)
           :fold (eq (hermes-tool-status tool) 'complete)
           :args (and desc (hermes-tool--truncate desc 70)))))
 

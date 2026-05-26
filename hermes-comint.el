@@ -148,6 +148,14 @@ When nil, the bench falls back to the gateway skin color
   '((t :inherit font-lock-warning-face))
   "Face for tool RUNNING status keyword.")
 
+(defface hermes-comint-face-tool-args
+  '((t :inherit font-lock-variable-name-face))
+  "Face for tool arguments line (tier 2).")
+
+(defface hermes-comint-face-tool-fold-hint
+  '((t :inherit (italic shadow)))
+  "Face for fold-toggle hint line shown above a collapsed tool body.")
+
 (defface hermes-comint-face-subagent
   '((t :inherit font-lock-builtin-face :weight bold))
   "Face for subagent child heading.")
@@ -501,24 +509,141 @@ copy commands are always allowed in the read-only history region."
              'font-lock-face 'hermes-comint-face-reasoning
              'line-prefix "  "))))
 
+(defvar-local hermes-comint--unfolded-tool-ids nil
+  "List of tool id strings the user has manually expanded.
+Cleared on stream commit.  Prevents re-collapsing user-opened tools
+across mid-stream re-paints.")
+
+(defun hermes-comint--count-body-lines (start end)
+  "Count newline-delimited lines between START and END (buffer positions)."
+  (1+ (how-many "\n" start end)))
+
+(defun hermes-comint--tool-fold-hint (line-count tool-id)
+  "Return a propertized fold-hint string for TOOL-ID's collapsed body."
+  (propertize
+   (format "  ▸ %d %s (TAB to expand)" line-count
+           (if (= line-count 1) "line" "lines"))
+   'font-lock-face 'hermes-comint-face-tool-fold-hint
+   'hermes-comint--collapse-hint t
+   'hermes-comint--tool-id tool-id))
+
 (defun hermes-comint--insert-tool-block (tool)
   (let* ((kw (hermes-comint--tool-status-keyword tool))
          (name (or (hermes-tool-name tool) "tool"))
          (dur (hermes-comint--format-duration (hermes-tool-duration tool)))
-         (formatter (hermes-tool--lookup name))
-         (parts (and formatter (funcall formatter tool)))
-         (fmt-summary (or (plist-get parts :summary) name))
+         (status (hermes-tool-status tool))
+         (terminal-p (memq status '(complete error)))
+         (tool-id (hermes-tool-id tool))
+         (was-unfolded (and tool-id
+                            (member tool-id hermes-comint--unfolded-tool-ids)))
          (gw-summary (let ((s (hermes-tool-summary tool)))
                        (if (and s (> (length s) 0)) (format " — %s" s) "")))
-         (body (or (plist-get parts :body) "")))
+         (formatter (hermes-tool--lookup name))
+         (parts (and formatter (funcall formatter tool)))
+         (fmt-summary (plist-get parts :summary))
+         (args (plist-get parts :args))
+         (body (or (plist-get parts :body) ""))
+         ;; When :args is nil/empty, fall back to :summary so generic /
+         ;; agent / web tools still carry their description in the header.
+         (display-name (if (or (null args)
+                               (and (stringp args) (string-empty-p args)))
+                           (or fmt-summary name)
+                         name)))
+    ;; Tier 1 — header line.
     (insert (propertize (car kw) 'font-lock-face (cdr kw))
-            (propertize (format " %s%s%s\n" fmt-summary dur gw-summary)
-                        'font-lock-face 'hermes-comint-face-tool))
+            (propertize
+             (format " %s%s%s\n" display-name dur gw-summary)
+             'font-lock-face 'hermes-comint-face-tool
+             'hermes-comint--tool-id tool-id))
+    ;; Tier 2 — arguments line (skipped when nil/empty).
+    (when (and args (stringp args) (not (string-empty-p args)))
+      (insert (propertize
+               (format "  %s\n" args)
+               'font-lock-face 'hermes-comint-face-tool-args
+               'hermes-comint--tool-id tool-id)))
+    ;; Tier 3 — body (collapsed by default for terminal tools).
     (when (and body (> (length body) 0))
-      (let ((start (point)))
+      (let ((body-start (point)))
         (insert (hermes-comint--fontify-as-org body))
         (unless (bolp) (insert "\n"))
-        (add-text-properties start (point) '(line-prefix "  "))))))
+        (let ((body-end (point)))
+          (add-text-properties body-start body-end
+                               `(line-prefix "  "
+                                 hermes-comint--tool-body t
+                                 hermes-comint--tool-id ,tool-id))
+          (when (and terminal-p (not was-unfolded))
+            (let* ((line-count (hermes-comint--count-body-lines
+                                body-start body-end))
+                   (hint (hermes-comint--tool-fold-hint line-count tool-id))
+                   (inserted (1+ (length hint))))
+              (add-text-properties body-start body-end '(invisible t))
+              (goto-char body-start)
+              (insert hint "\n")
+              ;; Restore point to just past the (shifted) body so the
+              ;; caller's trailing-newline logic appends at end-of-turn.
+              (goto-char (+ body-end inserted)))))))))
+
+(defun hermes-comint-toggle-tool-body ()
+  "Toggle fold state of the tool body at or around point.
+Operates on whichever tool block carries point's `hermes-comint--tool-id'
+property.  Bound to TAB via a `:filter' menu-item so non-tool text
+falls through to the parent keymap."
+  (interactive)
+  (let* ((inhibit-read-only t)
+         (tool-id (get-text-property (point) 'hermes-comint--tool-id))
+         body-start body-end hint-pos)
+    (when tool-id
+      ;; Find the body region for this tool-id.
+      (save-excursion
+        (goto-char (point-min))
+        (let (done)
+          (while (and (not done) (< (point) (point-max)))
+            (let ((next (text-property-any
+                         (point) (point-max)
+                         'hermes-comint--tool-body t)))
+              (if (null next)
+                  (setq done t)
+                (goto-char next)
+                (if (equal (get-text-property (point) 'hermes-comint--tool-id)
+                           tool-id)
+                    (setq body-start (point)
+                          body-end (or (next-single-property-change
+                                        (point) 'hermes-comint--tool-body
+                                        nil (point-max))
+                                       (point-max))
+                          done t)
+                  (goto-char (or (next-single-property-change
+                                  (point) 'hermes-comint--tool-body
+                                  nil (point-max))
+                                 (point-max)))))))))
+      (when body-start
+        ;; Locate the hint line, if any, immediately preceding the body.
+        (save-excursion
+          (goto-char body-start)
+          (when (and (> (point) (point-min))
+                     (progn (forward-line -1)
+                            (get-text-property (point)
+                                               'hermes-comint--collapse-hint)))
+            (setq hint-pos (point))))
+        (if (get-text-property body-start 'invisible)
+            ;; Expand.
+            (progn
+              (remove-text-properties body-start body-end '(invisible nil))
+              (cl-pushnew tool-id hermes-comint--unfolded-tool-ids
+                          :test #'equal)
+              (when hint-pos
+                (goto-char hint-pos)
+                (delete-region (line-beginning-position)
+                               (min (point-max)
+                                    (1+ (line-end-position))))))
+          ;; Collapse.
+          (let ((line-count (hermes-comint--count-body-lines
+                             body-start body-end)))
+            (add-text-properties body-start body-end '(invisible t))
+            (goto-char body-start)
+            (insert (hermes-comint--tool-fold-hint line-count tool-id) "\n")
+            (setq hermes-comint--unfolded-tool-ids
+                  (delete tool-id hermes-comint--unfolded-tool-ids))))))))
 
 (defun hermes-comint--insert-subagent-block (sa)
   (let* ((goal (or (hermes-subagent-goal sa) "subagent"))
@@ -850,6 +975,7 @@ the ephemeral region — committed turns live only in the paired org
 buffer."
   (hermes-comint--stream-cancel-timer)
   (setq hermes-comint--stream-active nil)
+  (setq hermes-comint--unfolded-tool-ids nil)
   (if hermes-comint--bench-p
       (let ((inhibit-read-only t)
             (buffer-undo-list t))
@@ -865,12 +991,26 @@ buffer."
            (pr-start (marker-position hermes-comint--prompt-start)))
       (delete-region out-end pr-start)
       (when (and (vectorp turns) (> (length turns) 0))
-        (save-excursion
-          (goto-char (marker-position hermes-comint--output-end))
-          (hermes-comint--insert-turn
-           (aref turns (1- (length turns)))
-           (length turns))
-          (set-marker hermes-comint--output-end (point))))
+        (let* ((last-turn (aref turns (1- (length turns))))
+               (segs (and (hermes-message-p last-turn)
+                          (hermes-message-segments last-turn))))
+          ;; Auto-expand the just-committed turn's tool segments so the
+          ;; most recent output is visible without TAB.  Older turns keep
+          ;; whatever fold state they had.
+          (when (vectorp segs)
+            (dotimes (i (length segs))
+              (let ((seg (aref segs i)))
+                (when (eq 'tool (hermes-segment-type seg))
+                  (let* ((tl (hermes-segment-content seg))
+                         (tid (and (hermes-tool-p tl)
+                                   (hermes-tool-id tl))))
+                    (when tid
+                      (cl-pushnew tid hermes-comint--unfolded-tool-ids
+                                  :test #'equal)))))))
+          (save-excursion
+            (goto-char (marker-position hermes-comint--output-end))
+            (hermes-comint--insert-turn last-turn (length turns))
+            (set-marker hermes-comint--output-end (point)))))
       (setq hermes-comint--turns-snapshot turns)))
   (hermes-comint--ensure-prompt-visible t))
 
@@ -1174,6 +1314,13 @@ calls `hermes--maybe-kill-bench' so an orphan bench gets cleaned up."
     (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
     (define-key m (kbd "C-c C-v") #'hermes-image-clipboard-paste)
     (define-key m (kbd "C-c C-b") #'hermes-bench-bg-list)
+    ;; TAB toggles fold on tool blocks; non-tool text falls through to
+    ;; comint-mode-map (indent-for-tab-command) via the :filter menu-item.
+    (define-key m (kbd "TAB")
+      `(menu-item "" hermes-comint-toggle-tool-body
+        :filter ,(lambda (cmd)
+                   (when (get-text-property (point) 'hermes-comint--tool-id)
+                     cmd))))
     m)
   "Keymap for `hermes-comint-mode'.")
 

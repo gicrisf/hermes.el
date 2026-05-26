@@ -1286,18 +1286,35 @@ branching so they don't affect reducer determinism):
       ("tool.start"
        (let ((str (hermes-state-stream state))
              (tid (hermes--get p "tool_id"))
+             (tname (hermes--get p "name"))
              (ctx (hermes--strip-ansi (hermes--get p "context")))
              (todos-raw (hermes--get p "todos")))
          (if (or (null str) (null tid))
              state
            (let* ((segs (hermes-stream-segments str))
-                  (idx (hermes--find-tool-segment-index segs tid)))
+                  ;; `tool.generating' fires before `tool.start' carries a real
+                  ;; `tool_id', so the pre-registered segment is keyed by name.
+                  ;; Find by real id first; if missing, patch the generating
+                  ;; segment with the same name and rebind its id below.
+                  (idx (or (hermes--find-tool-segment-index segs tid)
+                           (and tname
+                                (cl-position-if
+                                 (lambda (seg)
+                                   (and (eq 'tool (hermes-segment-type seg))
+                                        (let ((tl (hermes-segment-content seg)))
+                                          (and (hermes-tool-p tl)
+                                               (eq 'generating
+                                                   (hermes-tool-status tl))
+                                               (equal tname
+                                                      (hermes-tool-name tl))))))
+                                 segs)))))
              (if (null idx)
                  state
                (let* ((old-seg (aref segs idx))
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                  (setf (hermes-tool-status nt) 'running
+                                  (setf (hermes-tool-id nt) tid
+                                        (hermes-tool-status nt) 'running
                                         (hermes-tool-context nt) ctx)
                                   (when todos-raw
                                     (setf (hermes-tool-todos nt) todos-raw))))
@@ -1347,7 +1364,12 @@ branching so they don't affect reducer determinism):
                                           (hermes-tool-id (hermes-segment-content last-seg)))))))))
               (inline-diff (hermes--strip-ansi (hermes--get p "inline_diff")))
               (todos-raw (hermes--get p "todos"))
-              (output (hermes--strip-ansi (hermes--get p "output")))
+              ;; Gateway emits the full tool result under `result_text` when
+              ;; `display.tool_progress` is `verbose` (see tui_gateway/server.py
+              ;; `_on_tool_complete`).  Accept `output` as a legacy alias.
+              (output (hermes--strip-ansi
+                       (or (hermes--get p "result_text")
+                           (hermes--get p "output"))))
               (summary (hermes--strip-ansi (hermes--get p "summary")))
               (err    (hermes--strip-ansi (hermes--get p "error")))
               (dur    (hermes--get p "duration_s")))
@@ -1367,7 +1389,8 @@ branching so they don't affect reducer determinism):
                (let* ((old-seg (aref segs idx))
                       (old-tool (hermes-segment-content old-seg))
                       (new-tool (hermes--with-copy old-tool hermes-tool-copy nt
-                                  (setf (hermes-tool-status nt)
+                                  (setf (hermes-tool-id nt) tid
+                                        (hermes-tool-status nt)
                                         (if err 'error 'complete)
                                         (hermes-tool-output nt) output
                                         (hermes-tool-summary nt) summary

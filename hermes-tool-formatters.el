@@ -9,7 +9,12 @@
 ;; A registry of pure formatters that translate a `hermes-tool' into the
 ;; org-mode body that follows its heading.  Each formatter is
 ;;
-;;   (hermes-tool) -> plist  (:summary STRING :body STRING :fold BOOLEAN)
+;;   (hermes-tool) -> plist  (:summary STRING :body STRING :fold BOOLEAN
+;;                            :args STRING-OR-NIL)
+;;
+;; `:summary' is the org heading text.  `:args' is the comint tier-2
+;; arguments line — nil when the tool has no meaningful argument
+;; display (the generic fallback, or tools missing context).
 ;;
 ;; The dispatcher in `hermes-render.el' picks the first formatter whose
 ;; regexp matches the tool name and assembles the final block with the
@@ -72,6 +77,18 @@ failure.  Keys are downcased symbols, values are strings."
         (when (and v (not (stringp v)))
           (throw 'found (format "%s" v)))))
     nil))
+
+(defun hermes-tool--primary-arg (tool ctx &rest keys)
+  "Return the primary-arg string for TOOL, or nil.
+Looks up KEYS in parsed CTX first; falls back to TOOL's raw
+`hermes-tool-context' (the gateway's bare preview string from
+`build_tool_preview' in `tui_gateway/server.py').  Returns nil when
+neither yields a non-empty string."
+  (let ((from-ctx (apply #'hermes-tool--ctx-get ctx keys)))
+    (cond
+     ((and from-ctx (not (string-empty-p from-ctx))) from-ctx)
+     (t (let ((raw (hermes-tool-context tool)))
+          (and raw (stringp raw) (not (string-empty-p raw)) raw))))))
 
 (defun hermes-tool--truncate (s n)
   "Truncate string S to N chars, single-line, ellipsis if cut."
@@ -217,28 +234,25 @@ empty or nil.  The `#+name' line is placed immediately before the
               tool "inline-diff"
               (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
            (hermes-tool--format-todos-table tool todos))))
-    (list :summary name :body body :fold nil)))
+    (list :summary name :body body :fold nil :args nil)))
 
 ;;;; Bash
 
 (defun hermes-tool-format-bash (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
-         (cmd (or (hermes-tool--ctx-get ctx 'command 'cmd 'script) ""))
+         (cmd (hermes-tool--primary-arg tool ctx 'command 'cmd 'script))
          (err (hermes-tool-error tool))
          (out (hermes-tool--output-or-preview tool))
          (lang (cond
-                ((string-match-p "\\`#!.*python" cmd) "python")
-                ((string-match-p "\\`#!.*\\(node\\|deno\\)" cmd) "js")
+                ((and cmd (string-match-p "\\`#!.*python" cmd)) "python")
+                ((and cmd (string-match-p "\\`#!.*\\(node\\|deno\\)" cmd)) "js")
                 (t "bash")))
-         (summary
-          (concat "$ " (hermes-tool--truncate
-                        (if (string-empty-p cmd)
-                            (or (hermes-tool-context tool) "") cmd)
-                        72))))
+         (summary (and cmd (concat "$ " (hermes-tool--truncate cmd 72))))
+         (args summary))
     (list :summary summary
           :body (concat
                  (hermes-tool--context-block tool)
-                 (unless (string-empty-p cmd)
+                 (when (and cmd (not (string-empty-p cmd)))
                    (hermes-tool--src-block lang cmd))
                  (cond
                   (err (hermes-tool--maybe-name tool "error"
@@ -246,13 +260,14 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
-          :fold nil)))
+          :fold nil
+          :args args)))
 
 ;;;; Read
 
 (defun hermes-tool-format-read (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
-         (path (or (hermes-tool--ctx-get ctx 'file_path 'path 'file) ""))
+         (path (hermes-tool--primary-arg tool ctx 'file_path 'path 'file))
          (offset (hermes-tool--ctx-get ctx 'offset))
          (limit  (hermes-tool--ctx-get ctx 'limit))
          (range (cond
@@ -263,12 +278,9 @@ empty or nil.  The `#+name' line is placed immediately before the
                                (string-to-number limit)))))
                  (offset (format ":%s" offset))
                  (t "")))
-         (summary (format "Read %s%s"
-                          (hermes-tool--truncate
-                           (if (string-empty-p path)
-                               (or (hermes-tool-context tool) "") path)
-                           60)
-                          range))
+         (summary (and path (format "Read %s%s"
+                                    (hermes-tool--truncate path 60) range)))
+         (args (and path (concat (hermes-tool--truncate path 60) range)))
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool)))
     (list :summary summary
@@ -279,24 +291,23 @@ empty or nil.  The `#+name' line is placed immediately before the
                          (hermes-tool--example err)))
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--src-block
-                          (hermes-tool--lang-from-path path) out)))
+                          (hermes-tool--lang-from-path (or path "")) out)))
                   (t "")))
-          :fold (eq (hermes-tool-status tool) 'complete))))
+          :fold (eq (hermes-tool-status tool) 'complete)
+          :args args)))
 
 ;;;; Edit / Write
 
 (defun hermes-tool-format-edit (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
-         (path (or (hermes-tool--ctx-get ctx 'file_path 'path 'file) ""))
+         (path (hermes-tool--primary-arg tool ctx 'file_path 'path 'file))
          (name (or (hermes-tool-name tool) "Edit"))
          (diff (hermes-tool-inline-diff tool))
          (out  (hermes-tool--output-or-preview tool))
          (err  (hermes-tool-error tool))
-         (summary (format "%s %s" name
-                          (hermes-tool--truncate
-                           (if (string-empty-p path)
-                               (or (hermes-tool-context tool) "") path)
-                           70))))
+         (summary (and path (format "%s %s" name
+                                    (hermes-tool--truncate path 70))))
+         (args (and path (hermes-tool--truncate path 70))))
     (list :summary summary
           :body (concat
                  (hermes-tool--context-block tool)
@@ -306,22 +317,25 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (diff (hermes-tool--maybe-name
                          tool "inline-diff"
                          (format "#+begin_src diff\n%s\n#+end_src\n" diff)))
-                  ((and (string-equal-ignore-case name "write") out)
+                  ((and (string-equal-ignore-case name "write_file") out)
                    (hermes-tool--maybe-name
                     tool "output"
                     (hermes-tool--src-block
-                     (hermes-tool--lang-from-path path) out)))
+                     (hermes-tool--lang-from-path (or path "")) out)))
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
-          :fold nil)))
+          :fold nil
+          :args args)))
 
 ;;;; Grep / Glob
 
 (defun hermes-tool-format-grep (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
          (name (or (hermes-tool-name tool) "Grep"))
-         (pattern (or (hermes-tool--ctx-get ctx 'pattern 'query 'regex) ""))
+         (pattern (or (hermes-tool--primary-arg
+                       tool ctx 'pattern 'query 'regex) ""))
+         (glob    (or (hermes-tool--ctx-get ctx 'file_glob) ""))
          (path (or (hermes-tool--ctx-get ctx 'path 'dir 'directory) ""))
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool))
@@ -330,6 +344,14 @@ empty or nil.  The `#+name' line is placed immediately before the
                      (length lines))))
          (summary
           (cond
+           ((and (not (string-empty-p glob)) (not (string-empty-p path)))
+            (format "%s %s in %s%s" name
+                    glob
+                    (hermes-tool--truncate path 40)
+                    (if n-matches (format " (%d)" n-matches) "")))
+           ((not (string-empty-p glob))
+            (format "%s %s%s" name glob
+                    (if n-matches (format " (%d)" n-matches) "")))
            ((and (not (string-empty-p pattern)) (not (string-empty-p path)))
             (format "%s \"%s\" in %s%s" name
                     (hermes-tool--truncate pattern 30)
@@ -339,9 +361,19 @@ empty or nil.  The `#+name' line is placed immediately before the
             (format "%s \"%s\"%s" name
                     (hermes-tool--truncate pattern 50)
                     (if n-matches (format " (%d)" n-matches) "")))
-           (t (format "%s %s" name
-                      (hermes-tool--truncate
-                       (or (hermes-tool-context tool) "") 60))))))
+           (t nil)))
+         (args
+          (cond
+           ((and (not (string-empty-p glob)) (not (string-empty-p path)))
+            (format "%s in %s" glob (hermes-tool--truncate path 40)))
+           ((not (string-empty-p glob)) glob)
+           ((and (not (string-empty-p pattern)) (not (string-empty-p path)))
+            (format "\"%s\" in %s"
+                    (hermes-tool--truncate pattern 30)
+                    (hermes-tool--truncate path 30)))
+           ((not (string-empty-p pattern))
+            (format "\"%s\"" (hermes-tool--truncate pattern 50)))
+           (t nil))))
     (list :summary summary
           :body (concat
                  (hermes-tool--context-block tool)
@@ -351,20 +383,17 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
-          :fold (eq (hermes-tool-status tool) 'complete))))
+          :fold (eq (hermes-tool-status tool) 'complete)
+          :args args)))
 
 ;;;; LS
 
 (defun hermes-tool-format-ls (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
-         (path (or (hermes-tool--ctx-get ctx 'path 'dir 'directory) ""))
+         (path (hermes-tool--primary-arg tool ctx 'path 'dir 'directory))
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool)))
-    (list :summary (format "LS %s"
-                           (hermes-tool--truncate
-                            (if (string-empty-p path)
-                                (or (hermes-tool-context tool) "") path)
-                            72))
+    (list :summary (and path (format "LS %s" (hermes-tool--truncate path 72)))
           :body (concat
                  (hermes-tool--context-block tool)
                  (cond
@@ -373,7 +402,8 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
-          :fold (eq (hermes-tool-status tool) 'complete))))
+          :fold (eq (hermes-tool-status tool) 'complete)
+          :args (and path (hermes-tool--truncate path 72)))))
 
 ;;;; TodoWrite
 
@@ -383,29 +413,45 @@ empty or nil.  The `#+name' line is placed immediately before the
          (done  (cl-count-if (lambda (td) (hermes--get td "done")) todos))
          (summary (if (> total 0)
                       (format "Todos (%d/%d done)" done total)
-                    "Todos")))
+                    "Todos"))
+         (args (when (> total 0)
+                 (format "%d of %d complete" done total))))
     (list :summary summary
           :body (concat
                  (hermes-tool--context-block tool)
                  (or (hermes-tool--format-todos-table tool todos) ""))
-          :fold nil)))
+          :fold nil
+          :args args)))
 
 ;;;; WebFetch / WebSearch
 
 (defun hermes-tool-format-web (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
-         (name (or (hermes-tool-name tool) "Web"))
-         (url (hermes-tool--ctx-get ctx 'url))
+         (url-raw (let ((v (cdr (assq 'urls ctx))))
+                    (or (hermes-tool--ctx-get ctx 'url) v)))
+         (url (cond
+               ((and url-raw (stringp url-raw)) url-raw)
+               ((and url-raw (consp url-raw) (stringp (car url-raw))) (car url-raw))
+               (t nil)))
          (q   (hermes-tool--ctx-get ctx 'query 'q))
+         ;; Gateway's bare-preview fallback: classify by content.
+         (bare (and (not url) (not q)
+                    (let ((c (hermes-tool-context tool)))
+                      (and c (stringp c) (not (string-empty-p c)) c))))
+         (url (or url (and bare (string-prefix-p "http" bare) bare)))
+         (q   (or q (and bare (not (string-prefix-p "http" bare)) bare)))
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool))
          (summary
           (cond
            (url (format "Fetch %s" (hermes-tool--truncate url 70)))
            (q   (format "Search \"%s\"" (hermes-tool--truncate q 60)))
-           (t   (format "%s %s" name
-                        (hermes-tool--truncate
-                         (or (hermes-tool-context tool) "") 60))))))
+           (t   nil)))
+         (args
+          (cond
+           (url (hermes-tool--truncate url 70))
+           (q   (format "\"%s\"" (hermes-tool--truncate q 60)))
+           (t   nil))))
     (list :summary summary
           :body (concat
                  (hermes-tool--context-block tool)
@@ -415,21 +461,19 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
-          :fold (eq (hermes-tool-status tool) 'complete))))
+          :fold (eq (hermes-tool-status tool) 'complete)
+          :args args)))
 
 ;;;; Task / Agent
 
 (defun hermes-tool-format-agent (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
-         (desc (or (hermes-tool--ctx-get ctx 'description 'subagent_type 'goal)
-                   ""))
+         (desc (hermes-tool--primary-arg
+                tool ctx 'description 'subagent_type 'goal))
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool)))
-    (list :summary (format "Agent: %s"
-                           (hermes-tool--truncate
-                            (if (string-empty-p desc)
-                                (or (hermes-tool-context tool) "") desc)
-                            70))
+    (list :summary (and desc (format "Agent: %s"
+                                     (hermes-tool--truncate desc 70)))
           :body (concat
                  (hermes-tool--context-block tool)
                  (cond
@@ -438,22 +482,22 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
-          :fold (eq (hermes-tool-status tool) 'complete))))
+          :fold (eq (hermes-tool-status tool) 'complete)
+          :args (and desc (hermes-tool--truncate desc 70)))))
 
 ;;;; Registration
 
-(hermes-tool--register "\\`Bash\\'"          #'hermes-tool-format-bash)
-(hermes-tool--register "\\`Read\\'"          #'hermes-tool-format-read)
-(hermes-tool--register "\\`\\(Edit\\|MultiEdit\\|Write\\)\\'"
+(hermes-tool--register "\\`\\(terminal\\|process\\|execute_code\\)\\'"
+                       #'hermes-tool-format-bash)
+(hermes-tool--register "\\`read_file\\'"     #'hermes-tool-format-read)
+(hermes-tool--register "\\`\\(write_file\\|patch\\)\\'"
                        #'hermes-tool-format-edit)
-(hermes-tool--register "\\`\\(Grep\\|Glob\\)\\'"
-                       #'hermes-tool-format-grep)
-(hermes-tool--register "\\`LS\\'"            #'hermes-tool-format-ls)
-(hermes-tool--register "\\`TodoWrite\\'"     #'hermes-tool-format-todos)
-(hermes-tool--register "\\`\\(WebFetch\\|WebSearch\\)\\'"
+(hermes-tool--register "\\`search_files\\'"  #'hermes-tool-format-grep)
+(hermes-tool--register "\\`ls\\'"            #'hermes-tool-format-ls)
+(hermes-tool--register "\\`todo\\'"          #'hermes-tool-format-todos)
+(hermes-tool--register "\\`\\(web_search\\|web_extract\\)\\'"
                        #'hermes-tool-format-web)
-(hermes-tool--register "\\`\\(Task\\|Agent\\)\\'"
-                       #'hermes-tool-format-agent)
+(hermes-tool--register "\\`delegate_task\\'" #'hermes-tool-format-agent)
 
 (provide 'hermes-tool-formatters)
 ;;; hermes-tool-formatters.el ends here

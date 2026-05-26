@@ -107,6 +107,62 @@ Returns the buffer."
           (should (< (string-match-p "Here is the answer" c)
                      (string-match-p "write_file" c))))))))
 
+(ert-deftest hermes-comint-test/tool-rendering-three-tier ()
+  "Terminal tool renders as header + args line + collapsed body with hint.
+TAB toggles the body fold."
+  (let* ((sid (hermes-comint-test--fresh-sid))
+         (tool (make-hermes-tool
+                :id "tid-read-1" :name "read_file" :status 'complete
+                :context "{\"path\":\"/tmp/x.rs\",\"offset\":\"10\",\"limit\":\"30\"}"
+                :output "line a\nline b\nline c\n"
+                :summary "30 lines"))
+         (msg (make-hermes-message
+               :kind 'assistant
+               :segments (vector (make-hermes-segment
+                                  :type 'tool :content tool :id "seg-1"))
+               :timestamp (current-time)))
+         (state (make-hermes-state :session-id sid :turns (vector msg))))
+    (hermes-comint-test--with-buffer buf sid state
+      (with-current-buffer buf
+        (let ((c (hermes-comint-test--committed-text)))
+          ;; Header carries status + display name.
+          (should (string-match-p "DONE read_file" c))
+          ;; Args line carries the file path + range.
+          (should (string-match-p "/tmp/x\\.rs" c))
+          (should (string-match-p ":10-40" c))
+          ;; Fold hint is present.
+          (should (string-match-p "TAB to expand" c)))
+        ;; Locate body position via text property and verify it's invisible.
+        (let ((body-pos (text-property-any (point-min) (point-max)
+                                           'hermes-comint--tool-body t)))
+          (should body-pos)
+          (should (get-text-property body-pos 'invisible))
+          ;; Body region carries the tool-id property — confirm.
+          (should (get-text-property body-pos 'hermes-comint--tool-id))
+          ;; Place point on body region (which carries tool-id) and toggle.
+          (goto-char body-pos)
+          (hermes-comint-toggle-tool-body)
+          ;; After expand, body region is no longer invisible.
+          (let ((new-body (text-property-any
+                           (point-min) (point-max)
+                           'hermes-comint--tool-body t)))
+            (should new-body)
+            (should-not (get-text-property new-body 'invisible)))
+          ;; Hint line is gone after expand.
+          (should-not (text-property-any (point-min) (point-max)
+                                         'hermes-comint--collapse-hint t))
+          ;; Toggle again to re-collapse.
+          (goto-char (text-property-any (point-min) (point-max)
+                                        'hermes-comint--tool-body t))
+          (hermes-comint-toggle-tool-body)
+          (let ((re-body (text-property-any
+                          (point-min) (point-max)
+                          'hermes-comint--tool-body t)))
+            (should re-body)
+            (should (get-text-property re-body 'invisible)))
+          (should (text-property-any (point-min) (point-max)
+                                     'hermes-comint--collapse-hint t)))))))
+
 (ert-deftest hermes-comint-test/insert-system-turn ()
   (let* ((sid (hermes-comint-test--fresh-sid))
          (msg (make-hermes-message

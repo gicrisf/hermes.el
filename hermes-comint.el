@@ -21,6 +21,7 @@
 (require 'subr-x)
 (require 'hermes-state)
 (require 'hermes-md)
+(require 'hermes-prompts)
 (require 'hermes-tool-formatters)
 
 (declare-function hermes-send "hermes-input" (text))
@@ -478,6 +479,7 @@ copy commands are always allowed in the read-only history region."
     (hermes-comint--insert-prompt))
   (add-hook 'hermes-state-change-hook #'hermes-comint--refresh t)
   (add-hook 'hermes-state-change-hook #'hermes-comint--refresh-mode-line t)
+  (add-hook 'hermes-state-change-hook #'hermes-prompts-watch t)
   (add-hook 'hermes-ui-state-change-hook #'hermes-comint--refresh-mode-line t)
   (add-hook 'kill-buffer-hook #'hermes-comint--detach nil t))
 
@@ -531,8 +533,6 @@ across mid-stream re-paints.")
   (let* ((kw (hermes-comint--tool-status-keyword tool))
          (name (or (hermes-tool-name tool) "tool"))
          (dur (hermes-comint--format-duration (hermes-tool-duration tool)))
-         (status (hermes-tool-status tool))
-         (terminal-p (memq status '(complete error)))
          (tool-id (hermes-tool-id tool))
          (was-unfolded (and tool-id
                             (member tool-id hermes-comint--unfolded-tool-ids)))
@@ -542,7 +542,8 @@ across mid-stream re-paints.")
          (parts (and formatter (funcall formatter tool)))
          (fmt-summary (plist-get parts :summary))
          (args (plist-get parts :args))
-         (body (or (plist-get parts :body) ""))
+         (body (or (plist-get parts :body-comint)
+                   (plist-get parts :body) ""))
          ;; When :args is nil/empty, fall back to :summary so generic /
          ;; agent / web tools still carry their description in the header.
          (display-name (if (or (null args)
@@ -571,7 +572,7 @@ across mid-stream re-paints.")
                                `(line-prefix "  "
                                  hermes-comint--tool-body t
                                  hermes-comint--tool-id ,tool-id))
-          (when (and terminal-p (not was-unfolded))
+          (when (not was-unfolded)
             (let* ((line-count (hermes-comint--count-body-lines
                                 body-start body-end))
                    (hint (hermes-comint--tool-fold-hint line-count tool-id))
@@ -583,12 +584,96 @@ across mid-stream re-paints.")
               ;; caller's trailing-newline logic appends at end-of-turn.
               (goto-char (+ body-end inserted)))))))))
 
-(defun hermes-comint-toggle-tool-body ()
+(defun hermes-comint-unfold-all-tools ()
+  "Unfold every collapsed tool body in the buffer."
+  (interactive)
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (let (pos)
+        (while (setq pos (text-property-any
+                          (point) (point-max)
+                          'hermes-comint--tool-body t))
+          (goto-char pos)
+          (when (get-text-property pos 'invisible)
+            (let ((tool-id (get-text-property pos 'hermes-comint--tool-id))
+                  (end (or (next-single-property-change
+                           pos 'hermes-comint--tool-body nil (point-max))
+                          (point-max))))
+              (remove-text-properties pos end '(invisible nil))
+              (cl-pushnew tool-id hermes-comint--unfolded-tool-ids
+                          :test #'equal)
+              (save-excursion
+                (goto-char pos)
+                (when (and (> (point) (point-min))
+                           (progn (forward-line -1)
+                                  (get-text-property
+                                   (point) 'hermes-comint--collapse-hint)))
+                  (delete-region (line-beginning-position)
+                                 (min (point-max) (1+ (line-end-position))))))))
+          (goto-char pos)
+          (forward-char 1))))))
+
+(defun hermes-comint-fold-all-tools ()
+  "Fold every currently-expanded tool body in the buffer."
+  (interactive)
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (let (pos)
+        (while (setq pos (text-property-any
+                          (point) (point-max)
+                          'hermes-comint--tool-body t))
+          (goto-char pos)
+          (let* ((tool-id (get-text-property pos 'hermes-comint--tool-id))
+                 (end (or (next-single-property-change
+                           pos 'hermes-comint--tool-body nil (point-max))
+                          (point-max))))
+            (unless (get-text-property pos 'invisible)
+              (let ((line-count (hermes-comint--count-body-lines pos end)))
+                (add-text-properties pos end '(invisible t))
+                (goto-char pos)
+                (insert (hermes-comint--tool-fold-hint line-count tool-id) "\n")
+                (setq hermes-comint--unfolded-tool-ids
+                      (delete tool-id hermes-comint--unfolded-tool-ids))))
+            (goto-char (min (point-max)
+                            (or (next-single-property-change
+                                 (point) 'hermes-comint--tool-body
+                                 nil (point-max))
+                                (point-max))))))))))
+
+(defun hermes-comint--any-tool-unfolded-p ()
+  "Return non-nil if any tool body in the buffer is currently expanded."
+  (save-excursion
+    (goto-char (point-min))
+    (let (pos found)
+      (while (and (not found)
+                  (setq pos (text-property-any
+                            (point) (point-max)
+                            'hermes-comint--tool-body t)))
+        (if (get-text-property pos 'invisible)
+            (goto-char (or (next-single-property-change
+                            pos 'hermes-comint--tool-body nil (point-max))
+                           (point-max)))
+          (setq found t)))
+      found)))
+
+(defun hermes-comint-toggle-all-tools ()
+  "Fold all tool bodies if any are expanded; otherwise unfold all."
+  (interactive)
+  (if (hermes-comint--any-tool-unfolded-p)
+      (hermes-comint-fold-all-tools)
+    (hermes-comint-unfold-all-tools)))
+
+(defun hermes-comint-toggle-tool-body (&optional arg)
   "Toggle fold state of the tool body at or around point.
+With prefix ARG, toggle every tool body in the buffer instead.
 Operates on whichever tool block carries point's `hermes-comint--tool-id'
 property.  Bound to TAB via a `:filter' menu-item so non-tool text
 falls through to the parent keymap."
-  (interactive)
+  (interactive "P")
+  (if arg
+      (hermes-comint-toggle-all-tools)
   (let* ((inhibit-read-only t)
          (tool-id (get-text-property (point) 'hermes-comint--tool-id))
          body-start body-end hint-pos)
@@ -643,7 +728,7 @@ falls through to the parent keymap."
             (goto-char body-start)
             (insert (hermes-comint--tool-fold-hint line-count tool-id) "\n")
             (setq hermes-comint--unfolded-tool-ids
-                  (delete tool-id hermes-comint--unfolded-tool-ids))))))))
+                  (delete tool-id hermes-comint--unfolded-tool-ids)))))))))
 
 (defun hermes-comint--insert-subagent-block (sa)
   (let* ((goal (or (hermes-subagent-goal sa) "subagent"))
@@ -779,6 +864,7 @@ No-op in bench mode — committed history lives in the paired org buffer."
                         0))
            (total (length turns)))
       (when (> total start-idx)
+        (setq hermes-comint--unfolded-tool-ids nil)
         (save-excursion
           (goto-char (marker-position hermes-comint--output-end))
           (cl-loop for i from start-idx below total
@@ -975,10 +1061,10 @@ the ephemeral region — committed turns live only in the paired org
 buffer."
   (hermes-comint--stream-cancel-timer)
   (setq hermes-comint--stream-active nil)
-  (setq hermes-comint--unfolded-tool-ids nil)
   (if hermes-comint--bench-p
       (let ((inhibit-read-only t)
             (buffer-undo-list t))
+        (setq hermes-comint--unfolded-tool-ids nil)
         (setq hermes-comint--steer-messages nil)
         (setq hermes-comint--status-message nil)
         (delete-region (marker-position hermes-comint--output-end)
@@ -990,27 +1076,14 @@ buffer."
            (out-end (marker-position hermes-comint--output-end))
            (pr-start (marker-position hermes-comint--prompt-start)))
       (delete-region out-end pr-start)
+      (setq hermes-comint--unfolded-tool-ids nil)
       (when (and (vectorp turns) (> (length turns) 0))
-        (let* ((last-turn (aref turns (1- (length turns))))
-               (segs (and (hermes-message-p last-turn)
-                          (hermes-message-segments last-turn))))
-          ;; Auto-expand the just-committed turn's tool segments so the
-          ;; most recent output is visible without TAB.  Older turns keep
-          ;; whatever fold state they had.
-          (when (vectorp segs)
-            (dotimes (i (length segs))
-              (let ((seg (aref segs i)))
-                (when (eq 'tool (hermes-segment-type seg))
-                  (let* ((tl (hermes-segment-content seg))
-                         (tid (and (hermes-tool-p tl)
-                                   (hermes-tool-id tl))))
-                    (when tid
-                      (cl-pushnew tid hermes-comint--unfolded-tool-ids
-                                  :test #'equal)))))))
-          (save-excursion
-            (goto-char (marker-position hermes-comint--output-end))
-            (hermes-comint--insert-turn last-turn (length turns))
-            (set-marker hermes-comint--output-end (point)))))
+        (save-excursion
+          (goto-char (marker-position hermes-comint--output-end))
+          (hermes-comint--insert-turn
+           (aref turns (1- (length turns)))
+           (length turns))
+          (set-marker hermes-comint--output-end (point))))
       (setq hermes-comint--turns-snapshot turns)))
   (hermes-comint--ensure-prompt-visible t))
 
@@ -1253,6 +1326,7 @@ mode — committed history lives in the paired org buffer."
            (buffer-undo-list t)
            (turns (hermes-state-turns state))
            (total (length turns)))
+      (setq hermes-comint--unfolded-tool-ids nil)
       (save-excursion
         (goto-char (marker-position hermes-comint--output-end))
         (dotimes (i total)

@@ -238,6 +238,32 @@ empty or nil.  The `#+name' line is placed immediately before the
 
 ;;;; Bash
 
+(defun hermes-tool--parse-terminal-output (raw)
+  "Unwrap a gateway terminal envelope {output,exit_code,error} from RAW.
+Returns a cons (TEXT . EXIT-CODE) where TEXT is the human-readable
+output (possibly with an `[exit code: N]' suffix) and EXIT-CODE is the
+parsed integer or nil.  Falls back to (RAW . nil) when RAW is not a
+JSON object of the expected shape."
+  (or (ignore-errors
+        (when (and raw (stringp raw)
+                   (string-match-p "\\`[[:space:]]*{" raw))
+          (let* ((obj (json-parse-string raw :object-type 'alist
+                                         :null-object nil
+                                         :false-object nil))
+                 (out  (alist-get 'output obj))
+                 (exit (alist-get 'exit_code obj))
+                 (err  (alist-get 'error obj))
+                 (text (cond
+                        ((and err (stringp err) (not (string-empty-p err))) err)
+                        ((stringp out) out)
+                        (t ""))))
+            (cons (if (and (numberp exit) (not (zerop exit)))
+                      (concat (string-trim-right text)
+                              (format "\n[exit code: %d]" exit))
+                    text)
+                  exit))))
+      (cons raw nil)))
+
 (defun hermes-tool-format-bash (tool)
   (let* ((ctx (hermes-tool--parse-context (hermes-tool-context tool)))
          (cmd (hermes-tool--primary-arg tool ctx 'command 'cmd 'script))
@@ -248,7 +274,8 @@ empty or nil.  The `#+name' line is placed immediately before the
                 ((and cmd (string-match-p "\\`#!.*\\(node\\|deno\\)" cmd)) "js")
                 (t "bash")))
          (summary (and cmd (concat "$ " (hermes-tool--truncate cmd 72))))
-         (args summary))
+         (args summary)
+         (clean-out (car (hermes-tool--parse-terminal-output out))))
     (list :summary summary
           :body (concat
                  (hermes-tool--context-block tool)
@@ -260,6 +287,14 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
+          :body-comint (concat
+                        (when (and cmd (not (string-empty-p cmd)))
+                          (hermes-tool--src-block lang cmd))
+                        (cond
+                         (err (hermes-tool--example err))
+                         ((and clean-out (not (string-empty-p clean-out)))
+                          (hermes-tool--example clean-out))
+                         (t "")))
           :fold nil
           :args args)))
 
@@ -383,8 +418,38 @@ empty or nil.  The `#+name' line is placed immediately before the
                   (out (hermes-tool--maybe-name tool "output"
                          (hermes-tool--example out)))
                   (t "")))
+          :body-comint (cond
+                        (err (hermes-tool--example err))
+                        (out (hermes-tool--example
+                              (hermes-tool--format-grep-output out)))
+                        (t ""))
           :fold (eq (hermes-tool-status tool) 'complete)
           :args args)))
+
+(defun hermes-tool--format-grep-output (raw)
+  "Format grep RAW output (gateway JSON envelope) as `path:line: content' lines.
+Falls back to RAW when parsing fails."
+  (or (ignore-errors
+        (when (and raw (stringp raw)
+                   (string-match-p "\\`[[:space:]]*{" raw))
+          (let* ((obj (json-parse-string raw :object-type 'alist
+                                         :array-type 'list
+                                         :null-object nil
+                                         :false-object nil))
+                 (matches (alist-get 'matches obj))
+                 (total (alist-get 'total_count obj))
+                 (lines (mapconcat
+                         (lambda (m)
+                           (format "%s:%s: %s"
+                                   (or (alist-get 'path m) "?")
+                                   (or (alist-get 'line m) "?")
+                                   (string-trim (or (alist-get 'content m) ""))))
+                         matches "\n")))
+            (if (and total (numberp total))
+                (concat lines (format "\n[%d match%s]"
+                                      total (if (= total 1) "" "es")))
+              lines))))
+      raw))
 
 ;;;; LS
 

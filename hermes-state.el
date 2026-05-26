@@ -532,14 +532,26 @@ containment so truncated echoes are caught."
           (setf (hermes-stream-segments s) new-segs))))))
 
 (defun hermes--find-tool-segment-index (segments tool-id)
-  "Return index of tool segment with matching TOOL-ID, or nil."
-  (cl-position-if
-   (lambda (seg)
-     (and (eq 'tool (hermes-segment-type seg))
-          (let ((tool (hermes-segment-content seg)))
-            (and (hermes-tool-p tool)
-                 (equal tool-id (hermes-tool-id tool))))))
-   segments))
+  "Return index of tool segment with matching TOOL-ID, or nil.
+Prefers a non-terminal segment (status not in (complete error)) when the
+gateway reuses an id within a turn, so a stale completed segment doesn't
+shadow the live one."
+  (or (cl-position-if
+       (lambda (seg)
+         (and (eq 'tool (hermes-segment-type seg))
+              (let ((tool (hermes-segment-content seg)))
+                (and (hermes-tool-p tool)
+                     (equal tool-id (hermes-tool-id tool))
+                     (not (memq (hermes-tool-status tool)
+                                '(complete error)))))))
+       segments)
+      (cl-position-if
+       (lambda (seg)
+         (and (eq 'tool (hermes-segment-type seg))
+              (let ((tool (hermes-segment-content seg)))
+                (and (hermes-tool-p tool)
+                     (equal tool-id (hermes-tool-id tool))))))
+       segments)))
 
 (defun hermes--find-subagent (subagents id)
   "Return index of subagent with matching ID in SUBAGENTS vector, or nil."
@@ -1377,13 +1389,19 @@ branching so they don't affect reducer determinism):
              state
            (let* ((segs (hermes-stream-segments str))
                   (tname (hermes--get p "name"))
-                  (idx (cl-position-if
-                        (lambda (seg)
-                          (and (eq 'tool (hermes-segment-type seg))
-                               (let ((tl (hermes-segment-content seg)))
-                                 (or (equal tid (hermes-tool-id tl))
-                                     (and tname (equal tname (hermes-tool-name tl)))))))
-                        segs)))
+                  (match-pred
+                   (lambda (seg active-only)
+                     (and (eq 'tool (hermes-segment-type seg))
+                          (let ((tl (hermes-segment-content seg)))
+                            (and (or (equal tid (hermes-tool-id tl))
+                                     (and tname (equal tname (hermes-tool-name tl))))
+                                 (or (not active-only)
+                                     (not (memq (hermes-tool-status tl)
+                                                '(complete error)))))))))
+                  (idx (or (cl-position-if
+                            (lambda (s) (funcall match-pred s t)) segs)
+                           (cl-position-if
+                            (lambda (s) (funcall match-pred s nil)) segs))))
              (if (null idx)
                  state
                (let* ((old-seg (aref segs idx))

@@ -16,7 +16,7 @@ hermes-org.el        Heading-scoped session helpers + v2 buffer-canonical turn p
 hermes-input.el      Input queue, slash commands, history ring, history seed
 hermes-prompts.el    Minibuffer handlers (approval, clarify, sudo, secret)
 hermes-compose.el    Multi-line org-mode composer (C-c C-c send, C-c C-k cancel)
-hermes-comint.el     Comint-derived conversation viewer with inline prompt — also hosts the bench (a `hermes-comint--bench-p = t` variant displayed as a bottom side-window)
+hermes-comint.el     Comint-derived conversation viewer with inline prompt (incremental segment-diff renderer like hermes-org-render) — also hosts the bench (a `hermes-comint--bench-p = t` variant displayed as a bottom side-window)
 hermes-sessions.el   Minibuffer selectors: hermes-current-sessions (live), hermes-stored-{resume,branch,delete,save} (DB); also hosts the DB→Org renderer + install helper for hermes-resume-from-db / hermes-branch-from-db
 hermes-skin.el       Face-remap skin from gateway.ready colors
 hermes-md.el         Best-effort markdown→Org (fences, bold, code, links, italic)

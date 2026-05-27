@@ -210,6 +210,21 @@ empty or nil.  The `#+name' line is placed immediately before the
       (replace-regexp-in-string "^#\\+name: hermes-tool-[^\n]*\n" "" s)
     (or s "")))
 
+(defun hermes-tool--count-lines (s)
+  "Return the line count of S, or 0 when S is empty/nil."
+  (if (and s (stringp s) (not (string-empty-p s)))
+      (length (split-string s "\n" t))
+    0))
+
+(defun hermes-tool--fold-preview-default (err out)
+  "Common comint fold preview: error label or line count."
+  (cond
+   (err "error")
+   ((and out (stringp out) (not (string-empty-p out)))
+    (let ((n (hermes-tool--count-lines out)))
+      (format "%d %s" n (if (= n 1) "line" "lines"))))
+   (t nil)))
+
 (defun hermes-tool--body-comint-default (err out)
   "Common comint body: error block, else output block, else empty.
 Used by formatters whose `:body-comint' is just the error/output payload
@@ -259,7 +274,8 @@ with the context block and `#+name:' markers stripped."
            (when diff
              (format "#+begin_src diff\n%s\n#+end_src\n" diff))
            (hermes-tool--strip-name-markers
-            (or (hermes-tool--format-todos-table tool todos) ""))))))
+            (or (hermes-tool--format-todos-table tool todos) "")))
+          :fold-preview (hermes-tool--fold-preview-default err out))))
 
 ;;;; Bash
 
@@ -300,7 +316,10 @@ JSON object of the expected shape."
                 (t "bash")))
          (summary (and cmd (concat "$ " (hermes-tool--truncate cmd 72))))
          (args summary)
-         (clean-out (car (hermes-tool--parse-terminal-output out))))
+         (parsed (hermes-tool--parse-terminal-output out))
+         (clean-out (car parsed))
+         (exit (cdr parsed))
+         (out-lines (hermes-tool--count-lines clean-out)))
     (list :summary summary
           :body (concat
                  (hermes-tool--context-block tool)
@@ -320,6 +339,16 @@ JSON object of the expected shape."
                          ((and clean-out (not (string-empty-p clean-out)))
                           (hermes-tool--example clean-out))
                          (t "")))
+          :fold-preview
+          (cond
+           (err "error")
+           ((and exit (numberp exit) (not (zerop exit)))
+            (format "exit %d · %d %s" exit out-lines
+                    (if (= out-lines 1) "line" "lines")))
+           ((> out-lines 0)
+            (format "exit 0 · %d %s" out-lines
+                    (if (= out-lines 1) "line" "lines")))
+           (t "exit 0"))
           :fold nil
           :args args)))
 
@@ -376,6 +405,15 @@ unchanged when parsing fails."
                  (hermes-tool--lang-from-path (or path ""))
                  (hermes-tool--parse-read-output out)))
            (t ""))
+          :fold-preview
+          (cond
+           (err "error")
+           (out (let* ((clean (hermes-tool--parse-read-output out))
+                       (n (hermes-tool--count-lines clean))
+                       (lang (hermes-tool--lang-from-path (or path ""))))
+                  (format "%d %s%s" n (if (= n 1) "line" "lines")
+                          (if lang (format " · %s" lang) ""))))
+           (t nil))
           :fold (eq (hermes-tool-status tool) 'complete)
           :args args)))
 
@@ -417,6 +455,24 @@ unchanged when parsing fails."
              (hermes-tool--lang-from-path (or path "")) out))
            (out (hermes-tool--example out))
            (t ""))
+          :fold-preview
+          (cond
+           (err "error")
+           (diff (let* ((lines (split-string diff "\n"))
+                        (adds (cl-count-if
+                               (lambda (l) (and (> (length l) 0)
+                                                (eq (aref l 0) ?+)
+                                                (not (string-prefix-p "+++" l))))
+                               lines))
+                        (rems (cl-count-if
+                               (lambda (l) (and (> (length l) 0)
+                                                (eq (aref l 0) ?-)
+                                                (not (string-prefix-p "---" l))))
+                               lines)))
+                   (format "+%d −%d" adds rems)))
+           (out (let ((n (hermes-tool--count-lines out)))
+                  (format "%d %s" n (if (= n 1) "line" "lines"))))
+           (t nil))
           :fold nil
           :args args)))
 
@@ -432,8 +488,15 @@ unchanged when parsing fails."
          (out (hermes-tool--output-or-preview tool))
          (err (hermes-tool-error tool))
          (n-matches
-          (and out (let ((lines (split-string out "\n" t)))
-                     (length lines))))
+          (and out
+               (or (ignore-errors
+                     (when (string-match-p "\\`[[:space:]]*{" out)
+                       (alist-get
+                        'total_count
+                        (json-parse-string out :object-type 'alist
+                                           :null-object nil
+                                           :false-object nil))))
+                   (length (split-string out "\n" t)))))
          (summary
           (cond
            ((and (not (string-empty-p glob)) (not (string-empty-p path)))
@@ -480,6 +543,12 @@ unchanged when parsing fails."
                         (out (hermes-tool--example
                               (hermes-tool--format-grep-output out)))
                         (t ""))
+          :fold-preview
+          (cond
+           (err "error")
+           (n-matches (format "%d %s" n-matches
+                              (if (= n-matches 1) "match" "matches")))
+           (t nil))
           :fold (eq (hermes-tool-status tool) 'complete)
           :args args)))
 
@@ -525,6 +594,12 @@ Falls back to RAW when parsing fails."
                          (hermes-tool--example out)))
                   (t "")))
           :body-comint (hermes-tool--body-comint-default err out)
+          :fold-preview
+          (cond
+           (err "error")
+           (out (let ((n (hermes-tool--count-lines out)))
+                  (format "%d %s" n (if (= n 1) "entry" "entries"))))
+           (t nil))
           :fold (eq (hermes-tool-status tool) 'complete)
           :args (and path (hermes-tool--truncate path 72)))))
 
@@ -546,6 +621,17 @@ Falls back to RAW when parsing fails."
           :body-comint
           (hermes-tool--strip-name-markers
            (or (hermes-tool--format-todos-table tool todos) ""))
+          :fold-preview
+          (when (> total 0)
+            (let ((progress
+                   (cl-count-if (lambda (td)
+                                  (equal "in_progress"
+                                         (hermes--get td "status")))
+                                todos)))
+              (if (> progress 0)
+                  (format "%d done · %d in progress · %d total"
+                          done progress total)
+                (format "%d / %d done" done total))))
           :fold nil
           :args args)))
 
@@ -588,6 +674,7 @@ Falls back to RAW when parsing fails."
                          (hermes-tool--example out)))
                   (t "")))
           :body-comint (hermes-tool--body-comint-default err out)
+          :fold-preview (hermes-tool--fold-preview-default err out)
           :fold (eq (hermes-tool-status tool) 'complete)
           :args args)))
 
@@ -610,6 +697,7 @@ Falls back to RAW when parsing fails."
                          (hermes-tool--example out)))
                   (t "")))
           :body-comint (hermes-tool--body-comint-default err out)
+          :fold-preview (hermes-tool--fold-preview-default err out)
           :fold (eq (hermes-tool-status tool) 'complete)
           :args (and desc (hermes-tool--truncate desc 70)))))
 

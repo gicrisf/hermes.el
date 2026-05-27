@@ -351,6 +351,25 @@ position (pending stream growing before the prompt).")
 (defvar-local hermes-comint--stream-active nil
   "Non-nil while a streaming region is open.")
 
+(defvar-local hermes-comint--stream-segments-start nil
+  "Marker (insertion-type nil) at the left edge of the streamed segments.
+Frozen left boundary used by `hermes-comint--render-stream-segments'.")
+
+(defvar-local hermes-comint--stream-segments-end nil
+  "Marker (insertion-type t) at the right edge of the streamed segments.
+Slides right on inserts; re-anchored after pure-shrink passes.")
+
+(defvar-local hermes-comint--stream-segments-snapshot nil
+  "Vector of (:id ID :type TYPE :length N) plists mirroring the segments
+currently rendered between `hermes-comint--stream-segments-start' and
+`hermes-comint--stream-segments-end'.  Per-segment byte positions are
+derived from start + cumulative length, not stored.")
+
+(defvar-local hermes-comint--prelude-fingerprint nil
+  "Fingerprint of the last painted bench prelude (user prompt + steer + status).
+When unchanged across ticks the prelude is left in place and only the
+diff renderer touches the buffer.")
+
 (defvar-local hermes-comint--bench-p nil
   "When non-nil, this comint buffer acts as a bench.
 Only the current ephemeral turn is rendered (user prompt + stream);
@@ -474,6 +493,8 @@ copy commands are always allowed in the read-only history region."
     (setq hermes-comint--stream-active nil)
     (setq hermes-comint--stream-timer nil)
     (setq hermes-comint--stream-pending nil)
+    (hermes-comint--reset-stream-snapshot)
+    (setq hermes-comint--prelude-fingerprint nil)
     ;; output-end starts at point-min; advances as committed turns arrive.
     (setq hermes-comint--output-end (copy-marker (point-min) nil))
     (hermes-comint--insert-prompt))
@@ -511,20 +532,28 @@ copy commands are always allowed in the read-only history region."
              'font-lock-face 'hermes-comint-face-reasoning
              'line-prefix "  "))))
 
-(defvar-local hermes-comint--unfolded-tool-ids nil
-  "List of tool id strings the user has manually expanded.
-Cleared on stream commit.  Prevents re-collapsing user-opened tools
-across mid-stream re-paints.")
+(defcustom hermes-comint-fold-tool-bodies t
+  "When non-nil, tool bodies render collapsed (a one-line hint shown).
+When nil, tool bodies render expanded.  Applies buffer-wide; comint has
+no per-tool toggle — set the variable to switch.  For interactive
+per-tool fold/unfold, use the Org view instead."
+  :type 'boolean
+  :group 'hermes)
 
 (defun hermes-comint--count-body-lines (start end)
   "Count newline-delimited lines between START and END (buffer positions)."
   (1+ (how-many "\n" start end)))
 
-(defun hermes-comint--tool-fold-hint (line-count tool-id)
-  "Return a propertized fold-hint string for TOOL-ID's collapsed body."
+(defun hermes-comint--tool-fold-hint (line-count tool-id &optional preview)
+  "Return a propertized fold-hint string for TOOL-ID's collapsed body.
+When PREVIEW (a non-empty string) is supplied, it replaces the generic
+`N lines folded' text — formatters use this to summarize the body."
   (propertize
-   (format "  ▸ %d %s (TAB to expand)" line-count
-           (if (= line-count 1) "line" "lines"))
+   (format "  ▸ %s"
+           (if (and preview (stringp preview) (not (string-empty-p preview)))
+               preview
+             (format "%d %s folded" line-count
+                     (if (= line-count 1) "line" "lines"))))
    'font-lock-face 'hermes-comint-face-tool-fold-hint
    'hermes-comint--collapse-hint t
    'hermes-comint--tool-id tool-id))
@@ -534,8 +563,6 @@ across mid-stream re-paints.")
          (name (or (hermes-tool-name tool) "tool"))
          (dur (hermes-comint--format-duration (hermes-tool-duration tool)))
          (tool-id (hermes-tool-id tool))
-         (was-unfolded (and tool-id
-                            (member tool-id hermes-comint--unfolded-tool-ids)))
          (gw-summary (let ((s (hermes-tool-summary tool)))
                        (if (and s (> (length s) 0)) (format " — %s" s) "")))
          (formatter (hermes-tool--lookup name))
@@ -544,6 +571,7 @@ across mid-stream re-paints.")
          (args (plist-get parts :args))
          (body (or (plist-get parts :body-comint)
                    (plist-get parts :body) ""))
+         (fold-preview (plist-get parts :fold-preview))
          ;; When :args is nil/empty, fall back to :summary so generic /
          ;; agent / web tools still carry their description in the header.
          (display-name (if (or (null args)
@@ -572,10 +600,11 @@ across mid-stream re-paints.")
                                `(line-prefix "  "
                                  hermes-comint--tool-body t
                                  hermes-comint--tool-id ,tool-id))
-          (when (not was-unfolded)
+          (when hermes-comint-fold-tool-bodies
             (let* ((line-count (hermes-comint--count-body-lines
                                 body-start body-end))
-                   (hint (hermes-comint--tool-fold-hint line-count tool-id))
+                   (hint (hermes-comint--tool-fold-hint
+                          line-count tool-id fold-preview))
                    (inserted (1+ (length hint))))
               (add-text-properties body-start body-end '(invisible t))
               (goto-char body-start)
@@ -583,152 +612,6 @@ across mid-stream re-paints.")
               ;; Restore point to just past the (shifted) body so the
               ;; caller's trailing-newline logic appends at end-of-turn.
               (goto-char (+ body-end inserted)))))))))
-
-(defun hermes-comint-unfold-all-tools ()
-  "Unfold every collapsed tool body in the buffer."
-  (interactive)
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (point-min))
-      (let (pos)
-        (while (setq pos (text-property-any
-                          (point) (point-max)
-                          'hermes-comint--tool-body t))
-          (goto-char pos)
-          (when (get-text-property pos 'invisible)
-            (let ((tool-id (get-text-property pos 'hermes-comint--tool-id))
-                  (end (or (next-single-property-change
-                           pos 'hermes-comint--tool-body nil (point-max))
-                          (point-max))))
-              (remove-text-properties pos end '(invisible nil))
-              (cl-pushnew tool-id hermes-comint--unfolded-tool-ids
-                          :test #'equal)
-              (save-excursion
-                (goto-char pos)
-                (when (and (> (point) (point-min))
-                           (progn (forward-line -1)
-                                  (get-text-property
-                                   (point) 'hermes-comint--collapse-hint)))
-                  (delete-region (line-beginning-position)
-                                 (min (point-max) (1+ (line-end-position))))))))
-          (goto-char pos)
-          (forward-char 1))))))
-
-(defun hermes-comint-fold-all-tools ()
-  "Fold every currently-expanded tool body in the buffer."
-  (interactive)
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (point-min))
-      (let (pos)
-        (while (setq pos (text-property-any
-                          (point) (point-max)
-                          'hermes-comint--tool-body t))
-          (goto-char pos)
-          (let* ((tool-id (get-text-property pos 'hermes-comint--tool-id))
-                 (end (or (next-single-property-change
-                           pos 'hermes-comint--tool-body nil (point-max))
-                          (point-max))))
-            (unless (get-text-property pos 'invisible)
-              (let ((line-count (hermes-comint--count-body-lines pos end)))
-                (add-text-properties pos end '(invisible t))
-                (goto-char pos)
-                (insert (hermes-comint--tool-fold-hint line-count tool-id) "\n")
-                (setq hermes-comint--unfolded-tool-ids
-                      (delete tool-id hermes-comint--unfolded-tool-ids))))
-            (goto-char (min (point-max)
-                            (or (next-single-property-change
-                                 (point) 'hermes-comint--tool-body
-                                 nil (point-max))
-                                (point-max))))))))))
-
-(defun hermes-comint--any-tool-unfolded-p ()
-  "Return non-nil if any tool body in the buffer is currently expanded."
-  (save-excursion
-    (goto-char (point-min))
-    (let (pos found)
-      (while (and (not found)
-                  (setq pos (text-property-any
-                            (point) (point-max)
-                            'hermes-comint--tool-body t)))
-        (if (get-text-property pos 'invisible)
-            (goto-char (or (next-single-property-change
-                            pos 'hermes-comint--tool-body nil (point-max))
-                           (point-max)))
-          (setq found t)))
-      found)))
-
-(defun hermes-comint-toggle-all-tools ()
-  "Fold all tool bodies if any are expanded; otherwise unfold all."
-  (interactive)
-  (if (hermes-comint--any-tool-unfolded-p)
-      (hermes-comint-fold-all-tools)
-    (hermes-comint-unfold-all-tools)))
-
-(defun hermes-comint-toggle-tool-body (&optional arg)
-  "Toggle fold state of the tool body at or around point.
-With prefix ARG, toggle every tool body in the buffer instead.
-Operates on whichever tool block carries point's `hermes-comint--tool-id'
-property.  Bound to TAB via a `:filter' menu-item so non-tool text
-falls through to the parent keymap."
-  (interactive "P")
-  (if arg
-      (hermes-comint-toggle-all-tools)
-  (let* ((inhibit-read-only t)
-         (tool-id (get-text-property (point) 'hermes-comint--tool-id))
-         body-start body-end hint-pos)
-    (when tool-id
-      ;; Find the body region for this tool-id.
-      (save-excursion
-        (goto-char (point-min))
-        (let (done)
-          (while (and (not done) (< (point) (point-max)))
-            (let ((next (text-property-any
-                         (point) (point-max)
-                         'hermes-comint--tool-body t)))
-              (if (null next)
-                  (setq done t)
-                (goto-char next)
-                (if (equal (get-text-property (point) 'hermes-comint--tool-id)
-                           tool-id)
-                    (setq body-start (point)
-                          body-end (or (next-single-property-change
-                                        (point) 'hermes-comint--tool-body
-                                        nil (point-max))
-                                       (point-max))
-                          done t)
-                  (goto-char (or (next-single-property-change
-                                  (point) 'hermes-comint--tool-body
-                                  nil (point-max))
-                                 (point-max)))))))))
-      (when body-start
-        ;; Locate the hint line, if any, immediately preceding the body.
-        (save-excursion
-          (goto-char body-start)
-          (when (and (> (point) (point-min))
-                     (progn (forward-line -1)
-                            (get-text-property (point)
-                                               'hermes-comint--collapse-hint)))
-            (setq hint-pos (point))))
-        (if (get-text-property body-start 'invisible)
-            ;; Expand.
-            (progn
-              (remove-text-properties body-start body-end '(invisible nil))
-              (cl-pushnew tool-id hermes-comint--unfolded-tool-ids
-                          :test #'equal)
-              (when hint-pos
-                (goto-char hint-pos)
-                (delete-region (line-beginning-position)
-                               (min (point-max)
-                                    (1+ (line-end-position))))))
-          ;; Collapse.
-          (let ((line-count (hermes-comint--count-body-lines
-                             body-start body-end)))
-            (add-text-properties body-start body-end '(invisible t))
-            (goto-char body-start)
-            (insert (hermes-comint--tool-fold-hint line-count tool-id) "\n")
-            (setq hermes-comint--unfolded-tool-ids
-                  (delete tool-id hermes-comint--unfolded-tool-ids)))))))))
 
 (defun hermes-comint--insert-subagent-block (sa)
   (let* ((goal (or (hermes-subagent-goal sa) "subagent"))
@@ -790,6 +673,190 @@ falls through to the parent keymap."
     ;; Subagents at end.
     (dotimes (i (length sas))
       (hermes-comint--insert-subagent-block (aref sas i)))))
+
+;;;; Pure string builders (Phase 1: feeds the incremental diff renderer)
+
+(defun hermes-comint--text-segment-string (seg)
+  "Return the propertized buffer text for SEG (text/reasoning) — no side effects."
+  (with-temp-buffer
+    (pcase (hermes-segment-type seg)
+      ('reasoning (hermes-comint--insert-reasoning-block seg))
+      ('text      (hermes-comint--insert-text-segment seg))
+      (_ nil))
+    (buffer-string)))
+
+(defun hermes-comint--tool-block-string (tool)
+  "Return the propertized buffer text for TOOL — no side effects.
+Preserves all text properties (faces, `hermes-comint--tool-id',
+`hermes-comint--tool-body', fold invisibility, line-prefix) that
+`hermes-comint--insert-tool-block' would have applied."
+  (with-temp-buffer
+    (hermes-comint--insert-tool-block tool)
+    (buffer-string)))
+
+(defun hermes-comint--subagent-block-string (sa)
+  "Return the propertized buffer text for subagent SA — no side effects."
+  (with-temp-buffer
+    (hermes-comint--insert-subagent-block sa)
+    (buffer-string)))
+
+(defun hermes-comint--segment-block (seg)
+  "Return the buffer bytes for SEG (any segment type) for the diff renderer.
+Mirror of `hermes--segment-block' (org-render.el).  Each block ends with
+exactly one trailing newline so adjacent blocks render with one blank
+line between them.  Empty segments return the empty string."
+  (let ((s (pcase (hermes-segment-type seg)
+             ('reasoning (hermes-comint--text-segment-string seg))
+             ('text      (hermes-comint--text-segment-string seg))
+             ('tool      (let ((c (hermes-segment-content seg)))
+                           (if (hermes-tool-p c)
+                               (hermes-comint--tool-block-string c)
+                             "")))
+             (_ ""))))
+    (cond ((string-empty-p s) "")
+          ((string-suffix-p "\n\n" s) s)
+          ((string-suffix-p "\n" s) (concat s "\n"))
+          (t (concat s "\n\n")))))
+
+(defun hermes-comint--snapshot-total-length (snapshot)
+  "Sum the :length fields of SNAPSHOT (a vector of plists)."
+  (let ((total 0))
+    (dotimes (i (length snapshot))
+      (setq total (+ total (plist-get (aref snapshot i) :length))))
+    total))
+
+(defun hermes-comint--reset-stream-snapshot ()
+  "Clear streaming snapshot and markers.  Call on stream commit/abort."
+  (when (markerp hermes-comint--stream-segments-start)
+    (set-marker hermes-comint--stream-segments-start nil))
+  (when (markerp hermes-comint--stream-segments-end)
+    (set-marker hermes-comint--stream-segments-end nil))
+  (setq hermes-comint--stream-segments-start nil
+        hermes-comint--stream-segments-end nil
+        hermes-comint--stream-segments-snapshot nil))
+
+(defun hermes-comint--render-stream-segments (segments)
+  "Render SEGMENTS at point, mutating only what changed.
+Diffs against `hermes-comint--stream-segments-snapshot' (parallel vector
+of (:id :type :length) plists).  Three branches per segment slot:
+
+  1. Same id+type and content unchanged → skip (O(1)).
+  2. Same id+type but content differs → in-place replace (O(new size)).
+  3. id/type mismatch → fall back to delete + reinsert from this slot on.
+
+For the common `message.delta' case (one growing text segment), only
+branch 2 fires for one segment, and per-tick cost drops from O(total
+streamed text) to O(delta size).  Caller positions point at the desired
+streaming anchor before the first call; subsequent calls re-derive
+positions from the start marker."
+  (unless (and (markerp hermes-comint--stream-segments-start)
+               (markerp hermes-comint--stream-segments-end))
+    (setq hermes-comint--stream-segments-start (point-marker)
+          hermes-comint--stream-segments-end (point-marker))
+    (set-marker-insertion-type hermes-comint--stream-segments-start nil)
+    (set-marker-insertion-type hermes-comint--stream-segments-end t))
+  (let* ((start-pos (marker-position hermes-comint--stream-segments-start))
+         (snapshot (or hermes-comint--stream-segments-snapshot []))
+         ;; Sanity check: if the snapshot's total bytes wouldn't fit in
+         ;; the buffer between start-pos and point-max, the buffer was
+         ;; mutated behind our back (or the snapshot is stale).  Wipe
+         ;; the snapshot region (whatever survived) and rebuild from
+         ;; scratch.  Cheaper than crashing with `args out of range'.
+         (snapshot
+          (if (<= (+ start-pos
+                     (hermes-comint--snapshot-total-length snapshot))
+                  (point-max))
+              snapshot
+            (let ((end (marker-position hermes-comint--stream-segments-end)))
+              (when (and end (<= start-pos end) (<= end (point-max)))
+                (delete-region start-pos end))
+              [])))
+         (n-old (length snapshot))
+         (n-new (length segments))
+         (pos start-pos)
+         (i 0)
+         (diverged nil))
+    ;; Walk the common prefix, replacing in place where content differs.
+    ;; Segments are immutable (reducer copies via `hermes-segment-copy'),
+    ;; so `eq' on the segment object short-circuits the re-render + buffer
+    ;; compare for every slot whose object identity hasn't changed.
+    (while (and (not diverged) (< i n-old) (< i n-new))
+      (let* ((old (aref snapshot i))
+             (seg (aref segments i))
+             (old-seg  (plist-get old :seg))
+             (old-id   (plist-get old :id))
+             (old-type (plist-get old :type))
+             (old-len  (plist-get old :length))
+             (new-id   (hermes-segment-id seg))
+             (new-type (hermes-segment-type seg)))
+        (cond
+         ((not (and (equal old-id new-id) (eq old-type new-type)))
+          (setq diverged t))
+         ((eq old-seg seg)
+          ;; Same segment object → bytes are guaranteed identical, skip.
+          (setq pos (+ pos old-len)
+                i (1+ i)))
+         (t
+          (let* ((new-text (hermes-comint--segment-block seg))
+                 (new-len (length new-text)))
+            (unless (and (= old-len new-len)
+                         (string= new-text
+                                  (buffer-substring-no-properties
+                                   pos (+ pos old-len))))
+              (save-excursion
+                (goto-char pos)
+                (delete-region pos (+ pos old-len))
+                (insert new-text)))
+            (aset snapshot i (list :id new-id :type new-type
+                                   :length new-len :seg seg))
+            (setq pos (+ pos new-len)
+                  i (1+ i)))))))
+    (cond
+     (diverged
+      ;; Rebuild from segments[i..] — delete tail, reinsert.
+      (delete-region pos (marker-position hermes-comint--stream-segments-end))
+      (let ((rebuilt (substring snapshot 0 i)))
+        (save-excursion
+          (goto-char pos)
+          (while (< i n-new)
+            (let* ((seg (aref segments i))
+                   (text (hermes-comint--segment-block seg)))
+              (insert text)
+              (setq rebuilt
+                    (vconcat rebuilt
+                             (vector (list :id (hermes-segment-id seg)
+                                           :type (hermes-segment-type seg)
+                                           :length (length text)
+                                           :seg seg)))))
+            (setq i (1+ i))))
+        (setq snapshot rebuilt)))
+     ((< i n-old)
+      ;; Old vector longer — truncate trailing segments.
+      (delete-region pos (marker-position hermes-comint--stream-segments-end))
+      (setq snapshot (substring snapshot 0 i)))
+     ((< i n-new)
+      ;; New vector longer — append remainder.
+      (save-excursion
+        (goto-char pos)
+        (let ((extra (make-vector (- n-new i) nil))
+              (k 0))
+          (while (< i n-new)
+            (let* ((seg (aref segments i))
+                   (text (hermes-comint--segment-block seg)))
+              (insert text)
+              (aset extra k (list :id (hermes-segment-id seg)
+                                  :type (hermes-segment-type seg)
+                                  :length (length text)
+                                  :seg seg)))
+            (setq i (1+ i) k (1+ k)))
+          (setq snapshot (vconcat snapshot extra))))))
+    (setq hermes-comint--stream-segments-snapshot snapshot)
+    ;; Re-anchor the end marker.  insertion-type t keeps it aligned with
+    ;; the tail through inserts, but a pure-shrink pass may have left it
+    ;; ahead of where the snapshot now ends.
+    (set-marker hermes-comint--stream-segments-end
+                (+ start-pos
+                   (hermes-comint--snapshot-total-length snapshot)))))
 
 ;;;; Turn insertion
 
@@ -864,7 +931,6 @@ No-op in bench mode — committed history lives in the paired org buffer."
                         0))
            (total (length turns)))
       (when (> total start-idx)
-        (setq hermes-comint--unfolded-tool-ids nil)
         (save-excursion
           (goto-char (marker-position hermes-comint--output-end))
           (cl-loop for i from start-idx below total
@@ -874,26 +940,57 @@ No-op in bench mode — committed history lives in the paired org buffer."
 
 ;;;; Streaming
 
-(defun hermes-comint--paint-stream (state)
-  "Replace the pending region with the current in-flight turn.
-In bench mode, also prepends the user-prompt heading and any steer /
-status lines so the entire ephemeral surface rebuilds atomically per
-tick."
-  (let* ((inhibit-read-only t)
-         (buffer-undo-list t)
-         (stream (hermes-state-stream state))
-         (turns  (hermes-state-turns state))
-         (index  (1+ (length turns)))
-         (msg    (and stream (hermes--message-from-stream stream nil))))
-    (when stream
+(defun hermes-comint--prelude-fingerprint ()
+  "Return a comparable fingerprint of the bench prelude inputs."
+  (list hermes-comint--current-user-prompt
+        (copy-sequence hermes-comint--steer-messages)
+        (copy-sequence hermes-comint--status-message)))
+
+(defun hermes-comint--paint-bench-prelude ()
+  "Repaint the bench prelude when its fingerprint changes.
+Bench-only.  Wipes the prelude+stream region, reinserts the prelude,
+resets the diff renderer's snapshot, and seeds the stream-segments
+anchor marker to the position immediately after the prelude — so the
+next `render-stream-segments' call inserts in the right place.  No-op
+when the fingerprint matches the last paint."
+  (let ((fp (hermes-comint--prelude-fingerprint)))
+    (unless (equal fp hermes-comint--prelude-fingerprint)
       (let ((out-end (marker-position hermes-comint--output-end))
             (pr-start (marker-position hermes-comint--prompt-start)))
         (delete-region out-end pr-start)
+        (hermes-comint--reset-stream-snapshot)
         (save-excursion
-          (goto-char (marker-position hermes-comint--output-end))
-          (when hermes-comint--bench-p
-            (hermes-comint-bench--insert-ephemeral-prelude))
-          (hermes-comint--insert-turn msg index))))
+          (goto-char out-end)
+          (hermes-comint-bench--insert-ephemeral-prelude)
+          (setq hermes-comint--stream-segments-start (point-marker)
+                hermes-comint--stream-segments-end (point-marker))
+          (set-marker-insertion-type hermes-comint--stream-segments-start nil)
+          (set-marker-insertion-type hermes-comint--stream-segments-end t)))
+      (setq hermes-comint--prelude-fingerprint fp))))
+
+(defun hermes-comint--paint-stream (state)
+  "Render the in-flight stream segments at the streaming anchor.
+Uses the incremental diff renderer (`hermes-comint--render-stream-segments')
+so per-tick repaints only touch segments whose bytes actually changed.
+The user's cursor is undisturbed when it sits in committed history above
+or in any stream segment that didn't change.
+
+Bench mode also paints the prelude (user heading + steer + status)
+between `output-end' and the diff anchor — repainted only when its
+fingerprint changes, so steady-state ticks touch nothing but the
+growing assistant segments."
+  (let* ((inhibit-read-only t)
+         (buffer-undo-list t)
+         (stream (hermes-state-stream state)))
+    (when stream
+      (when hermes-comint--bench-p
+        (hermes-comint--paint-bench-prelude))
+      (save-excursion
+        (if (markerp hermes-comint--stream-segments-start)
+            (goto-char (marker-position hermes-comint--stream-segments-start))
+          (goto-char (marker-position hermes-comint--output-end)))
+        (hermes-comint--render-stream-segments
+         (or (hermes-stream-segments stream) []))))
     (hermes-comint--ensure-prompt-visible t)))
 
 (defun hermes-comint-bench--insert-ephemeral-prelude ()
@@ -1061,10 +1158,11 @@ the ephemeral region — committed turns live only in the paired org
 buffer."
   (hermes-comint--stream-cancel-timer)
   (setq hermes-comint--stream-active nil)
+  (hermes-comint--reset-stream-snapshot)
+  (setq hermes-comint--prelude-fingerprint nil)
   (if hermes-comint--bench-p
       (let ((inhibit-read-only t)
             (buffer-undo-list t))
-        (setq hermes-comint--unfolded-tool-ids nil)
         (setq hermes-comint--steer-messages nil)
         (setq hermes-comint--status-message nil)
         (delete-region (marker-position hermes-comint--output-end)
@@ -1076,7 +1174,6 @@ buffer."
            (out-end (marker-position hermes-comint--output-end))
            (pr-start (marker-position hermes-comint--prompt-start)))
       (delete-region out-end pr-start)
-      (setq hermes-comint--unfolded-tool-ids nil)
       (when (and (vectorp turns) (> (length turns) 0))
         (save-excursion
           (goto-char (marker-position hermes-comint--output-end))
@@ -1326,7 +1423,6 @@ mode — committed history lives in the paired org buffer."
            (buffer-undo-list t)
            (turns (hermes-state-turns state))
            (total (length turns)))
-      (setq hermes-comint--unfolded-tool-ids nil)
       (save-excursion
         (goto-char (marker-position hermes-comint--output-end))
         (dotimes (i total)
@@ -1388,13 +1484,6 @@ calls `hermes--maybe-kill-bench' so an orphan bench gets cleaned up."
     (define-key m (kbd "C-c C-a") #'hermes-image-attach-file)
     (define-key m (kbd "C-c C-v") #'hermes-image-clipboard-paste)
     (define-key m (kbd "C-c C-b") #'hermes-bench-bg-list)
-    ;; TAB toggles fold on tool blocks; non-tool text falls through to
-    ;; comint-mode-map (indent-for-tab-command) via the :filter menu-item.
-    (define-key m (kbd "TAB")
-      `(menu-item "" hermes-comint-toggle-tool-body
-        :filter ,(lambda (cmd)
-                   (when (get-text-property (point) 'hermes-comint--tool-id)
-                     cmd))))
     m)
   "Keymap for `hermes-comint-mode'.")
 
@@ -1697,6 +1786,8 @@ splash banner."
         (out-end (marker-position hermes-comint--output-end))
         (pr-start (marker-position hermes-comint--prompt-start)))
     (delete-region out-end pr-start)
+    (hermes-comint--reset-stream-snapshot)
+    (setq hermes-comint--prelude-fingerprint nil)
     (save-excursion
       (goto-char (marker-position hermes-comint--output-end))
       (if (hermes-comint--should-show-splash-p)

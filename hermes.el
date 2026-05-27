@@ -172,13 +172,25 @@ without this cache, the very first session would never see the skin.")
 
 (defun hermes-inspect-turn ()
   "Pretty-print the parsed turn at point into a temp buffer.
-Shows the parsed `hermes-message' struct as reconstructed by
-`hermes--parse-turn-at-point' from the visible Org structure."
+In Org mode, parses the visible heading via `hermes--parse-turn-at-point'.
+In `hermes-comint-mode', reads the `hermes-comint--turn-index' text
+property at point and looks the turn up directly in the session state."
   (interactive)
-  (let ((msg (save-excursion
-               (when (derived-mode-p 'org-mode)
-                 (ignore-errors (org-back-to-heading t)))
-               (hermes--parse-turn-at-point))))
+  (let ((msg
+         (cond
+          ((derived-mode-p 'hermes-comint-mode)
+           (let* ((idx (get-text-property (point) 'hermes-comint--turn-index))
+                  (state (and hermes--current-session-id
+                              (hermes--state-slot-read
+                               hermes--current-session-id)))
+                  (turns (and state (hermes-state-turns state))))
+             (and idx (vectorp turns) (<= idx (length turns))
+                  (aref turns (1- idx)))))
+          (t
+           (save-excursion
+             (when (derived-mode-p 'org-mode)
+               (ignore-errors (org-back-to-heading t)))
+             (hermes--parse-turn-at-point))))))
     (unless msg
       (user-error "No Hermes turn at point"))
     (let ((buf (get-buffer-create "*Hermes Turn Inspector*")))

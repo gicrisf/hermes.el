@@ -875,6 +875,8 @@ Caller is responsible for positioning point and for advancing
       (_          (hermes-comint--insert-system-body msg)))
     (unless (bolp) (insert "\n"))
     (insert "\n")
+    (add-text-properties start (point)
+                         `(hermes-comint--turn-index ,index))
     (hermes-comint--apply-output-props start (point))))
 
 ;;;; State refresh dispatch
